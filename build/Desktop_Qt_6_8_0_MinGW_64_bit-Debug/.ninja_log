@@ -1,0 +1,27 @@
+# ninja log v6
+23	133	8021898792900105	pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+23	133	8021898792900105	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+23	133	8021898792900105	pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+23	133	8021898792900105	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+511	2071	8021896846046342	CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj	37fd1f86facf0140
+586	1825	8021688785151876	CMakeFiles/pyro_stand.dir/com_class.cpp.obj	bc44cca11ccfe511
+513	1986	8021896846066461	CMakeFiles/pyro_stand.dir/main.cpp.obj	29bc040e253c3927
+515	2023	8021896846086355	CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj	eeb55b16d9b8608d
+133	1481	8021898793990127	CMakeFiles/pyro_stand.dir/stand.cpp.obj	13c17633b1477f3f
+1482	1696	8021898807473328	pyro_stand.exe	a3825f40abf3cdc
+32	699	8021904052207485	pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+32	699	8021904052207485	pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+32	699	8021904052207485	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+32	699	8021904052207485	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+708	2515	8021904052797491	CMakeFiles/pyro_stand.dir/com_class.cpp.obj	be36d2b827433d1b
+706	2890	8021904052777532	CMakeFiles/pyro_stand.dir/stand.cpp.obj	6f38017abec62c2d
+702	2901	8021904052727557	CMakeFiles/pyro_stand.dir/main.cpp.obj	2f1e2a129876fe96
+704	2925	8021904052747485	CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj	cf7e557691c059b0
+700	3009	8021904052707488	CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj	ced2440bb7264d2d
+3009	3219	8021904075800394	pyro_stand.exe	a3825f40abf3cdc
+24	140	8021906448151049	pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+24	140	8021906448151049	pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+24	140	8021906448151049	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/timestamp	ac1d9e7358b1ef86
+24	140	8021906448151049	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	ac1d9e7358b1ef86
+141	2053	8021906449320976	CMakeFiles/pyro_stand.dir/stand.cpp.obj	6f38017abec62c2d
+2053	2259	8021906468442916	pyro_stand.exe	a3825f40abf3cdc

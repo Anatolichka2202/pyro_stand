@@ -1,0 +1,27 @@
+# ninja log v6
+27	944	8021686028918792	pyro_stand_autogen/timestamp	9f4a8e07ff737631
+27	944	8021686028918792	pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+27	944	8021686028918792	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/timestamp	9f4a8e07ff737631
+947	2432	8021686029589149	CMakeFiles/pyro_stand.dir/main.cpp.obj	c3ae95d41e94b6be
+27	944	8021686028918792	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+945	2498	8021686029569061	CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj	4f07c731ce7aa7cc
+1129	2478	8021007747257032	CMakeFiles/pyro_stand.dir/com_class.cpp.obj	3824ede368a440d4
+949	2225	8020950470261112	CMakeFiles/pyro_stand.dir/cycleparser.cpp.obj	8fa58849401d1387
+949	2459	8021686029619063	CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj	86db47d7a7d3a6f6
+175	1924	8021094218305456	CMakeFiles/pyro_stand.dir/stand.cpp.obj	ac54c2ebfd591e9a
+1924	2015	8021094235797113	pyro_stand.exe	8c88169cfbee7894
+25	167	8021686691631066	pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	167	8021686691631066	pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+25	167	8021686691631066	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	167	8021686691631066	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+25	165	8021687217915061	pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	165	8021687217915061	pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+25	165	8021687217915061	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	165	8021687217915061	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+25	943	8021687984228634	pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	943	8021687984228634	pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+25	943	8021687984228634	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/timestamp	9f4a8e07ff737631
+25	943	8021687984228634	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/pyro_stand_autogen/mocs_compilation.cpp	9f4a8e07ff737631
+945	2429	8021687984877715	CMakeFiles/pyro_stand.dir/main.cpp.obj	c3ae95d41e94b6be
+947	2447	8021687984897656	CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj	86db47d7a7d3a6f6
+943	2484	8021687984857650	CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj	4f07c731ce7aa7cc

@@ -1194,3 +1194,5 @@ C:/qt_repos_2/pyro_stand/stand.h
  mdp:C:/qt_repos_2/pyro_stand/stand.h
 C:/qt_repos_2/pyro_stand/mainwindow.cpp
 C:/qt_repos_2/pyro_stand/stand.cpp
+C:/qt_repos_2/pyro_stand/crc8.h
+C:/qt_repos_2/pyro_stand/crc8.cpp

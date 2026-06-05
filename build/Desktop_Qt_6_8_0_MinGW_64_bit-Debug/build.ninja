@@ -81,14 +81,6 @@ build CMakeFiles/pyro_stand.dir/stand.cpp.obj: CXX_COMPILER__pyro_stand_unscanne
   OBJECT_DIR = CMakeFiles\pyro_stand.dir
   OBJECT_FILE_DIR = CMakeFiles\pyro_stand.dir
 
-build CMakeFiles/pyro_stand.dir/com_class.cpp.obj: CXX_COMPILER__pyro_stand_unscanned_Debug C$:/qt_repos_2/pyro_stand/com_class.cpp || cmake_object_order_depends_target_pyro_stand
-  DEFINES = -DMINGW_HAS_SECURE_API=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NETWORK_LIB -DQT_SERIALPORT_LIB -DQT_WIDGETS_LIB -DUNICODE -DWIN32 -DWIN64 -D_ENABLE_EXTENDED_ALIGNED_STORAGE -D_UNICODE -D_WIN64
-  DEP_FILE = CMakeFiles\pyro_stand.dir\com_class.cpp.obj.d
-  FLAGS = -DQT_QML_DEBUG -g -std=gnu++20 -fdiagnostics-color=always
-  INCLUDES = -IC:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/include -isystem C:/Qt/6.8.0/mingw_64/include/QtCore -isystem C:/Qt/6.8.0/mingw_64/include -isystem C:/Qt/6.8.0/mingw_64/mkspecs/win32-g++ -isystem C:/Qt/6.8.0/mingw_64/include/QtWidgets -isystem C:/Qt/6.8.0/mingw_64/include/QtGui -isystem C:/Qt/6.8.0/mingw_64/include/QtNetwork -isystem C:/Qt/6.8.0/mingw_64/include/QtSerialPort
-  OBJECT_DIR = CMakeFiles\pyro_stand.dir
-  OBJECT_FILE_DIR = CMakeFiles\pyro_stand.dir
-
 
 # =============================================================================
 # Link build statements for EXECUTABLE target pyro_stand
@@ -97,9 +89,9 @@ build CMakeFiles/pyro_stand.dir/com_class.cpp.obj: CXX_COMPILER__pyro_stand_unsc
 #############################################
 # Link the executable pyro_stand.exe
 
-build pyro_stand.exe: CXX_EXECUTABLE_LINKER__pyro_stand_Debug CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj CMakeFiles/pyro_stand.dir/main.cpp.obj CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj CMakeFiles/pyro_stand.dir/stand.cpp.obj CMakeFiles/pyro_stand.dir/com_class.cpp.obj | C$:/Qt/6.8.0/mingw_64/lib/libQt6Widgets.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Network.a C$:/Qt/6.8.0/mingw_64/lib/libQt6SerialPort.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Gui.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Core.a || pyro_stand_autogen pyro_stand_autogen_timestamp_deps
+build pyro_stand.exe: CXX_EXECUTABLE_LINKER__pyro_stand_Debug CMakeFiles/pyro_stand.dir/pyro_stand_autogen/mocs_compilation.cpp.obj CMakeFiles/pyro_stand.dir/main.cpp.obj CMakeFiles/pyro_stand.dir/mainwindow.cpp.obj CMakeFiles/pyro_stand.dir/stand.cpp.obj | C$:/Qt/6.8.0/mingw_64/lib/libQt6Widgets.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Network.a C$:/Qt/6.8.0/mingw_64/lib/libQt6SerialPort.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Gui.a C$:/Qt/6.8.0/mingw_64/lib/libQt6Core.a || pyro_stand_autogen pyro_stand_autogen_timestamp_deps
   FLAGS = -DQT_QML_DEBUG -g
-  LINK_LIBRARIES = C:/Qt/6.8.0/mingw_64/lib/libQt6Widgets.a  C:/Qt/6.8.0/mingw_64/lib/libQt6Network.a  C:/Qt/6.8.0/mingw_64/lib/libQt6SerialPort.a  -lwinmm  C:/Qt/6.8.0/mingw_64/lib/libQt6Gui.a  -ld3d11  -ldxgi  -ldxguid  -ld3d12  -lws2_32  C:/Qt/6.8.0/mingw_64/lib/libQt6Core.a  -lmpr  -luserenv  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = C:/Qt/6.8.0/mingw_64/lib/libQt6Widgets.a  C:/Qt/6.8.0/mingw_64/lib/libQt6Network.a  C:/Qt/6.8.0/mingw_64/lib/libQt6SerialPort.a  C:/Qt/6.8.0/mingw_64/lib/libQt6Gui.a  -ld3d11  -ldxgi  -ldxguid  -ld3d12  -lws2_32  C:/Qt/6.8.0/mingw_64/lib/libQt6Core.a  -lmpr  -luserenv  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\pyro_stand.dir
   POST_BUILD = cd .
   PRE_LINK = cd .

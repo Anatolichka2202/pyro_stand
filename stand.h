@@ -8,8 +8,9 @@
 #include "cyclogram_data.h"
 #include <QTime>
 #include <QDate>
+
 struct MaskRecord {
-    int64_t absoluteIndex;   // номер принятого байта с начала сессии
+    int64_t absoluteIndex;   // номер принятого байта с начала сессии (от момента пуска)
     uint8_t mask;            // значение маски
 };
 
@@ -19,31 +20,55 @@ public:
     explicit Stand(QObject* parent = nullptr);
     ~Stand();
 
-    void setStartMskTime(const QTime& mskTime);  // задаём время старта МСК
-    bool start();   // запускаем чтение COM-порта и отправляем UDP
-    void stop();    // останавливаем чтение и запускаем анализ
+    void setStartMskTime(const QTime& mskTime);
+    bool start();   // запуск сбора (очистка буфера, сброс индекса)
+    void stop();    // штатная остановка с анализом
+    void shutdown(); // тихая остановка для деструктора
 
 signals:
-    void logMessage(const QString& msg);               // для лога в GUI
-    void analysisComplete(const QVector<MaskRecord>& records, int64_t syncIndex); // для отображения результатов
+    void logMessage(const QString& msg);                                            //
+    void analysisComplete(const QVector<MaskRecord>& records, int64_t syncIndex);   //
 
 private:
-    void readingThread();           // поток чтения из COM-порта
-    void sendUdpToBcvm();           // отправить UDP с временем старта
-    void performAnalysis();         // сравнить маски с циклограммой
+    void readingThread();               //
+    void sendUdpToBcvm();               //
+    void performAnalysis();             //
+    void doStop(bool withAnalysis);     //
 
-    QSerialPort* serial;
-    std::atomic<bool> running;
-    std::thread worker;
+    QSerialPort* serial;                //
+    std::atomic<bool> running;          //
+    std::thread worker;                 //
 
-    QVector<MaskRecord> masks;       // все принятые маски
-    int64_t syncIndex;               // индекс байта, в котором обнаружен канал 8 (бит 7)
-    bool syncFound;                  // найден ли синхроимпульс
+    //структура
+    struct LogEntry {
+        int64_t relTime;
+        QString text;
+    };                          //
+    QVector<LogEntry> entries;  //
 
-    QTime startMskTime;              // введённое пользователем время старта (МСК, без миллисекунд)
-    QDateTime startUtcDateTime;      // соответствующее UTC
+    QVector<MaskRecord> masks;  //
+    int64_t syncIndex;          //
+    bool syncFound;             //
 
-    QVector<CycleEvent> events;      // копия циклограммы
-    static constexpr int testBlock = 9;
-    static constexpr int totalDurationMs = 1'818'000; // длительность полётного задания (мс)
+    QTime startMskTime;         //
+    QDateTime startUtcDateTime; //
+
+    QVector<CycleEvent> events;                             //
+    bool analysisDone;                                      //
+
+    int64_t getRelTime(int64_t absIndex) const;             //
+    QDateTime utcFromRelTime(int64_t relTime) const;        //
+    void addEventEntries(QVector<LogEntry>& entries) const; //  добавление события
+    void addMaskEntries(QVector<LogEntry>& entries) const;  //  добавление маски
+    void sortAndEmit(QVector<LogEntry>& entries);           //  подготовка окончательного сообщения для анализа, хроно сортировка
+
+    // Константы
+    static constexpr const char* SERIAL_PORT = "COM7";          // ком порт
+    static constexpr int SERIAL_BAUDRATE = 115200;              // скорость
+    static constexpr quint16 UDP_PORT = 4000;                   // порт БЦВМ
+    static constexpr const char* BCVM_IP = "192.168.17.246";    // айпи бцвм
+    static constexpr uint8_t SYNC_MASK = 0x80;                  // канал синхронизации
+    static constexpr uint8_t UDP_COMMAND_START = 0x03;          // команда старта
+    static constexpr int TOTAL_DURATION_MS = 1'818'000;         // время полетного задания в мс
+
 };

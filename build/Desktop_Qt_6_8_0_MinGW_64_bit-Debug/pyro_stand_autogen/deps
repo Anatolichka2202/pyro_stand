@@ -531,7 +531,6 @@ pyro_stand_autogen/timestamp: \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/stringfwd.h \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/this_thread_sleep.h \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/uniform_int_dist.h \
-	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/unique_lock.h \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/unique_ptr.h \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/unordered_map.h \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/bits/uses_allocator.h \
@@ -579,7 +578,6 @@ pyro_stand_autogen/timestamp: \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/locale \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/map \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/memory \
-	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/mutex \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/new \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/numbers \
 	C:/Qt/Tools/mingw1310_64/lib/gcc/x86_64-w64-mingw32/13.1.0/include/c++/numeric \
@@ -682,13 +680,10 @@ pyro_stand_autogen/timestamp: \
 	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/CMakeFiles/3.29.3/CMakeRCCompiler.cmake \
 	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/CMakeFiles/3.29.3/CMakeSystem.cmake \
 	C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/pyro_stand_autogen/moc_predefs.h \
-	C:/qt_repos_2/pyro_stand/com_class.cpp \
-	C:/qt_repos_2/pyro_stand/com_class.h \
 	C:/qt_repos_2/pyro_stand/cyclogram_data.h \
 	C:/qt_repos_2/pyro_stand/main.cpp \
 	C:/qt_repos_2/pyro_stand/mainwindow.cpp \
 	C:/qt_repos_2/pyro_stand/mainwindow.h \
-	C:/qt_repos_2/pyro_stand/precise_time.h \
 	C:/qt_repos_2/pyro_stand/stand.cpp \
 	C:/qt_repos_2/pyro_stand/stand.h \
 	C:/Qt/Tools/CMake_64/bin/cmake.exe

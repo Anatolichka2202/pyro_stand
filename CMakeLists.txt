@@ -13,26 +13,20 @@ set(SOURCES
     main.cpp
     mainwindow.cpp
     stand.cpp
-# cycleparser.cpp
-    com_class.cpp
 )
 
 set(HEADERS
     mainWindow.h
     stand.h
-   # cycleParser.h
-    com_class.h
 )
 
 add_executable(pyro_stand ${SOURCES} ${HEADERS}
     cyclogram_data.h
-    precise_time.h)
-
+)
 target_link_libraries(pyro_stand
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
     Qt6::SerialPort
-    winmm
 )
 

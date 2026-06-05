@@ -307,12 +307,6 @@
 	"HEADERS" : 
 	[
 		[
-			"C:/qt_repos_2/pyro_stand/com_class.h",
-			"MU",
-			"EWIEGA46WW/moc_com_class.cpp",
-			null
-		],
-		[
 			"C:/qt_repos_2/pyro_stand/cyclogram_data.h",
 			"MU",
 			"EWIEGA46WW/moc_cyclogram_data.cpp",
@@ -322,12 +316,6 @@
 			"C:/qt_repos_2/pyro_stand/mainwindow.h",
 			"MU",
 			"EWIEGA46WW/moc_mainwindow.cpp",
-			null
-		],
-		[
-			"C:/qt_repos_2/pyro_stand/precise_time.h",
-			"MU",
-			"EWIEGA46WW/moc_precise_time.cpp",
 			null
 		],
 		[
@@ -411,7 +399,6 @@
 	"SETTINGS_FILE" : "C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_MinGW_64_bit-Debug/CMakeFiles/pyro_stand_autogen.dir/AutogenUsed.txt",
 	"SOURCES" : 
 	[
-		[ "C:/qt_repos_2/pyro_stand/com_class.cpp", "MU", null ],
 		[ "C:/qt_repos_2/pyro_stand/main.cpp", "MU", null ],
 		[ "C:/qt_repos_2/pyro_stand/mainwindow.cpp", "MU", null ],
 		[ "C:/qt_repos_2/pyro_stand/stand.cpp", "MU", null ]

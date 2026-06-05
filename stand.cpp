@@ -5,8 +5,8 @@
 #include <QDebug>
 #include <QUdpSocket>
 #include <QtGlobal>
+#include <algorithm>
 
-// Структура для UDP-пакета (как раньше)
 struct StartMessage {
     uint8_t command;
     uint8_t hour;
@@ -15,20 +15,32 @@ struct StartMessage {
 };
 
 Stand::Stand(QObject* parent)
-    : QObject(parent), running(false), syncIndex(-1), syncFound(false) {
+    : QObject(parent)
+    , running(false)
+    , syncIndex(-1)
+    , syncFound(false)
+    , analysisDone(false)
+{
     for (int i = 0; i < g_cyclogramSize; ++i)
         events.append(g_cyclogram[i]);
 
-    serial = new QSerialPort("COM5", this);
-    serial->setBaudRate(QSerialPort::Baud115200);
+    serial = new QSerialPort(SERIAL_PORT, this);
+    serial->setBaudRate(SERIAL_BAUDRATE);
     serial->setDataBits(QSerialPort::Data8);
     serial->setParity(QSerialPort::NoParity);
     serial->setStopBits(QSerialPort::OneStop);
     serial->setFlowControl(QSerialPort::NoFlowControl);
+
+    // Открываем порт при старте программы
+    if (!serial->open(QIODevice::ReadOnly)) {
+        emit logMessage("Ошибка открытия COM-порта " + QString(SERIAL_PORT));
+    } else {
+        emit logMessage("COM-порт " + QString(SERIAL_PORT) + " открыт, ожидание команды ПУСК");
+    }
 }
 
 Stand::~Stand() {
-    stop();
+    shutdown();
     delete serial;
 }
 
@@ -41,38 +53,61 @@ void Stand::setStartMskTime(const QTime& mskTime) {
     startUtcDateTime = mskDateTime.toUTC();
 }
 
+void Stand::shutdown() {
+    doStop(false);
+}
+
+void Stand::stop() {
+    doStop(true);
+}
+
+void Stand::doStop(bool withAnalysis) {
+    running = false;
+    if (worker.joinable())
+        worker.join();
+
+    if (withAnalysis && !analysisDone) {
+        performAnalysis();
+        analysisDone = true;
+        emit logMessage("Стенд остановлен, анализ выполнен");
+    }
+}
+
 bool Stand::start() {
-    if (!serial->open(QIODevice::ReadOnly)) {
-        emit logMessage("Ошибка открытия COM-порта COM3");
+    if (!serial->isOpen()) {
+        emit logMessage("COM-порт не открыт. Невозможно запустить сбор.");
         return false;
     }
-    // Очищаем данные предыдущего запуска
+
+    // Сброс состояния перед новым пуском
     masks.clear();
     syncFound = false;
     syncIndex = -1;
+    analysisDone = false;
 
-    sendUdpToBcvm();  // обязательно отправляем UDP с запланированным временем
+    // Очистка буфера приёма – игнорируем всё, что пришло до пуска
+    serial->clear(QSerialPort::AllDirections);
+    emit logMessage("Буфер COM-порта очищен, начинаем сбор данных");
+
+    sendUdpToBcvm();
 
     running = true;
     worker = std::thread(&Stand::readingThread, this);
     return true;
 }
 
-void Stand::stop() {
-    running = false;
-    if (worker.joinable())
-        worker.join();
-    serial->close();
-    performAnalysis();  // после остановки проводим анализ
-    emit logMessage("Стенд остановлен, анализ выполнен");
-}
-
 void Stand::readingThread() {
-    int64_t absoluteIndex = 0;
+    int64_t absoluteIndex = 0;   // счётчик тактов от момента пуска
     uint8_t lastLoggedMask = 0;
+
     while (running) {
         char byte;
         qint64 bytesRead = serial->read(&byte, 1);
+        if (bytesRead == -1) {
+            emit logMessage("Ошибка чтения из COM-порта, останов сбора");
+            running = false;
+            break;
+        }
         if (bytesRead != 1) {
             QThread::msleep(1);
             continue;
@@ -82,7 +117,7 @@ void Stand::readingThread() {
         masks.append({absoluteIndex, mask});
 
         // Синхронизация по каналу 8 (бит 7)
-        if (!syncFound && (mask & 0x80)) {
+        if (!syncFound && (mask & SYNC_MASK)) {
             syncFound = true;
             syncIndex = absoluteIndex;
             emit logMessage(QString("Синхронизация: канал 8 сработал на индексе %1 (0 мс по циклограмме)").arg(absoluteIndex));
@@ -92,7 +127,7 @@ void Stand::readingThread() {
 
         if (syncFound) {
             int64_t relTime = absoluteIndex - syncIndex;
-            // Логируем изменения маски (кроме самого синхросигнала, который уже выведен)
+            // Логируем изменения маски
             if (mask != lastLoggedMask) {
                 if (mask == 0) {
                     emit logMessage(QString("[%1 мс] Маска сброшена (0x00)").arg(relTime));
@@ -102,16 +137,12 @@ void Stand::readingThread() {
                 }
                 lastLoggedMask = mask;
             }
-            // Каждые 100 мс выводим такт тестера (можно закомментировать, если не нужно)
-            if (relTime % 100 == 0 && relTime != 0) {
-                emit logMessage(QString("[%1 мс] Такт тестера").arg(relTime));
-            }
         }
 
         absoluteIndex++;
 
         // Автоматическая остановка после завершения полётного задания + запас
-        if (syncFound && (absoluteIndex - syncIndex) > totalDurationMs + 100) {
+        if (syncFound && (absoluteIndex - syncIndex) > TOTAL_DURATION_MS + 100) {
             emit logMessage("Достигнут конец полётного задания, остановка сбора");
             running = false;
             break;
@@ -122,13 +153,13 @@ void Stand::readingThread() {
 void Stand::sendUdpToBcvm() {
     QUdpSocket udpSocket;
     StartMessage msg;
-    msg.command = 0x03;
+    msg.command = UDP_COMMAND_START;
     QDateTime utc = startUtcDateTime;
     msg.hour = utc.time().hour();
     msg.min = utc.time().minute();
     msg.sec = utc.time().second();
     QByteArray datagram((const char*)&msg, sizeof(msg));
-    udpSocket.writeDatagram(datagram, QHostAddress("192.168.17.246"), 4000);
+    udpSocket.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
     emit logMessage(QString("Старт передан на БЦВМ: UTC %1:%2:%3")
                         .arg(msg.hour, 2, 10, QChar('0'))
                         .arg(msg.min, 2, 10, QChar('0'))
@@ -143,35 +174,108 @@ void Stand::performAnalysis() {
 
     QDateTime startUtc = startUtcDateTime;
 
-    // 1. Все события циклограммы (ожидаемые)
+
+
+    // События циклограммы
     for (const auto& ev : events) {
-        int64_t relTimeMs = ev.time_ms;   // время от старта (может быть отрицательным)
+        int64_t relTimeMs = ev.time_ms;
         QDateTime eventUtc = startUtc.addMSecs(relTimeMs);
         QString utcStr = eventUtc.toString("hh:mm:ss.zzz");
-        emit logMessage(QString("[%1][%2] %3")
-                            .arg(utcStr)
-                            .arg(relTimeMs)
-                            .arg(ev.description));
+        QString text = QString("[%1][%2] %3")
+                           .arg(utcStr)
+                           .arg(relTimeMs)
+                           .arg(ev.description);
+        entries.push_back({relTimeMs, text});
     }
 
-    // 2. Фактические подрывы пиросредств (ненулевые маски, не синхросигнал)
+    // Фактические маски (ненулевые, не синхросигнал)
     for (const auto& rec : masks) {
         int64_t relTime = rec.absoluteIndex - syncIndex;
         if (rec.mask == 0) continue;
-        if (relTime < -10000 || relTime > totalDurationMs + 1000) continue; // отсекаем шум
-        if (rec.mask == 0x80) continue; // чистый синхросигнал
+        if (rec.mask == SYNC_MASK) continue;
+        if (relTime < -10000 || relTime > TOTAL_DURATION_MS + 1000) continue;
 
         QDateTime eventUtc = startUtc.addMSecs(relTime);
         QString utcStr = eventUtc.toString("hh:mm:ss.zzz");
         QString hexMask = QString("0x%1").arg(rec.mask, 2, 16, QChar('0'));
-        // Формат: [UTC][такт_относительный][такт_циклограммы] подрыв пиросредств {маска} *фактический*
-        // Третий параметр – такт циклограммы (ожидаемый), но так как мы не сопоставляем с конкретным событием,
-        // выводим тот же относительный такт.
-        emit logMessage(QString("[%1][%2][%2] подрыв пиросредств {%3} *фактический*")
-                            .arg(utcStr)
-                            .arg(relTime)
-                            .arg(hexMask));
+        QString text = QString("[%1][%2] маска <font color='red'>%3</font>")
+                           .arg(utcStr)
+                           .arg(relTime)
+                           .arg(hexMask);
+        entries.push_back({relTime, text});
+    }
+
+    // Сортировка по времени
+    std::sort(entries.begin(), entries.end(),
+              [](const LogEntry& a, const LogEntry& b) {
+                  return a.relTime < b.relTime;
+              });
+
+    for (const auto& e : entries) {
+        emit logMessage(e.text);
     }
 
     emit analysisComplete(masks, syncIndex);
 }
+
+int64_t Stand::getRelTime(int64_t absIndex) const {
+    if (!syncFound) return INT64_MIN;
+    return absIndex - syncIndex;
+}
+
+QDateTime Stand::utcFromRelTime(int64_t relTime) const {
+    return startUtcDateTime.addMSecs(relTime);
+}
+
+void Stand::addEventEntries(QVector<LogEntry>& entries) const {
+    for (const auto& ev : events) {
+        int64_t relTime = ev.time_ms;
+        QDateTime utc = utcFromRelTime(relTime);
+        QString text = QString("[%1][%2] %3")
+                           .arg(utc.toString("hh:mm:ss.zzz"))
+                           .arg(relTime)
+                           .arg(ev.description);
+        entries.push_back({relTime, text});
+    }
+}
+
+void Stand::addMaskEntries(QVector<LogEntry>& entries) const {
+    for (const auto& rec : masks) {
+        int64_t relTime = getRelTime(rec.absoluteIndex);
+        if (relTime == INT64_MIN) continue; // синхронизации ещё нет
+        if (rec.mask == 0) continue;
+        if (rec.mask == SYNC_MASK) continue;
+        if (relTime < -10000 || relTime > TOTAL_DURATION_MS + 1000) continue;
+
+        QDateTime utc = utcFromRelTime(relTime);
+        QString hexMask = QString("0x%1").arg(rec.mask, 2, 16, QChar('0'));
+        QString text = QString("[%1][%2] маска <font color='red'>%3</font>")
+                           .arg(utc.toString("hh:mm:ss.zzz"))
+                           .arg(relTime)
+                           .arg(hexMask);
+        entries.push_back({relTime, text});
+    }
+}
+
+void Stand::sortAndEmit(QVector<LogEntry>& entries) {
+    std::sort(entries.begin(), entries.end(),
+              [](const LogEntry& a, const LogEntry& b) {
+                  return a.relTime < b.relTime;
+              });
+    for (const auto& e : entries) {
+        emit logMessage(e.text);
+    }
+}
+
+/*void Stand::performAnalysis() {
+    if (!syncFound) {
+        emit logMessage("Ошибка: синхроимпульс не найден. Анализ невозможен.");
+        return;
+    }
+    QVector<LogEntry> entries;
+    addEventEntries(entries);
+    addMaskEntries(entries);
+    sortAndEmit(entries);
+    emit analysisComplete(masks, syncIndex);
+}*/
+

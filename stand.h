@@ -10,7 +10,7 @@
 #include <QDate>
 
 struct MaskRecord {
-    int64_t absoluteIndex;   // номер принятого байта с начала сессии (от момента пуска)
+    int64_t absoluteIndex;   // такт от пуска
     uint8_t mask;            // значение маски
 };
 
@@ -21,54 +21,56 @@ public:
     ~Stand();
 
     void setStartMskTime(const QTime& mskTime);
-    bool start();   // запуск сбора (очистка буфера, сброс индекса)
-    void stop();    // штатная остановка с анализом
-    void shutdown(); // тихая остановка для деструктора
+    bool start();           // запуск сбора (очистка буфера, сброс индекса)
+    void stop();            // штатная остановка с анализом
+    void shutdown();        // тихая остановка для деструктора
 
 signals:
-    void logMessage(const QString& msg);                                            //
-    void analysisComplete(const QVector<MaskRecord>& records, int64_t syncIndex);   //
+    void logMessage(const QString& msg);
+    void analysisComplete(const QVector<MaskRecord>& records, int64_t syncIndex);
 
 private:
-    void readingThread();               //
-    void sendUdpToBcvm();               //
-    void performAnalysis();             //
-    void doStop(bool withAnalysis);     //
+    // Поток чтения
+    void readingThread();
+    // Отправка UDP с временем старта
+    void sendUdpToBcvm();
+    // Анализ собранных данных
+    void performAnalysis();
+    // Общая остановка (withAnalysis = true -> анализ)
+    void doStop(bool withAnalysis);
 
-    QSerialPort* serial;                //
-    std::atomic<bool> running;          //
-    std::thread worker;                 //
-
-    //структура
+    // Вспомогательные функции для анализа
     struct LogEntry {
         int64_t relTime;
         QString text;
-    };                          //
-    QVector<LogEntry> entries;  //
+    };
+    int64_t getRelTime(int64_t absIndex) const;
+    QDateTime utcFromRelTime(int64_t relTime) const;
+    void addEventEntries(QVector<LogEntry>& entries) const;
+    void addFiredChannelsEntries(QVector<LogEntry>& entries) const;
+    void sortAndEmit(QVector<LogEntry>& entries);
 
-    QVector<MaskRecord> masks;  //
-    int64_t syncIndex;          //
-    bool syncFound;             //
+    // Члены класса
+    QSerialPort* serial;
+    std::atomic<bool> running;
+    std::thread worker;
 
-    QTime startMskTime;         //
-    QDateTime startUtcDateTime; //
+    QVector<MaskRecord> masks;     // все полученные маски (для полноты)
+    int64_t syncIndex;             // абсолютный индекс, где впервые появился бит 7
+    bool syncFound;
 
-    QVector<CycleEvent> events;                             //
-    bool analysisDone;                                      //
+    QTime startMskTime;
+    QDateTime startUtcDateTime;
 
-    int64_t getRelTime(int64_t absIndex) const;             //
-    QDateTime utcFromRelTime(int64_t relTime) const;        //
-    void addEventEntries(QVector<LogEntry>& entries) const; //  добавление события
-    void addMaskEntries(QVector<LogEntry>& entries) const;  //  добавление маски
-    void sortAndEmit(QVector<LogEntry>& entries);           //  подготовка окончательного сообщения для анализа, хроно сортировка
+    QVector<CycleEvent> events;    // копия циклограммы
+    bool analysisDone;
 
     // Константы
-    static constexpr const char* SERIAL_PORT = "COM7";          // ком порт
-    static constexpr int SERIAL_BAUDRATE = 115200;              // скорость
-    static constexpr quint16 UDP_PORT = 4000;                   // порт БЦВМ
-    static constexpr const char* BCVM_IP = "192.168.17.246";    // айпи бцвм
-    static constexpr uint8_t SYNC_MASK = 0x80;                  // канал синхронизации
-    static constexpr uint8_t UDP_COMMAND_START = 0x03;          // команда старта
-    static constexpr int TOTAL_DURATION_MS = 1'818'000;         // время полетного задания в мс
-
+    static constexpr const char* SERIAL_PORT = "COM7";
+    static constexpr int SERIAL_BAUDRATE = 115200;
+    static constexpr quint16 UDP_PORT = 4000;
+    static constexpr const char* BCVM_IP = "192.168.17.246";
+    static constexpr uint8_t SYNC_MASK = 0x80;
+    static constexpr uint8_t UDP_COMMAND_START = 0x03;
+    static constexpr int TOTAL_DURATION_MS = 1'818'000;
 };

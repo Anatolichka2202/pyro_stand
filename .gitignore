@@ -1,0 +1,29 @@
+# Build output
+/build/
+/build_new/
+build*/
+*-build-*/
+cmake-build-*/
+
+# Qt Creator / CMake user files
+*.user
+*.user.*
+CMakeLists.txt.user*
+CMakeCache.txt
+CMakeFiles/
+
+# Visual Studio
+.vs/
+*.ipch
+*.VC.db
+*.suo
+*.sln.docstates
+
+# Compiled objects (vendored SDK .dll/.a/.exe are kept intentionally)
+*.o
+*.obj
+*.pdb
+
+# OS junk
+Thumbs.db
+.DS_Store

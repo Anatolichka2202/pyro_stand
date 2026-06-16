@@ -21,7 +21,7 @@ set(HEADERS
 )
 
 add_executable(pyro_stand ${SOURCES} ${HEADERS}
-    cyclogram_data.h
+
 )
 target_link_libraries(pyro_stand
     Qt6::Core

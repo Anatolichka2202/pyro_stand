@@ -1,5 +1,0 @@
-C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/CMakeFiles/pyro_stand.dir
-C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/CMakeFiles/edit_cache.dir
-C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/CMakeFiles/rebuild_cache.dir
-C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/CMakeFiles/pyro_stand_autogen_timestamp_deps.dir
-C:/qt_repos_2/pyro_stand/build/Desktop_Qt_6_8_0_llvm_mingw_64_bit-Debug/CMakeFiles/pyro_stand_autogen.dir

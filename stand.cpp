@@ -5,7 +5,8 @@
 #include <QUdpSocket>
 #include <algorithm>
 #include <QDebug>
-
+#include <QFile>
+#include <QRegularExpression>
 struct StartMessage {
     uint8_t command;
     uint8_t hour;
@@ -22,10 +23,17 @@ Stand::Stand(QObject* parent)
     , syncIndex(-1)
     , syncFound(false)
     , analysisDone(false)
+    , totalDurationMs(0)
 {
     // Копируем циклограмму
-    for (int i = 0; i < g_cyclogramSize; ++i)
-        events.append(g_cyclogram[i]);
+    if (!loadCyclogramFromFile(cyclogramFilePath)) {
+        emit logMessage("Ошибка загрузки циклограммы, работа невозможна");
+    } else {
+        emit logMessage(QString("Загружено событий: %1").arg(events.size()));
+        updateTotalDuration();
+        emit logMessage(QString("Общая длительность полётного задания: %1 мс").arg(totalDurationMs));
+    }
+
 
     // Настройка последовательного порта
     serial = new QSerialPort(SERIAL_PORT, this);
@@ -120,7 +128,7 @@ void Stand::readingThread() {
     bool syncLogged = false;            // чтобы не дублировать сообщение о контакте подъёма
 
     while (running) {
-        char byte;
+        char byte=0;
         qint64 bytesRead = serial->read(&byte, 1);
         if (bytesRead == -1) {
             emit logMessage("Ошибка чтения из COM-порта, останов сбора");
@@ -171,7 +179,7 @@ void Stand::readingThread() {
         // Автоматическая остановка после завершения полётного задания + запас
         // Здесь используем syncIndex, но он станет известен только после появления 8 канала.
         // Если 8 канал ещё не появился, не останавливаемся.
-        if (syncFound && (absoluteIndex - syncIndex) > TOTAL_DURATION_MS + 100) {
+        if (syncFound && (absoluteIndex - syncIndex) > totalDurationMs + 100) {
             emit logMessage("Достигнут конец полётного задания, остановка сбора");
             running = false;
             break;
@@ -182,7 +190,7 @@ void Stand::readingThread() {
 // --------------------------------------------------------------
 // Отправка UDP-команды на БЦВМ
 // --------------------------------------------------------------
-void Stand::sendUdpToBcvm() {
+/*void Stand::sendUdpToBcvm() {
     QUdpSocket udpSocket;
     StartMessage msg;
     msg.command = UDP_COMMAND_START;
@@ -197,7 +205,21 @@ void Stand::sendUdpToBcvm() {
                         .arg(msg.min, 2, 10, QChar('0'))
                         .arg(msg.sec, 2, 10, QChar('0')));
 }
-
+*/
+void Stand::sendUdpToBcvm() {
+    QByteArray datagram = generateDatagram();
+    if (datagram.isEmpty()) {
+        emit logMessage("Ошибка: не удалось сформировать датаграмму циклограммы");
+        return;
+    }
+    QUdpSocket udpSocket;
+    qint64 sent = udpSocket.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
+    if (sent == -1) {
+        emit logMessage("Ошибка отправки UDP: " + udpSocket.errorString());
+    } else {
+        emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent));
+    }
+}
 // --------------------------------------------------------------
 // Вспомогательные функции для анализа
 // --------------------------------------------------------------
@@ -215,13 +237,15 @@ void Stand::addEventEntries(QVector<LogEntry>& entries) const {
     for (const auto& ev : events) {
         int64_t relTime = ev.time_ms;
         QDateTime utc = utcFromRelTime(relTime);
+        QString displayText = ev.description.isEmpty() ? ev.key : ev.description;
         QString text = QString("[%1][%2] %3")
                            .arg(utc.toString("hh:mm:ss.zzz"))
                            .arg(relTime)
-                           .arg(ev.description);
+                           .arg(displayText);
         entries.push_back({relTime, text});
     }
 }
+
 
 // Добавление реальных срабатываний каналов (только первые)
 void Stand::addFiredChannelsEntries(QVector<LogEntry>& entries) const {
@@ -235,12 +259,23 @@ void Stand::addFiredChannelsEntries(QVector<LogEntry>& entries) const {
         uint8_t newBits = rec.mask & ~recordedBits;
         if (newBits == 0) continue;
 
-        // Игнорируем 8 канал (он уже выведен как "Контакт подъёма")
-        newBits &= ~SYNC_MASK;
+        // Отдельно обрабатываем 8 канал, если он появился впервые
+        if ((newBits & SYNC_MASK) && !(recordedBits & SYNC_MASK)) {
+            QDateTime utc = utcFromRelTime(relTime);
+            // Для 8 канала выводим и относительное время, и абсолютный индекс
+            QString text = QString("[%1][%2] (абс.индекс %3) <font color='red'>срабатывание канала 8 (Контакт подъёма)</font>")
+                               .arg(utc.toString("hh:mm:ss.zzz"))
+                               .arg(relTime)
+                               .arg(rec.absoluteIndex);
+            entries.push_back({relTime, text});
+            recordedBits |= SYNC_MASK;
+            newBits &= ~SYNC_MASK; // убираем 8 канал из дальнейшей обработки
+        }
+
         if (newBits == 0) continue;
 
         // Фильтр по времени (отсекаем слишком ранние/поздние)
-        if (relTime < -10000 || relTime > TOTAL_DURATION_MS + 1000) continue;
+        if (relTime < -10000 || relTime > totalDurationMs  + 1000) continue;
 
         // Формируем список каналов
         QStringList channels;
@@ -289,4 +324,106 @@ void Stand::performAnalysis() {
     addFiredChannelsEntries(entries);
     sortAndEmit(entries);
     emit analysisComplete(masks, syncIndex);
+}
+
+// --------------------------------------------------------------
+// Загрузка файла циклограммы
+// --------------------------------------------------------------
+bool Stand::loadCyclogramFromFile(const QString& filePath) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        emit logMessage("Не удалось открыть файл: " + filePath);
+        return false;
+    }
+    events.clear();
+    QTextStream stream(&file);
+    int lineNum = 0;
+    while (!stream.atEnd()) {
+        QString line = stream.readLine();
+        lineNum++;
+        // Удаляем пробелы по краям
+        line = line.trimmed();
+        if (line.isEmpty()) continue;
+
+        // Отделяем комментарий (всё после #)
+        QString comment;
+        int commentPos = line.indexOf('#');
+        if (commentPos != -1) {
+            comment = line.mid(commentPos + 1).trimmed();
+            line = line.left(commentPos).trimmed();
+        }
+        if (line.isEmpty()) continue;
+
+        int eqPos = line.indexOf('=');
+        if (eqPos == -1) {
+            emit logMessage(QString("Ошибка в строке %1: нет '='").arg(lineNum));
+            continue;
+        }
+        QString key = line.left(eqPos).trimmed();
+        QString valueStr = line.mid(eqPos + 1).trimmed();
+
+        // Специальная директива START_UTC_TIME
+        if (key == "START_UTC_TIME") {
+            // ничего не делаем, только для замены в датаграмме
+            continue;
+        }
+
+        bool ok;
+        int timeMs = valueStr.toInt(&ok);
+        if (!ok) {
+            emit logMessage(QString("Неверное число в строке %1: %2").arg(lineNum).arg(valueStr));
+            continue;
+        }
+
+        events.append({timeMs, key, comment, 0, false});
+    }
+    if (events.isEmpty()) {
+        emit logMessage("Циклограмма не содержит событий!");
+        return false;
+    }
+    return true;
+}
+
+QByteArray Stand::generateDatagram() {
+    QFile file(cyclogramFilePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        emit logMessage("Не удалось открыть файл циклограммы для отправки");
+        return QByteArray();
+    }
+
+    QStringList cleanLines;
+    QTextStream stream(&file);
+    while (!stream.atEnd()) {
+        QString line = stream.readLine();
+        // Удаляем комментарий
+        int commentPos = line.indexOf('#');
+        if (commentPos != -1)
+            line = line.left(commentPos);
+        line = line.trimmed();
+        if (line.isEmpty())
+            continue;
+        cleanLines.append(line);
+    }
+    file.close();
+
+    // Заменяем строку START_TIME
+    QDateTime utc = startUtcDateTime;
+    QString newStartTime = utc.toString("HH:mm:ss");
+    for (int i = 0; i < cleanLines.size(); ++i) {
+        if (cleanLines[i].startsWith("START_UTC_TIME", Qt::CaseInsensitive)) {
+            cleanLines[i] = "START_UTC_TIME = " + newStartTime;
+            break;
+        }
+    }
+
+    QString content = cleanLines.join("\n");
+    return content.toUtf8();
+}
+
+void Stand::updateTotalDuration() {
+    int maxTime = 0;
+    for (const auto& ev : events) {
+        if (ev.time_ms > maxTime) maxTime = ev.time_ms;
+    }
+    totalDurationMs = maxTime + 1000;  // запас 1 секунда
 }

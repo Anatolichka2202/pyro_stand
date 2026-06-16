@@ -5,9 +5,17 @@
 #include <atomic>
 #include <thread>
 #include <vector>
-#include "cyclogram_data.h"
+//#include "cyclogram_data.h"
 #include <QTime>
 #include <QDate>
+
+struct CycleEvent {
+    int time_ms;
+    QString key;          // имя события (переменная)
+    QString description;   // описания
+    int block;       // для отслеживания блоков
+    bool needTester; // для отслеживания
+};
 
 struct MaskRecord {
     int64_t absoluteIndex;   // такт от пуска
@@ -50,6 +58,8 @@ private:
     void addFiredChannelsEntries(QVector<LogEntry>& entries) const;
     void sortAndEmit(QVector<LogEntry>& entries);
 
+    void updateTotalDuration(); //обновление общего времени
+
     // Члены класса
     QSerialPort* serial;
     std::atomic<bool> running;
@@ -57,7 +67,7 @@ private:
 
     QVector<MaskRecord> masks;     // все полученные маски (для полноты)
     int64_t syncIndex;             // абсолютный индекс, где впервые появился бит 7
-    bool syncFound;
+    bool syncFound;                //  найден ли синхромаркер
 
     QTime startMskTime;
     QDateTime startUtcDateTime;
@@ -65,6 +75,12 @@ private:
     QVector<CycleEvent> events;    // копия циклограммы
     bool analysisDone;
 
+    bool loadCyclogramFromFile(const QString& filePatch);
+
+    QString cyclogramFilePath = "cyclogram.ini";
+    QByteArray generateDatagram();
+
+    int totalDurationMs;  // вычисляется из файла (макс. время + запас)
     // Константы
     static constexpr const char* SERIAL_PORT = "COM7";
     static constexpr int SERIAL_BAUDRATE = 115200;
@@ -72,5 +88,5 @@ private:
     static constexpr const char* BCVM_IP = "192.168.17.246";
     static constexpr uint8_t SYNC_MASK = 0x80;
     static constexpr uint8_t UDP_COMMAND_START = 0x03;
-    static constexpr int TOTAL_DURATION_MS = 1'818'000;
+    static constexpr int TOTAL_DURATION_MS = 1'818'000;//1'818'000;
 };

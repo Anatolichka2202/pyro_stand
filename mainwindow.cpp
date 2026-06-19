@@ -27,12 +27,36 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_stand, &Stand::nextEventTimer,  this, &MainWindow::updateNextEventTimer);
     connect(m_stand, &Stand::logMessage,      this, &MainWindow::addLog);
 
+    // T11: БЦВМ indicator — parse logMessage for known strings
+    connect(m_stand, &Stand::logMessage, this, [this](const QString &msg, const QString &) {
+        if (msg.contains("БЦВМ недоступна"))
+            updateBcvmIndicator(false);
+        if (msg.contains("Циклограмма отправлена"))
+            updateBcvmIndicator(true);
+    });
+
+    // T11: COM indicator — go red on portError
+    connect(m_stand, &Stand::portError, this, [this](const QString &msg) {
+        updateComIndicator(false);
+        m_loadBtn->setEnabled(false);
+        m_resetBtn->setEnabled(false);
+        QMessageBox::critical(this, "Ошибка", msg);
+    });
+
     connect(m_stand, &Stand::eventFired, this, [this](int eventId, int tick) {
         for (int i = 0; i < m_displayEvents.size(); ++i) {
             if (m_displayEvents[i].id == eventId) {
                 m_displayEvents[i].firedTick = tick;
                 m_displayEvents[i].status    = "ok";
                 updateTableRow(i, m_displayEvents[i]);
+
+                // T12: paint channels green for this event
+                for (const QString &part : m_displayEvents[i].channels.split(',')) {
+                    bool ok = false;
+                    int c = part.trimmed().toInt(&ok);
+                    if (ok && c >= 1 && c <= 8)
+                        updateChannelDot(c, "#3fb950");
+                }
                 break;
             }
         }
@@ -44,6 +68,14 @@ MainWindow::MainWindow(QWidget *parent)
                 m_displayEvents[i].status    = "fail";
                 m_displayEvents[i].firedTick = -1;
                 updateTableRow(i, m_displayEvents[i]);
+
+                // T12: paint channels red for this event
+                for (const QString &part : m_displayEvents[i].channels.split(',')) {
+                    bool ok = false;
+                    int c = part.trimmed().toInt(&ok);
+                    if (ok && c >= 1 && c <= 8)
+                        updateChannelDot(c, "#f85149");
+                }
                 break;
             }
         }
@@ -53,17 +85,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_displayEvents.clear();
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
         updateTable(m_displayEvents);
-    });
-
-    connect(m_stand, &Stand::portError, this, [this](const QString &msg) {
-        m_loadBtn->setEnabled(false);
-        m_resetBtn->setEnabled(false);
-        QMessageBox::critical(this, "Ошибка", msg);
+        resetChannelDots();
     });
 
     // Загружаем циклограмму один раз — после подключения всех сигналов
     m_stand->loadCyclogram();
     setPhase(m_stand->getPhase());
+
+    // T11: set initial COM indicator state
+    updateComIndicator(m_stand->isPortOpen());
 
     if (!m_stand->isPortOpen()) {
         m_loadBtn->setEnabled(false);
@@ -137,9 +167,62 @@ void MainWindow::setupUI()
     ctrlLayout->addWidget(m_timeInput);
     ctrlLayout->addWidget(m_stopBtn);
     ctrlLayout->addWidget(m_resetBtn);
+
+    // T11: COM + БЦВМ status indicators
+    QHBoxLayout *statusLayout = new QHBoxLayout();
+    statusLayout->setSpacing(16);
+
+    m_comIndicator = new QLabel("● COM7", this);
+    m_comIndicator->setStyleSheet("font-size: 10px; letter-spacing: 0.1em; color: #8b949e;");
+
+    m_bcvmIndicator = new QLabel("● БЦВМ", this);
+    m_bcvmIndicator->setStyleSheet("font-size: 10px; letter-spacing: 0.1em; color: #8b949e;");
+
+    statusLayout->addWidget(m_comIndicator);
+    statusLayout->addWidget(m_bcvmIndicator);
+    statusLayout->addStretch();
+
+    ctrlLayout->addLayout(statusLayout);
+
     topLayout->addLayout(ctrlLayout);
 
     mainLayout->addLayout(topLayout);
+
+    // T12: 8-channel state dots panel
+    QWidget *channelPanel = new QWidget(this);
+    QVBoxLayout *channelVBox = new QVBoxLayout(channelPanel);
+    channelVBox->setSpacing(4);
+    channelVBox->setContentsMargins(0, 0, 0, 0);
+
+    QLabel *channelCaption = new QLabel("КАНАЛЫ", this);
+    channelCaption->setStyleSheet("font-size: 10px; letter-spacing: 0.2em; color: #8b949e;");
+    channelVBox->addWidget(channelCaption);
+
+    QHBoxLayout *dotsLayout = new QHBoxLayout();
+    dotsLayout->setSpacing(12);
+    dotsLayout->setContentsMargins(0, 0, 0, 0);
+
+    for (int i = 0; i < 8; ++i) {
+        QVBoxLayout *dotBox = new QVBoxLayout();
+        dotBox->setSpacing(2);
+        dotBox->setAlignment(Qt::AlignHCenter);
+
+        QLabel *label = new QLabel(QString("CH%1").arg(i + 1), this);
+        label->setStyleSheet("font-size: 9px; color: #8b949e; letter-spacing: 0.05em;");
+        label->setAlignment(Qt::AlignHCenter);
+
+        m_channelDots[i] = new QLabel("●", this);
+        m_channelDots[i]->setStyleSheet("font-size: 18px; color: #484f58;");
+        m_channelDots[i]->setAlignment(Qt::AlignHCenter);
+
+        dotBox->addWidget(label);
+        dotBox->addWidget(m_channelDots[i]);
+        dotsLayout->addLayout(dotBox);
+    }
+    dotsLayout->addStretch();
+    channelVBox->addLayout(dotsLayout);
+
+    mainLayout->addWidget(channelPanel);
 
     // Таблица событий
     m_table = new QTableWidget(0, 5, this);
@@ -191,6 +274,24 @@ void MainWindow::setPhase(Phase newPhase)
         m_nextEventLabel->setText("До события: --:--");
     }
 
+    // T12: при переходе в Running — окрасить отслеживаемые каналы в жёлтый
+    if (newPhase == Phase::Running) {
+        // Сначала сбросить все в серый, потом пометить ожидаемые жёлтым
+        resetChannelDots();
+        for (const auto &e : m_displayEvents) {
+            if (e.hasChannels && (e.status.isEmpty() || e.status == "pending")) {
+                for (const QString &part : e.channels.split(',')) {
+                    bool ok = false;
+                    int c = part.trimmed().toInt(&ok);
+                    if (ok && c >= 1 && c <= 8)
+                        updateChannelDot(c, "#e3b341");
+                }
+            }
+        }
+    } else if (newPhase == Phase::Idle || newPhase == Phase::Loaded) {
+        resetChannelDots();
+    }
+
     updatePhaseLabel();
 }
 
@@ -220,6 +321,42 @@ void MainWindow::updatePhaseLabel()
     m_phaseLabel->setText(QString("● %1").arg(text));
     m_phaseLabel->setStyleSheet(QString("font-size: 10px; letter-spacing: 0.15em; color: %1;")
                                     .arg((blink && !m_blinkState) ? "transparent" : color));
+}
+
+// ─── T11: Индикаторы статуса ──────────────────────────────────────────────────
+
+void MainWindow::updateComIndicator(bool open)
+{
+    if (!m_comIndicator) return;
+    const QString color = open ? "#3fb950" : "#f85149";
+    m_comIndicator->setStyleSheet(
+        QString("font-size: 10px; letter-spacing: 0.1em; color: %1;").arg(color));
+}
+
+void MainWindow::updateBcvmIndicator(bool reachable)
+{
+    if (!m_bcvmIndicator) return;
+    const QString color = reachable ? "#3fb950" : "#f85149";
+    m_bcvmIndicator->setStyleSheet(
+        QString("font-size: 10px; letter-spacing: 0.1em; color: %1;").arg(color));
+}
+
+// ─── T12: Точки каналов ───────────────────────────────────────────────────────
+
+void MainWindow::updateChannelDot(int channel, const QString &color)
+{
+    if (channel < 1 || channel > 8) return;
+    if (!m_channelDots[channel - 1]) return;
+    m_channelDots[channel - 1]->setStyleSheet(
+        QString("font-size: 18px; color: %1;").arg(color));
+}
+
+void MainWindow::resetChannelDots()
+{
+    for (int i = 0; i < 8; ++i) {
+        if (m_channelDots[i])
+            m_channelDots[i]->setStyleSheet("font-size: 18px; color: #484f58;");
+    }
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────

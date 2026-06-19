@@ -241,9 +241,15 @@ void MainWindow::setupUI()
     mainLayout->addWidget(channelPanel);
 
     // Таблица событий
-    m_table = new QTableWidget(0, 5, this);
-    m_table->setHorizontalHeaderLabels({"#", "СОБЫТИЕ", "КАНАЛЫ", "ТИК / МС", "СТАТУС"});
+    m_table = new QTableWidget(0, 7, this);
+    m_table->setHorizontalHeaderLabels({"#", "СОБЫТИЕ", "КАНАЛЫ", "ПЛАН МС", "ФАКТ МС", "ОТКЛ МС", "СТАТУС"});
+    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     m_table->setEditTriggers(QTableWidget::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
     mainLayout->addWidget(m_table);
@@ -443,32 +449,75 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
     setItem(1, data.description.isEmpty() ? data.key : data.description);
     setItem(2, data.channels, Qt::AlignCenter);
 
-    // Колонка "ТИК / МС"
-    const bool final = (m_phase == Phase::Completed || m_phase == Phase::Stopped);
-    if (final)
-        setItem(3, data.calculatedMs != -1 ? QString::number(data.calculatedMs) + " мс" : "—", Qt::AlignRight);
-    else
-        setItem(3, data.firedTick != -1 ? QString::number(data.firedTick) : "—", Qt::AlignRight);
+    // Колонка 3: "ПЛАН МС" — плановое время всегда отображается
+    {
+        auto *planItem = new QTableWidgetItem(QString::number(data.time_ms));
+        planItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        planItem->setForeground(QColor("#8b949e"));
+        m_table->setItem(row, 3, planItem);
+    }
 
-    // Колонка "СТАТУС"
+    const bool final = (m_phase == Phase::Completed || m_phase == Phase::Stopped);
+
+    // Колонка 4: "ФАКТ МС"
+    {
+        QString factText;
+        bool hasFact = false;
+        if (data.calculatedMs != -1) {
+            factText = QString::number(data.calculatedMs) + " мс";
+            hasFact = true;
+        } else if (!final && data.firedTick != -1) {
+            factText = QString::number(data.firedTick);
+            hasFact = true;
+        } else {
+            factText = "—";
+        }
+        auto *factItem = new QTableWidgetItem(factText);
+        factItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (hasFact)
+            factItem->setForeground(QColor("#e6edf3"));
+        else
+            factItem->setForeground(QColor("#8b949e"));
+        m_table->setItem(row, 4, factItem);
+    }
+
+    // Определяем статус и цвет для колонок 5 и 6
     QString statusText;
-    QColor  statusColor = Qt::gray;
+    QColor  statusColor = QColor("#8b949e");
     if (final) {
         if (data.status == "ok") {
-            if (data.deviationMs <= 0)    { statusText = "✓ ОК";                                      statusColor = Qt::green; }
-            else if (data.deviationMs <=5){ statusText = QString("✓ ОК (±%1 мс)").arg(data.deviationMs); statusColor = Qt::yellow; }
-            else                          { statusText = QString("✗ НЕ ОК (±%1 мс)").arg(data.deviationMs); statusColor = Qt::red; }
-        } else if (data.status == "fail") { statusText = "✗ НЕ СРАБОТАЛО"; statusColor = Qt::red; }
-        else                              { statusText = "—"; }
+            if (data.deviationMs <= 0)     { statusText = "✓ ОК";                                          statusColor = QColor("#3fb950"); }
+            else if (data.deviationMs <= 5){ statusText = QString("✓ ОК (±%1 мс)").arg(data.deviationMs);  statusColor = QColor("#e3b341"); }
+            else                           { statusText = QString("✗ НЕ ОК (±%1 мс)").arg(data.deviationMs); statusColor = QColor("#f85149"); }
+        } else if (data.status == "fail")  { statusText = "✗ НЕ СРАБОТАЛО"; statusColor = QColor("#f85149"); }
+        else                               { statusText = "—"; }
     } else {
-        if      (data.status == "ok")   { statusText = "выполнено";     statusColor = Qt::green; }
-        else if (data.status == "fail") { statusText = "не сработало";  statusColor = Qt::red; }
+        if      (data.status == "ok")   { statusText = "выполнено";    statusColor = QColor("#3fb950"); }
+        else if (data.status == "fail") { statusText = "не сработало"; statusColor = QColor("#f85149"); }
         else                            { statusText = "—"; }
     }
+
+    // Колонка 5: "ОТКЛ МС"
+    {
+        QString devText;
+        QColor  devColor = QColor("#8b949e");
+        if (final && data.status == "ok") {
+            devText  = QString::number(data.deviationMs) + " мс";
+            devColor = statusColor;
+        } else {
+            devText = "—";
+        }
+        auto *devItem = new QTableWidgetItem(devText);
+        devItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        devItem->setForeground(devColor);
+        m_table->setItem(row, 5, devItem);
+    }
+
+    // Колонка 6: "СТАТУС"
     auto *statusItem = new QTableWidgetItem(statusText);
     statusItem->setForeground(statusColor);
     statusItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-    m_table->setItem(row, 4, statusItem);
+    m_table->setItem(row, 6, statusItem);
 
     refreshNextEventHighlight();
 }

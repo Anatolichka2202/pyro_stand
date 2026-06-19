@@ -89,6 +89,7 @@ private:
     static constexpr quint16 UDP_PORT           = 4000;
     static constexpr const char* BCVM_IP        = "192.168.17.246";
     static constexpr int FLIGHT_SAFETY_MS       = 1000;
+    static constexpr int FAIL_MARGIN_MS         = 5;
     static constexpr int SERIAL_RETRIES         = 3;
 };
 

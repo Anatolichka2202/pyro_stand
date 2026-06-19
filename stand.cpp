@@ -281,8 +281,16 @@ void Stand::readingThread(int64_t timeToStartMs)
     bool started = false;
 
     while (m_running) {
+        if (!m_serial->waitForReadyRead(100)) {
+            if (!m_serial->isOpen() || m_serial->error() != QSerialPort::NoError) {
+                emit portError(QString("COM-порт отключён: %1").arg(m_serial->errorString()));
+                m_running = false;
+                break;
+            }
+            continue;
+        }
         char byte = 0;
-        if (m_serial->read(&byte, 1) != 1) { QThread::msleep(1); continue; }
+        if (m_serial->read(&byte, 1) != 1) continue;
 
         const uint8_t mask = static_cast<uint8_t>(byte);
         m_masks.push_back({absoluteIndex, mask});
@@ -345,7 +353,7 @@ void Stand::readingThread(int64_t timeToStartMs)
                     pending.push_back({true, ev.id, ev.firedTick});
                     emit logMessage(QString("[%1] '%2' выполнено (каналы %3)")
                                         .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event");
-                } else if (absoluteIndex >= expectedIdx + 5) {
+                } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
                     ev.status   = "fail";
                     ev.firedTick= -1;
                     pending.push_back({false, ev.id, -1});

@@ -116,10 +116,26 @@ void MainWindow::setupUI()
     m_setTimeBtn->setObjectName("setTimeBtn");
     connect(m_setTimeBtn, &QPushButton::clicked, this, &MainWindow::onSetTime);
 
-    m_timeInput = new QLineEdit(this);
-    m_timeInput->setPlaceholderText("ЧЧ:ММ:СС");
-    m_timeInput->setInputMask("00:00:00");
-    m_timeInput->setText("00:00:10");
+    m_timeInput = new QTimeEdit(this);
+    m_timeInput->setDisplayFormat("hh:mm:ss");
+    m_timeInput->setTime(QTime(0, 0, 10));
+    m_timeInput->setStyleSheet(
+        "QTimeEdit {"
+        "  background: #161b22;"
+        "  color: #c9d1d9;"
+        "  border: 1px solid #30363d;"
+        "  border-radius: 4px;"
+        "  padding: 4px 8px;"
+        "  font-size: 13px;"
+        "}"
+        "QTimeEdit::up-button, QTimeEdit::down-button {"
+        "  background: #21262d;"
+        "  border: none;"
+        "  width: 16px;"
+        "}"
+        "QTimeEdit::up-arrow  { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid #8b949e; }"
+        "QTimeEdit::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top:    5px solid #8b949e; }"
+    );
     m_timeInput->hide();
 
     m_stopBtn = new QPushButton("■  СТОП", this);
@@ -192,6 +208,7 @@ void MainWindow::setPhase(Phase newPhase)
     }
 
     updatePhaseLabel();
+    refreshNextEventHighlight();
 }
 
 void MainWindow::updatePhaseLabel()
@@ -224,6 +241,28 @@ void MainWindow::updatePhaseLabel()
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
+void MainWindow::refreshNextEventHighlight()
+{
+    // Снять подсветку со всех строк
+    for (int i = 0; i < m_table->rowCount(); ++i)
+        for (int j = 0; j < m_table->columnCount(); ++j)
+            if (auto *item = m_table->item(i, j))
+                item->setBackground(QColor());
+
+    if (m_phase != Phase::Countdown && m_phase != Phase::Running) return;
+
+    // Найти первое pending событие с каналами
+    for (int i = 0; i < m_displayEvents.size(); ++i) {
+        if (m_displayEvents[i].status == "pending" && m_displayEvents[i].hasChannels) {
+            for (int j = 0; j < m_table->columnCount(); ++j)
+                if (auto *item = m_table->item(i, j))
+                    item->setBackground(QColor(28, 45, 58)); // тёмно-синий
+            m_nextEventRow = i;
+            break;
+        }
+    }
+}
+
 void MainWindow::updateTimer(const QString &text, const QString &color)
 {
     m_timerLabel->setText(text);
@@ -250,6 +289,7 @@ void MainWindow::updateTable(const QVector<EventRow> &events)
     m_table->setRowCount(m_displayEvents.size());
     for (int i = 0; i < m_displayEvents.size(); ++i)
         updateTableRow(i, m_displayEvents[i]);
+    refreshNextEventHighlight();
 }
 
 void MainWindow::updateTableRow(int row, const EventRow &data)
@@ -292,6 +332,8 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
     statusItem->setForeground(statusColor);
     statusItem->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
     m_table->setItem(row, 4, statusItem);
+
+    refreshNextEventHighlight();
 }
 
 // ─── Слоты кнопок ─────────────────────────────────────────────────────────────
@@ -301,11 +343,12 @@ void MainWindow::onLoadToBoard() { m_stand->sendToBoard(); }
 void MainWindow::onSetTime()
 {
     if (m_timeInput->isVisible()) {
-        const QTime t = QTime::fromString(m_timeInput->text(), "hh:mm:ss");
-        if (t.isValid()) { m_timeInput->hide(); m_stand->setStartTimeFromUI(t); }
+        const QTime t = m_timeInput->time();
+        m_timeInput->hide();
+        m_stand->setStartTimeFromUI(t);
     } else {
+        m_timeInput->setTime(m_stand->getStartTime());
         m_timeInput->show();
-        m_timeInput->setText(m_stand->getStartTime().toString("hh:mm:ss"));
         m_timeInput->setFocus();
     }
 }

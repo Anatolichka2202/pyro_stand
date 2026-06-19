@@ -35,7 +35,7 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 function(add_stand_test name src)
     add_executable(${name} ${src} stand.cpp stand.h types.h)
     target_link_libraries(${name}
-        Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort Qt6::Widgets)
+        Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 

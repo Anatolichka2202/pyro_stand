@@ -31,6 +31,7 @@ private:
     void addLog(const QString &text, const QString &type = "system");
     void updateTable(const QVector<EventRow> &events);
     void updateTableRow(int row, const EventRow &data);
+    void updatePhaseLabel();  // обновляет цвет и текст m_phaseLabel с учётом мигания
 
     QLabel *m_timerLabel;
     QLabel *m_phaseLabel;
@@ -50,6 +51,7 @@ private:
 
     QTimer *m_blinkTimer;
     bool m_blinkState;
+
 };
 
 #endif // MAINWINDOW_H

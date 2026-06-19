@@ -9,7 +9,16 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setupUI();
 
-    // Сначала создаём Stand, чтобы он был доступен в resetState
+    // ---- Инициализация таймера мигания (до любого вызова setPhase) ----
+    m_blinkTimer = new QTimer(this);
+    m_blinkTimer->setInterval(500);
+    connect(m_blinkTimer, &QTimer::timeout, this, [this]() {
+        m_blinkState = !m_blinkState;
+        // обновить стиль точки в зависимости от фазы и состояния
+        setPhase(m_phase); // или отдельный метод обновления цвета
+    });
+
+       // ---- Создание стенда ----
     m_stand = new Stand(this);
 
 
@@ -57,24 +66,17 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    // Теперь загружаем циклограмму (сигналы уже подключены)
+      // Загрузка циклограммы
     m_stand->loadCyclogram();
 
     // Установить UI в соответствии с текущим состоянием стенда
     setPhase(m_stand->getPhase());
 
-    // Если порт не открыт, блокируем кнопку загрузки
+     // Если порт не открыт, блокируем кнопку загрузк
     if (!m_stand->isPortOpen()) {
         m_loadBtn->setEnabled(false);
     }
 
-    m_blinkTimer = new QTimer(this);
-    m_blinkTimer->setInterval(500);
-    connect(m_blinkTimer, &QTimer::timeout, this, [this]() {
-        m_blinkState = !m_blinkState;
-        // обновить стиль точки в зависимости от фазы и состояния
-        setPhase(m_phase); // или отдельный метод обновления цвета
-    });
 }
 
 MainWindow::~MainWindow() {}
@@ -162,29 +164,8 @@ void MainWindow::resetState()
 void MainWindow::setPhase(Phase newPhase)
 {
     m_phase = newPhase;
-    bool blink = (newPhase == Phase::Countdown || newPhase == Phase::Running);
 
-    if (blink && !m_blinkTimer->isActive()) {
-        m_blinkTimer->start();
-        m_blinkState = true;
-    } else if (!blink && m_blinkTimer->isActive()) {
-        m_blinkTimer->stop();
-        m_blinkState = true; // всегда видимый
-    }
-
-    QString phaseText, phaseColor;
-    switch (newPhase) {
-    case Phase::Idle:       phaseText = "ОЖИДАНИЕ";   phaseColor = "#8b949e"; break;
-    case Phase::Loaded:     phaseText = "ЗАГРУЖЕНО";   phaseColor = "#58a6ff"; break;
-    case Phase::Countdown:  phaseText = "ОТСЧЁТ";     phaseColor = "#e3b341"; blink = true; break;
-    case Phase::Running:    phaseText = "ВЫПОЛНЕНИЕ";  phaseColor = "#3fb950"; blink = true; break;
-    case Phase::Completed:  phaseText = "ЗАВЕРШЕНО";   phaseColor = "#3fb950"; break;
-    case Phase::Stopped:    phaseText = "ОСТАНОВЛЕНО"; phaseColor = "#f85149"; break;
-    }
-    m_phaseLabel->setText(QString("● %1").arg(phaseText));
-    m_phaseLabel->setStyleSheet(QString("font-size: 10px; letter-spacing: 0.15em; color: %1;")
-                                    .arg(phaseColor)); //TODO мигание
-
+    // Управление видимостью/активностью кнопок
     bool loadEnabled = (newPhase == Phase::Idle || newPhase == Phase::Loaded ||
                         newPhase == Phase::Completed || newPhase == Phase::Stopped);
     bool setTimeEnabled = (newPhase == Phase::Idle);
@@ -197,15 +178,16 @@ void MainWindow::setPhase(Phase newPhase)
     if (newPhase != Phase::Idle)
         m_timeInput->hide();
 
+    // Заголовок таймера
     QLabel *caption = findChild<QLabel*>("timerCaption");
     if (caption) {
-        if (newPhase == Phase::Running || newPhase == Phase::Completed) {
+        if (newPhase == Phase::Running || newPhase == Phase::Completed)
             caption->setText("ВРЕМЯ В ПОЛЁТЕ");
-        } else {
+        else
             caption->setText("ОБРАТНЫЙ ОТСЧЁТ ДО СТАРТА");
-        }
     }
 
+    // Отображение основного таймера
     if (newPhase == Phase::Completed) {
         m_timerLabel->setText("ПОЛЁТНОЕ\nЗАДАНИЕ\nОТРАБОТАНО");
         m_timerLabel->setStyleSheet("font-size: 24px; font-weight: 600; color: #3fb950; font-family: 'JetBrains Mono'; line-height: 1.2;");
@@ -217,6 +199,9 @@ void MainWindow::setPhase(Phase newPhase)
         updateTimer("--:--", "#484f58");
         m_nextEventLabel->setText("До события: --:--");
     }
+
+    // Обновить индикатор фазы (цвет, текст, мигание)
+    updatePhaseLabel();
 }
 
 void MainWindow::updateTimer(const QString &text, const QString &color)
@@ -352,4 +337,39 @@ void MainWindow::onSetTime()
 void MainWindow::onStop()
 {
     m_stand->stop();
+}
+
+void MainWindow::updatePhaseLabel()
+{
+    if (!m_phaseLabel) return;
+
+    QString phaseText;
+    QString phaseColor;
+    bool blink = false;
+
+    switch (m_phase) {
+    case Phase::Idle:       phaseText = "ОЖИДАНИЕ";   phaseColor = "#8b949e"; break;
+    case Phase::Loaded:     phaseText = "ЗАГРУЖЕНО";   phaseColor = "#58a6ff"; break;
+    case Phase::Countdown:  phaseText = "ОТСЧЁТ";     phaseColor = "#e3b341"; blink = true; break;
+    case Phase::Running:    phaseText = "ВЫПОЛНЕНИЕ";  phaseColor = "#3fb950"; blink = true; break;
+    case Phase::Completed:  phaseText = "ЗАВЕРШЕНО";   phaseColor = "#3fb950"; break;
+    case Phase::Stopped:    phaseText = "ОСТАНОВЛЕНО"; phaseColor = "#f85149"; break;
+    }
+
+    // Управление таймером мигания
+    if (blink && !m_blinkTimer->isActive()) {
+        m_blinkTimer->start();
+        m_blinkState = true;
+    } else if (!blink && m_blinkTimer->isActive()) {
+        m_blinkTimer->stop();
+        m_blinkState = true;
+    }
+
+    // Если мигание активно и состояние "выключено" – делаем точку прозрачной
+    if (blink && !m_blinkState) {
+        phaseColor = "transparent";
+    }
+
+    m_phaseLabel->setText(QString("● %1").arg(phaseText));
+    m_phaseLabel->setStyleSheet(QString("font-size: 10px; letter-spacing: 0.15em; color: %1;").arg(phaseColor));
 }

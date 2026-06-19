@@ -1,4 +1,5 @@
 #include "stand.h"
+#include "real_serial_port.h"
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
@@ -8,8 +9,8 @@
 #include <QProcess>
 #include <QDateTime>
 
-Stand::Stand(QObject *parent, const QString &portName)
-    : QObject(parent)
+Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPort> port)
+    : QObject(parent), m_portName(portName)
 {
     m_mappings = {
         {"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12", 0x03, "1, 2"},
@@ -18,27 +19,21 @@ Stand::Stand(QObject *parent, const QString &portName)
         {"LIFT_OFF_CONTACT",                    0x80, "8"}
     };
 
-    if (portName.isEmpty()) return;
-
-    for (int i = 0; i < SERIAL_RETRIES; ++i) {
-        m_serial = new QSerialPort(portName, this);
-        m_serial->setBaudRate(BAUD_RATE);
-        m_serial->setDataBits(QSerialPort::Data8);
-        m_serial->setParity(QSerialPort::NoParity);
-        m_serial->setStopBits(QSerialPort::OneStop);
-        m_serial->setFlowControl(QSerialPort::NoFlowControl);
-
-        if (m_serial->open(QIODevice::ReadOnly)) {
-            emit logMessage("COM-порт " + portName + " открыт", "system");
-            break;
+    if (port) {
+        // Инжекция (тесты): не пробуем открывать, доверяем инжектируемому порту
+        m_port = std::move(port);
+        m_portAvailable = true;
+    } else if (!portName.isEmpty()) {
+        m_port = std::make_unique<RealSerialPort>();
+        // Пробная проверка доступности порта
+        m_portAvailable = m_port->open(portName, BAUD_RATE);
+        if (m_portAvailable) {
+            m_port->close(); // закроем — откроем в readingThread
+            emit logMessage("COM-порт " + portName + " доступен", "system");
+        } else {
+            emit logMessage("Не удалось открыть COM-порт. Тест невозможен.", "system");
+            emit portError("Ошибка COM-порта: " + m_port->errorString());
         }
-        delete m_serial;
-        m_serial = nullptr;
-        if (i < SERIAL_RETRIES - 1) QThread::msleep(500);
-    }
-    if (!m_serial) {
-        emit logMessage("Не удалось открыть COM-порт. Тест невозможен.", "system");
-        emit portError("Ошибка COM-порта");
     }
 
     // completeFlight всегда исполняется в GUI-треде
@@ -215,8 +210,8 @@ void Stand::sendToBoard()
         if (m_worker.joinable()) m_worker.join();
     }
 
-    if (!m_serial || !m_serial->isOpen()) {
-        emit logMessage("COM-порт не открыт. Невозможно отправить циклограмму.", "system");
+    if (!m_portAvailable) {
+        emit logMessage("COM-порт не доступен. Невозможно отправить циклограмму.", "system");
         return;
     }
     if (!pingBcvm()) {
@@ -266,23 +261,51 @@ void Stand::sendToBoard()
     m_analysisDone= false;
     m_stopped     = false;
 
-    m_serial->clear(QSerialPort::AllDirections);
+    m_port->clearBuffers();
     m_running = true;
     m_worker  = std::thread(&Stand::readingThread, this, m_timeToStartMs);
     updatePhase(Phase::Countdown);
+}
+
+// ─── startReadingForTest ──────────────────────────────────────────────────────
+
+void Stand::startReadingForTest(int64_t timeToStartMs)
+{
+    m_timeToStartMs = timeToStartMs;
+    m_masks.clear();
+    m_syncFound    = false;
+    m_syncIndex    = -1;
+    m_analysisDone = false;
+    m_stopped      = false;
+    m_running      = true;
+    m_worker       = std::thread(&Stand::readingThread, this, timeToStartMs);
 }
 
 // ─── readingThread ────────────────────────────────────────────────────────────
 
 void Stand::readingThread(int64_t timeToStartMs)
 {
+    if (!m_port || !m_port->open(m_portName, BAUD_RATE)) {
+        emit portError("Не удалось открыть COM-порт в потоке чтения");
+        return;
+    }
+
     int64_t absoluteIndex = 0;
     uint8_t firedBits = 0;
     bool started = false;
 
     while (m_running) {
+        if (!m_port->waitForReadyRead(100)) {
+            if (!m_port->isOpen() || m_port->hasError()) {
+                emit portError(QString("COM-порт отключён: %1").arg(m_port->errorString()));
+                m_running = false;
+                break;
+            }
+            continue;
+        }
+
         char byte = 0;
-        if (m_serial->read(&byte, 1) != 1) { QThread::msleep(1); continue; }
+        if (m_port->read(&byte, 1) != 1) continue;
 
         const uint8_t mask = static_cast<uint8_t>(byte);
         m_masks.push_back({absoluteIndex, mask});
@@ -345,7 +368,7 @@ void Stand::readingThread(int64_t timeToStartMs)
                     pending.push_back({true, ev.id, ev.firedTick});
                     emit logMessage(QString("[%1] '%2' выполнено (каналы %3)")
                                         .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event");
-                } else if (absoluteIndex >= expectedIdx + 5) {
+                } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
                     ev.status   = "fail";
                     ev.firedTick= -1;
                     pending.push_back({false, ev.id, -1});
@@ -367,6 +390,8 @@ void Stand::readingThread(int64_t timeToStartMs)
             break;
         }
     }
+
+    m_port->close();
 
     if (m_syncFound && !m_analysisDone) {
         emit flightComplete();
@@ -459,10 +484,7 @@ void Stand::stop()
     }
     emit analysisDone(snapshot);
 
-    if (m_phase == Phase::Countdown || m_phase == Phase::Running)
-        updatePhase(Phase::Stopped);
-    else
-        updatePhase(Phase::Idle);
+    updatePhase(Phase::Stopped);
     emit logMessage("═══ СТОП: задание прервано оператором ═══", "system");
 }
 

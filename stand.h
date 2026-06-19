@@ -2,12 +2,13 @@
 #define STAND_H
 
 #include <QObject>
-#include <QSerialPort>
 #include <QTime>
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <memory>
 #include "types.h"
+#include "serial_port.h"
 #include <QMutex>
 
 class Stand : public QObject
@@ -15,14 +16,17 @@ class Stand : public QObject
     Q_OBJECT
 public:
     // portName injectable для тестов (пустая строка = порт не открывается)
-    explicit Stand(QObject *parent = nullptr, const QString &portName = DEFAULT_PORT);
+    // port: инжектируемый ISerialPort (nullptr = использовать RealSerialPort)
+    explicit Stand(QObject *parent = nullptr,
+                   const QString &portName = DEFAULT_PORT,
+                   std::unique_ptr<ISerialPort> port = nullptr);
     ~Stand();
 
     // filePath: если пустой — ищет cyclogram.ini рядом с .exe
     bool loadCyclogram(const QString &filePath = {});
     bool setStartTimeFromUI(const QTime &time, const QString &filePath = {});
 
-    bool isPortOpen() const { return m_serial && m_serial->isOpen(); }
+    bool isPortOpen() const { return m_portAvailable; }
     bool pingBcvm() const;
 
     void sendToBoard();
@@ -35,6 +39,9 @@ public:
     QVector<EventRow> getEvents() const { QMutexLocker l(&m_eventsMutex); return m_events; }
     Phase getPhase() const { return m_phase; }
     QTime getStartTime() const { return m_startTime; }
+
+    // Только для тестов: запустить reading loop напрямую без UDP/ping
+    void startReadingForTest(int64_t timeToStartMs = 0);
 
 signals:
     void phaseChanged(Phase newPhase);
@@ -58,7 +65,10 @@ private:
     QString cyclogramFilePath() const;
     bool writeStartTimeToFile(const QTime &time, const QString &filePath);
 
-    QSerialPort *m_serial = nullptr;
+    std::unique_ptr<ISerialPort> m_port;
+    QString m_portName;
+    bool m_portAvailable = false;
+
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stopped{false};
     std::thread m_worker;
@@ -89,6 +99,7 @@ private:
     static constexpr quint16 UDP_PORT           = 4000;
     static constexpr const char* BCVM_IP        = "192.168.17.246";
     static constexpr int FLIGHT_SAFETY_MS       = 1000;
+    static constexpr int FAIL_MARGIN_MS         = 5;
     static constexpr int SERIAL_RETRIES         = 3;
 };
 

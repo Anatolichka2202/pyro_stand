@@ -18,6 +18,8 @@ add_executable(pyro_stand
     stand.cpp
     stand.h
     types.h
+    timeline_widget.cpp
+    timeline_widget.h
 )
 
 target_link_libraries(pyro_stand

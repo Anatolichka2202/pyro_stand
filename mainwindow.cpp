@@ -61,6 +61,10 @@ MainWindow::MainWindow(QWidget *parent)
                     if (ok && c >= 1 && c <= 8)
                         updateChannelDot(c, "#3fb950");
                 }
+
+                // T18: mark on timeline + advance playhead to fired tick
+                m_timeline->markEventFired(eventId, "ok");
+                m_timeline->setPlayheadMs(tick);
                 break;
             }
         }
@@ -80,6 +84,9 @@ MainWindow::MainWindow(QWidget *parent)
                     if (ok && c >= 1 && c <= 8)
                         updateChannelDot(c, "#f85149");
                 }
+
+                // T18: mark on timeline
+                m_timeline->markEventFired(eventId, "fail");
                 break;
             }
         }
@@ -93,10 +100,14 @@ MainWindow::MainWindow(QWidget *parent)
         // T17: show summary strip
         updateSummaryStrip(m_displayEvents);
         m_summaryStrip->setVisible(true);
+        // T18: refresh timeline with final analysis results (includes deviation data)
+        m_timeline->setEvents(events);
     });
 
     // Загружаем циклограмму один раз — после подключения всех сигналов
     m_stand->loadCyclogram();
+    // T18: populate timeline from initially loaded cyclogram
+    m_timeline->setEvents(m_stand->getEvents());
     setPhase(m_stand->getPhase());
 
     // T11: set initial COM indicator state
@@ -246,6 +257,10 @@ void MainWindow::setupUI()
     channelVBox->addLayout(dotsLayout);
 
     mainLayout->addWidget(channelPanel);
+
+    // T18: горизонтальная шкала времени
+    m_timeline = new TimelineWidget(this);
+    mainLayout->addWidget(m_timeline);
 
     // Таблица событий
     m_table = new QTableWidget(0, 7, this);
@@ -593,6 +608,9 @@ void MainWindow::onReset()
 {
     m_stand->resetForNewTest();
     m_stand->loadCyclogram();
+    // T18: reset timeline colors and playhead, then reload events
+    m_timeline->reset();
+    m_timeline->setEvents(m_stand->getEvents());
     setPhase(Phase::Loaded);
 }
 

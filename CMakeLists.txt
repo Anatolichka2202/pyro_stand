@@ -18,6 +18,7 @@ set(SOURCES
 set(HEADERS
     mainWindow.h
     stand.h
+    types.h
 )
 
 add_executable(pyro_stand ${SOURCES} ${HEADERS}

@@ -1,27 +1,43 @@
 #ifndef TYPES_H
 #define TYPES_H
 
-#include <iostream>
-struct strart_message
-{
-    uint8_t command;
+#include <QString>
 
-    // время старта (мировое время)
-    uint8_t hour;
-    uint8_t min;
-    uint8_t sec;
+// Режим времени (для отладки)
+enum class TimeMode {
+    UTC,
+    MSK
 };
 
-struct yps_tester_rs_message
-{
-    uint8_t cmd;
-    uint8_t crc8;
+// Состояния системы
+enum class Phase {
+    Idle,
+    Loaded,
+    Countdown,
+    Running,
+    Completed,
+    Stopped
 };
 
-struct yps_tester_rs_ans
-{
-    uint8_t ans;
-    uint8_t crc8;
+// Структура события циклограммы (используется и в логике, и в UI)
+struct EventRow {
+    int id;
+    QString key;           // ключ из файла
+    QString description;   // описание (комментарий)
+    int time_ms;           // относительное время в мс (может быть отрицательным)
+    QString channels;      // строка каналов, например "1, 2"
+    bool hasChannels;      // true если событие отслеживается
+    int firedTick;         // -1 если не сработало
+    int calculatedMs;      // -1 если не вычислено
+    QString status;        // "pending", "ok", "fail"
+    int deviationMs;       // отклонение вычисленного от ожидаемого (для анализа)
+};
+
+// Маппинг ключ -> битовая маска каналов
+struct ChannelMapping {
+    QString key;
+    uint8_t mask;
+    QString channelsStr;
 };
 
 #endif // TYPES_H

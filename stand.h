@@ -1,92 +1,90 @@
-#pragma once
+#ifndef STAND_H
+#define STAND_H
 
 #include <QObject>
 #include <QSerialPort>
+#include <QTimer>
+#include <QTime>
+#include <QDateTime>
 #include <atomic>
 #include <thread>
 #include <vector>
-//#include "cyclogram_data.h"
-#include <QTime>
-#include <QDate>
+#include "types.h"
+#include <QMutex>
 
-struct CycleEvent {
-    int time_ms;
-    QString key;          // имя события (переменная)
-    QString description;   // описания
-    int block;       // для отслеживания блоков
-    bool needTester; // для отслеживания
-};
-
-struct MaskRecord {
-    int64_t absoluteIndex;   // такт от пуска
-    uint8_t mask;            // значение маски
-};
-
-class Stand : public QObject {
+class Stand : public QObject
+{
     Q_OBJECT
 public:
-    explicit Stand(QObject* parent = nullptr);
+    explicit Stand(QObject *parent = nullptr);
     ~Stand();
 
-    void setStartMskTime(const QTime& mskTime);
-    bool start();           // запуск сбора (очистка буфера, сброс индекса)
-    void stop();            // штатная остановка с анализом
-    void shutdown();        // тихая остановка для деструктора
+    bool loadCyclogram();
+    bool setStartTimeFromUI(const QTime &time);
+    bool isPortOpen() const { return m_serial && m_serial->isOpen(); }
+    bool pingBcvm() const; // проверка доступности ЯВ
+
+    void sendToBoard();    // "ЗАГРУЗИТЬ НА БОРТ" – отправка UDP + запуск потока
+    void stop();           // СТОП – отправка команды 99 + остановка
+
+    void updateNextEvent(int64_t absoluteIndex, int64_t timeToStartMs);
+
+    QVector<EventRow> getEvents() const { return m_events; }
+    Phase getPhase() const { return m_phase; }
+    QTime getStartTime() const { return m_startTime; }
+
+    void resetForNewTest();
 
 signals:
-    void logMessage(const QString& msg);
-    void analysisComplete(const QVector<MaskRecord>& records, int64_t syncIndex);
+    void phaseChanged(Phase newPhase);
+    void timerUpdated(const QString &text, const QString &color);   // основной таймер
+    void nextEventTimer(const QString &text);                       // до следующего события
+    void eventFired(int eventId, int absoluteTick);
+    void analysisDone(const QVector<EventRow> &events);
+    void logMessage(const QString &msg, const QString &type);
+    void portError(const QString &msg); // ошибка порта
+    void flightComplete();   // сигнал о завершении полёта
+    void eventFailed(int eventId);   // для неудачных срабатываний
 
 private:
-    // Поток чтения
-    void readingThread();
-    // Отправка UDP с временем старта
-    void sendUdpToBcvm();
-    // Анализ собранных данных
-    void performAnalysis();
-    // Общая остановка (withAnalysis = true -> анализ)
-    void doStop(bool withAnalysis);
+    void readingThread(int64_t timeToStartMs);
+    void sendUdpToBcvm(const QByteArray &datagram);
+    void updatePhase(Phase newPhase);
+    void completeFlight();
+    void performAnalysis(int64_t timeToStartMs);
 
-    // Вспомогательные функции для анализа
-    struct LogEntry {
-        int64_t relTime;
-        QString text;
-    };
-    int64_t getRelTime(int64_t absIndex) const;
-    QDateTime utcFromRelTime(int64_t relTime) const;
-    void addEventEntries(QVector<LogEntry>& entries) const;
-    void addFiredChannelsEntries(QVector<LogEntry>& entries) const;
-    void sortAndEmit(QVector<LogEntry>& entries);
+    bool writeStartTimeToFile(const QTime &time);
 
-    void updateTotalDuration(); //обновление общего времени
+    QSerialPort *m_serial;
+    std::atomic<bool> m_running;
+    std::thread m_worker;
 
-    // Члены класса
-    QSerialPort* serial;
-    std::atomic<bool> running;
-    std::thread worker;
+    QVector<EventRow> m_events;
+    QVector<ChannelMapping> m_mappings;
 
-    QVector<MaskRecord> masks;     // все полученные маски (для полноты)
-    int64_t syncIndex;             // абсолютный индекс, где впервые появился бит 7
-    bool syncFound;                //  найден ли синхромаркер
+    Phase m_phase = Phase::Idle;
+    int m_flightDurationMs = 0;
 
-    QTime startMskTime;
-    QDateTime startUtcDateTime;
+    std::vector<struct MaskRecord> m_masks;
+    int64_t m_syncIndex;
+    bool m_syncFound;
+    bool m_analysisDone;
 
-    QVector<CycleEvent> events;    // копия циклограммы
-    bool analysisDone;
+    //время
+    QTime m_setTime;              // текущее лабораторное время (SET_UTC_TIME)
+    QTime m_startTime;            // целевое время старта (START_UTC_TIME)
+    int64_t m_timeToStartMs = 0;  // вычисленная разница в миллисекундах
 
-    bool loadCyclogramFromFile(const QString& filePatch);
+    mutable QMutex m_eventsMutex;
 
-    QString cyclogramFilePath = "cyclogram.ini";
-    QByteArray generateDatagram();
-
-    int totalDurationMs;  // вычисляется из файла (макс. время + запас)
-    // Константы
     static constexpr const char* SERIAL_PORT = "COM7";
     static constexpr int SERIAL_BAUDRATE = 115200;
+    static constexpr const char* CYCLOGRAM_FILE = "cyclogram.ini";
+    static constexpr uint8_t SYNC_MASK = 0x80;
     static constexpr quint16 UDP_PORT = 4000;
     static constexpr const char* BCVM_IP = "192.168.17.246";
-    static constexpr uint8_t SYNC_MASK = 0x80;
-    static constexpr uint8_t UDP_COMMAND_START = 0x03;
-    static constexpr int TOTAL_DURATION_MS = 1'818'000;//1'818'000;
+    static constexpr int FLIGHT_SAFETY_MARGIN_MS = 1000;
+    static constexpr int RETRY_COUNT = 3;
 };
+
+#endif // STAND_H

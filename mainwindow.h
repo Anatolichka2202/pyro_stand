@@ -11,6 +11,7 @@
 #include <QWidget>
 #include "types.h"
 #include "stand.h"
+#include "timeline_widget.h"
 
 class MainWindow : public QMainWindow
 {
@@ -70,6 +71,9 @@ private:
     QWidget     *m_summaryStrip = nullptr;
     QLabel      *m_summaryLabel = nullptr;
     QPushButton *m_exportCsvBtn = nullptr;
+
+    // T18: timeline
+    TimelineWidget *m_timeline = nullptr;
 
     Stand *m_stand = nullptr;
     Phase  m_phase = Phase::Idle;

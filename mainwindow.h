@@ -8,6 +8,7 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTimer>
+#include <QWidget>
 #include "types.h"
 #include "stand.h"
 
@@ -23,6 +24,7 @@ private slots:
     void onSetTime();
     void onStop();
     void onReset();
+    void onExportCsv();
 
 private:
     void setupUI();
@@ -43,6 +45,9 @@ private:
     void updateChannelDot(int channel, const QString &color); // channel 1-8
     void resetChannelDots();
 
+    // T17: summary strip
+    void updateSummaryStrip(const QVector<EventRow> &events);
+
     QLabel       *m_timerLabel     = nullptr;
     QLabel       *m_phaseLabel     = nullptr;
     QLabel       *m_nextEventLabel = nullptr;
@@ -60,6 +65,11 @@ private:
 
     // T12
     QLabel *m_channelDots[8] = {};
+
+    // T17
+    QWidget     *m_summaryStrip = nullptr;
+    QLabel      *m_summaryLabel = nullptr;
+    QPushButton *m_exportCsvBtn = nullptr;
 
     Stand *m_stand = nullptr;
     Phase  m_phase = Phase::Idle;

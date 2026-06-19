@@ -3,6 +3,10 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
+#include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
+#include <QDateTime>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -86,6 +90,9 @@ MainWindow::MainWindow(QWidget *parent)
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
         updateTable(m_displayEvents);
         resetChannelDots();
+        // T17: show summary strip
+        updateSummaryStrip(m_displayEvents);
+        m_summaryStrip->setVisible(true);
     });
 
     // Загружаем циклограмму один раз — после подключения всех сигналов
@@ -254,6 +261,44 @@ void MainWindow::setupUI()
     m_table->setAlternatingRowColors(true);
     mainLayout->addWidget(m_table);
 
+    // T17: Summary strip (hidden until analysisDone)
+    m_summaryStrip = new QWidget(this);
+    m_summaryStrip->setStyleSheet(
+        "QWidget {"
+        "  background-color: #161b22;"
+        "  border-top: 1px solid #30363d;"
+        "}"
+    );
+    m_summaryStrip->setVisible(false);
+
+    QHBoxLayout *summaryLayout = new QHBoxLayout(m_summaryStrip);
+    summaryLayout->setContentsMargins(12, 6, 12, 6);
+    summaryLayout->setSpacing(16);
+
+    m_summaryLabel = new QLabel(this);
+    m_summaryLabel->setStyleSheet("font-size: 12px; color: #e6edf3; background: transparent; border: none;");
+
+    m_exportCsvBtn = new QPushButton("Экспорт CSV", this);
+    m_exportCsvBtn->setObjectName("exportCsvBtn");
+    m_exportCsvBtn->setStyleSheet(
+        "QPushButton {"
+        "  background: #21262d;"
+        "  color: #c9d1d9;"
+        "  border: 1px solid #30363d;"
+        "  border-radius: 4px;"
+        "  padding: 4px 12px;"
+        "  font-size: 12px;"
+        "}"
+        "QPushButton:hover { background: #30363d; }"
+        "QPushButton:pressed { background: #161b22; }"
+    );
+    connect(m_exportCsvBtn, &QPushButton::clicked, this, &MainWindow::onExportCsv);
+
+    summaryLayout->addWidget(m_summaryLabel, 1);
+    summaryLayout->addWidget(m_exportCsvBtn, 0);
+
+    mainLayout->addWidget(m_summaryStrip);
+
     // Лог
     m_logEdit = new QTextEdit(this);
     m_logEdit->setReadOnly(true);
@@ -312,6 +357,9 @@ void MainWindow::setPhase(Phase newPhase)
         }
     } else if (newPhase == Phase::Idle || newPhase == Phase::Loaded) {
         resetChannelDots();
+        // T17: hide summary strip when returning to idle/loaded
+        if (m_summaryStrip)
+            m_summaryStrip->setVisible(false);
     }
 
     updatePhaseLabel();
@@ -546,4 +594,94 @@ void MainWindow::onReset()
     m_stand->resetForNewTest();
     m_stand->loadCyclogram();
     setPhase(Phase::Loaded);
+}
+
+// ─── T17: Сводная полоса и CSV-экспорт ───────────────────────────────────────
+
+void MainWindow::updateSummaryStrip(const QVector<EventRow> &events)
+{
+    if (!m_summaryLabel) return;
+
+    int okCount   = 0;
+    int failCount = 0;
+    int maxDev    = 0;
+
+    for (const auto &e : events) {
+        if (e.status == "ok") {
+            ++okCount;
+            if (e.deviationMs > maxDev)
+                maxDev = e.deviationMs;
+        } else if (e.status == "fail") {
+            ++failCount;
+        }
+    }
+
+    // Build rich-text label: coloured counts + max deviation
+    const QString okPart   = QString("<span style=\"color:#3fb950;\">%1 ✓</span>").arg(okCount);
+    const QString failPart = QString("<span style=\"color:#f85149;\">%2 ✗</span>").arg(failCount);
+    const QString devPart  = QString("Макс. откл.: %1 мс").arg(maxDev);
+
+    m_summaryLabel->setText(
+        QString("<span style=\"color:#e6edf3;\">Результат: %1 / %2 &nbsp;&middot;&nbsp; %3</span>")
+            .arg(okPart, failPart, devPart)
+    );
+}
+
+void MainWindow::onExportCsv()
+{
+    const QString defaultName =
+        QString("pyro_result_%1.csv")
+            .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm"));
+
+    const QString path = QFileDialog::getSaveFileName(
+        this,
+        "Экспорт в CSV",
+        defaultName,
+        "CSV (*.csv)"
+    );
+    if (path.isEmpty())
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "Ошибка",
+                              "Не удалось открыть файл:\n" + path);
+        return;
+    }
+
+    QTextStream out(&file);
+    // UTF-8 BOM for Excel compatibility
+    out.setEncoding(QStringConverter::Utf8);
+    out << "\xEF\xBB\xBF";
+
+    // Header
+    out << "#,Событие,Каналы,"
+           "План (мс),Факт (мс),"
+           "Откл. (мс),Статус\n";
+
+    // Helper: quote a field if it contains a comma
+    auto csvField = [](const QString &s) -> QString {
+        if (s.contains(','))
+            return "\"" + s + "\"";
+        return s;
+    };
+
+    for (int i = 0; i < m_displayEvents.size(); ++i) {
+        const EventRow &e = m_displayEvents[i];
+
+        const QString factStr = (e.calculatedMs != -1) ? QString::number(e.calculatedMs) : QString();
+        const QString devStr  = (e.deviationMs  != -1 && e.status == "ok")
+                                    ? QString::number(e.deviationMs) : QString();
+
+        out << (i + 1) << ","
+            << csvField(e.key) << ","
+            << csvField(e.channels) << ","
+            << e.time_ms << ","
+            << factStr << ","
+            << devStr << ","
+            << e.status << "\n";
+    }
+
+    file.close();
+    addLog(QString("Экспорт CSV: %1").arg(path), "system");
 }

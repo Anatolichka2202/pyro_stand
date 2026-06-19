@@ -33,7 +33,7 @@ enable_testing()
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
 function(add_stand_test name src)
-    add_executable(${name} ${src} stand.cpp stand.h types.h)
+    add_executable(${name} ${src} stand.cpp stand.h types.h serial_port.h real_serial_port.h)
     target_link_libraries(${name}
         Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort Qt6::Widgets)
     add_test(NAME ${name} COMMAND ${name})
@@ -41,3 +41,4 @@ endfunction()
 
 add_stand_test(tst_analysis    tests/tst_analysis.cpp)
 add_stand_test(tst_cyclogram   tests/tst_cyclogram.cpp)
+add_stand_test(tst_reading     tests/tst_reading.cpp)

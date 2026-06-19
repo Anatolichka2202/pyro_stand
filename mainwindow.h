@@ -35,6 +35,14 @@ private:
     void updatePhaseLabel();
     void refreshNextEventHighlight();
 
+    // T11: COM / БЦВМ indicators
+    void updateComIndicator(bool open);
+    void updateBcvmIndicator(bool reachable);
+
+    // T12: 8-channel state dots
+    void updateChannelDot(int channel, const QString &color); // channel 1-8
+    void resetChannelDots();
+
     QLabel       *m_timerLabel     = nullptr;
     QLabel       *m_phaseLabel     = nullptr;
     QLabel       *m_nextEventLabel = nullptr;
@@ -45,6 +53,13 @@ private:
     QPushButton  *m_stopBtn        = nullptr;
     QPushButton  *m_resetBtn       = nullptr;
     QTimeEdit    *m_timeInput      = nullptr;
+
+    // T11
+    QLabel *m_comIndicator  = nullptr;
+    QLabel *m_bcvmIndicator = nullptr;
+
+    // T12
+    QLabel *m_channelDots[8] = {};
 
     Stand *m_stand = nullptr;
     Phase  m_phase = Phase::Idle;

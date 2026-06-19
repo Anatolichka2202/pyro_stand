@@ -5,252 +5,191 @@
 #include <QDir>
 #include <QUdpSocket>
 #include <QThread>
-#include <QDateTime>
-#include <QTimeZone>
-#include <QDebug>
 #include <QProcess>
+#include <QDateTime>
 
-struct MaskRecord {
-    int64_t absoluteIndex;
-    uint8_t mask;
-};
-
-Stand::Stand(QObject *parent)
+Stand::Stand(QObject *parent, const QString &portName)
     : QObject(parent)
-    , m_phase(Phase::Idle)
-    , m_flightDurationMs(0)
-    , m_serial(nullptr)
-    , m_running(false)
-    , m_syncIndex(-1)
-    , m_syncFound(false)
-    , m_analysisDone(false)
-    , m_timeToStartMs(0)
 {
     m_mappings = {
         {"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12", 0x03, "1, 2"},
-        {"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8",   0x1C, "3, 4, 5"},
+        {"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8",  0x1C, "3, 4, 5"},
         {"CLOSE_MAIN_VALVES_ENGINES_9_TO_12",   0x60, "6, 7"},
         {"LIFT_OFF_CONTACT",                    0x80, "8"}
     };
 
-    // Попытка открыть COM-порт с повторами
-    bool opened = false;
-    for (int i = 0; i < RETRY_COUNT; ++i) {
-        m_serial = new QSerialPort(SERIAL_PORT, this);
-        m_serial->setBaudRate(SERIAL_BAUDRATE);
+    if (portName.isEmpty()) return;
+
+    for (int i = 0; i < SERIAL_RETRIES; ++i) {
+        m_serial = new QSerialPort(portName, this);
+        m_serial->setBaudRate(BAUD_RATE);
         m_serial->setDataBits(QSerialPort::Data8);
         m_serial->setParity(QSerialPort::NoParity);
         m_serial->setStopBits(QSerialPort::OneStop);
         m_serial->setFlowControl(QSerialPort::NoFlowControl);
 
         if (m_serial->open(QIODevice::ReadOnly)) {
-            opened = true;
-            emit logMessage("COM-порт " + QString(SERIAL_PORT) + " открыт", "system");
+            emit logMessage("COM-порт " + portName + " открыт", "system");
             break;
-        } else {
-            delete m_serial;
-            m_serial = nullptr;
-            if (i < RETRY_COUNT - 1) {
-                QThread::msleep(500);
-            }
         }
+        delete m_serial;
+        m_serial = nullptr;
+        if (i < SERIAL_RETRIES - 1) QThread::msleep(500);
     }
-    if (!opened) {
-        emit logMessage("Не удалось открыть COM-порт после " + QString::number(RETRY_COUNT) + " попыток. Тест невозможен.", "system");
+    if (!m_serial) {
+        emit logMessage("Не удалось открыть COM-порт. Тест невозможен.", "system");
         emit portError("Ошибка COM-порта");
-        // Кнопка "ЗАГРУЗИТЬ НА БОРТ" будет заблокирована в UI
     }
 
-    // Подключаем сигнал завершения к слоту completeFlight (в главном потоке)
+    // completeFlight всегда исполняется в GUI-треде
     connect(this, &Stand::flightComplete, this, &Stand::completeFlight, Qt::QueuedConnection);
-
-    // Загружаем циклограмму
-    loadCyclogram();
 }
 
 Stand::~Stand()
 {
     m_running = false;
-    if (m_worker.joinable())
-        m_worker.join();
-    delete m_serial;
+    if (m_worker.joinable()) m_worker.join();
 }
 
-bool Stand::loadCyclogram()
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+QString Stand::cyclogramFilePath() const
 {
-    QString exePath = QCoreApplication::applicationDirPath();
-    QString filePath = exePath + QDir::separator() + CYCLOGRAM_FILE;
-    QFile file(filePath);
-    if (!file.exists()) {
-        emit logMessage("Файл циклограммы не найден: " + filePath, "system");
-        return false;
-    }
+    return QCoreApplication::applicationDirPath() + QDir::separator() + CYCLOGRAM_FILE;
+}
+
+// ─── loadCyclogram ────────────────────────────────────────────────────────────
+
+bool Stand::loadCyclogram(const QString &filePath)
+{
+    const QString path = filePath.isEmpty() ? cyclogramFilePath() : filePath;
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        emit logMessage("Не удалось открыть файл: " + filePath, "system");
+        emit logMessage("Файл циклограммы не найден: " + path, "system");
         return false;
     }
 
-    m_events.clear();
-    QTextStream stream(&file);
+    QVector<EventRow> events;
+    QTime setTime, startTime;
+    bool setTimeFound = false, startTimeFound = false;
     int lineNum = 0;
-    bool startTimeFound = false;
-    bool setTimeFound = false;
-    int maxTime = 0;
 
-
+    QTextStream stream(&file);
     while (!stream.atEnd()) {
-        QString line = stream.readLine();
-        lineNum++;
-        line = line.trimmed();
+        QString line = stream.readLine().trimmed();
+        ++lineNum;
         if (line.isEmpty()) continue;
 
-        int commentPos = line.indexOf('#');
-        QString comment;
-        if (commentPos != -1) {
-            comment = line.mid(commentPos + 1).trimmed();
-            line = line.left(commentPos).trimmed();
-        }
+        const int commentPos = line.indexOf('#');
+        const QString comment = (commentPos != -1) ? line.mid(commentPos + 1).trimmed() : QString();
+        if (commentPos != -1) line = line.left(commentPos).trimmed();
         if (line.isEmpty()) continue;
 
-        int eqPos = line.indexOf('=');
-        if (eqPos == -1) {
-            emit logMessage(QString("Ошибка в строке %1: нет '='").arg(lineNum), "system");
-            continue;
-        }
-        QString key = line.left(eqPos).trimmed();
-        QString valueStr = line.mid(eqPos + 1).trimmed();
+        const int eqPos = line.indexOf('=');
+        if (eqPos == -1) { emit logMessage(QString("Строка %1: нет '='").arg(lineNum), "system"); continue; }
+
+        const QString key      = line.left(eqPos).trimmed();
+        const QString valueStr = line.mid(eqPos + 1).trimmed();
 
         if (key == "SET_UTC_TIME") {
-            QTime setTime = QTime::fromString(valueStr, "hh:mm:ss");
-            if (!setTime.isValid()) {
-                emit logMessage("Неверный формат SET_UTC_TIME: " + valueStr, "system");
-                return false;
-            }
-            m_setTime = setTime;
-            setTimeFound = true;
-            continue;
+            setTime = QTime::fromString(valueStr, "hh:mm:ss");
+            if (!setTime.isValid()) { emit logMessage("Неверный SET_UTC_TIME: " + valueStr, "system"); return false; }
+            setTimeFound = true; continue;
         }
         if (key == "START_UTC_TIME") {
-            QTime startTime = QTime::fromString(valueStr, "hh:mm:ss");
-            if (!startTime.isValid()) {
-                emit logMessage("Неверный формат START_UTC_TIME: " + valueStr, "system");
-                return false;
-            }
-            m_startTime = startTime;
-            startTimeFound = true;
-            continue;
+            startTime = QTime::fromString(valueStr, "hh:mm:ss");
+            if (!startTime.isValid()) { emit logMessage("Неверный START_UTC_TIME: " + valueStr, "system"); return false; }
+            startTimeFound = true; continue;
         }
 
         bool ok;
-        int timeMs = valueStr.toInt(&ok);
-        if (!ok) {
-            emit logMessage(QString("Неверное число в строке %1: %2").arg(lineNum).arg(valueStr), "system");
-            continue;
-        }
-
-        QString channels = "—";
-        bool hasChannels = false;
-        for (const auto &m : m_mappings) {
-            if (m.key == key) {
-                channels = m.channelsStr;
-                hasChannels = true;
-                break;
-            }
-        }
+        const int timeMs = valueStr.toInt(&ok);
+        if (!ok) { emit logMessage(QString("Строка %1: не число '%2'").arg(lineNum).arg(valueStr), "system"); continue; }
 
         EventRow ev;
-        ev.id = m_events.size() + 1;
-        ev.key = key;
-        ev.description = comment.isEmpty() ? key : comment;   // <-- сохраняем комментарий
-        ev.time_ms = timeMs;
-        ev.channels = channels;
-        ev.hasChannels = hasChannels;
-        ev.firedTick = -1;
-        ev.calculatedMs = -1;
-        ev.status = "pending";
+        ev.id          = events.size() + 1;
+        ev.key         = key;
+        ev.description = comment.isEmpty() ? key : comment;
+        ev.time_ms     = timeMs;
+        ev.firedTick   = -1;
+        ev.calculatedMs= -1;
+        ev.status      = "pending";
         ev.deviationMs = 0;
-        m_events.append(ev);
+        ev.hasChannels = false;
+        ev.channels    = "—";
+
+        for (const auto &m : m_mappings) {
+            if (m.key == key) { ev.channels = m.channelsStr; ev.hasChannels = true; break; }
+        }
+        events.append(ev);
     }
 
-    if (!startTimeFound || !setTimeFound) {
-        emit logMessage("В файле не найдены обе строки SET_UTC_TIME и START_UTC_TIME", "system");
+    if (!setTimeFound || !startTimeFound) {
+        emit logMessage("В файле не найдены SET_UTC_TIME и/или START_UTC_TIME", "system");
         return false;
     }
-    if (m_events.isEmpty()) {
+    if (events.isEmpty()) {
         emit logMessage("Циклограмма не содержит событий", "system");
         return false;
     }
 
-    for (const auto &ev : m_events) {
-        if (ev.hasChannels && ev.time_ms > maxTime) {
-            maxTime = ev.time_ms;
-        }
+    int maxTrackedTime = 0;
+    for (const auto &ev : events) {
+        if (ev.hasChannels && ev.time_ms > maxTrackedTime) maxTrackedTime = ev.time_ms;
     }
-    // Если все отслеживаемые события отрицательные, maxTime = 0
-    if (maxTime < 0) maxTime = 0;
+    m_flightDurationMs = maxTrackedTime + FLIGHT_SAFETY_MS;
 
-    m_flightDurationMs = maxTime + FLIGHT_SAFETY_MARGIN_MS;
+    {
+        QMutexLocker l(&m_eventsMutex);
+        m_events   = events;
+        m_setTime  = setTime;
+        m_startTime = startTime;
+    }
 
-    emit logMessage(QString("Загружено событий: %1").arg(m_events.size()), "system");
-    emit logMessage(QString("Общая длительность полётного задания: %1 мс").arg(m_flightDurationMs), "system");
-    emit logMessage(QString("Текущее лабораторное время (SET_UTC_TIME): %1").arg(m_setTime.toString("hh:mm:ss")), "system");
-    emit logMessage(QString("Время старта (START_UTC_TIME): %1").arg(m_startTime.toString("hh:mm:ss")), "system");
-
-    emit analysisDone(m_events);
-
+    emit logMessage(QString("Загружено событий: %1").arg(events.size()), "system");
+    emit logMessage(QString("SET_UTC_TIME: %1  |  START_UTC_TIME: %2")
+                        .arg(setTime.toString("hh:mm:ss"))
+                        .arg(startTime.toString("hh:mm:ss")), "system");
+    emit analysisDone(events);
     updatePhase(Phase::Loaded);
     return true;
 }
 
-bool Stand::setStartTimeFromUI(const QTime &time)
-{
-    if (!time.isValid()) {
-        emit logMessage("Ошибка: введено неверное время", "system");
-        return false;
-    }
+// ─── setStartTimeFromUI ───────────────────────────────────────────────────────
 
-    // Записываем новое время в файл (заменяем только START_UTC_TIME)
-    if (!writeStartTimeToFile(time)) {
+bool Stand::setStartTimeFromUI(const QTime &time, const QString &filePath)
+{
+    if (!time.isValid()) { emit logMessage("Неверное время старта", "system"); return false; }
+    const QString path = filePath.isEmpty() ? cyclogramFilePath() : filePath;
+    if (!writeStartTimeToFile(time, path)) {
         emit logMessage("Не удалось записать время старта в файл", "system");
         return false;
     }
-
-    // Обновляем внутреннюю переменную
-    m_startTime = time;
-    emit logMessage(QString("Время старта установлено: %1").arg(time.toString("hh:mm:ss")), "system");
-
-    // Пересчёт m_timeToStartMs не делаем, он будет вычислен при вызове sendToBoard()
+    { QMutexLocker l(&m_eventsMutex); m_startTime = time; }
+    emit logMessage("Время старта установлено: " + time.toString("hh:mm:ss"), "system");
     return true;
 }
 
-bool Stand::writeStartTimeToFile(const QTime &time)
+bool Stand::writeStartTimeToFile(const QTime &time, const QString &filePath)
 {
-    QString exePath = QCoreApplication::applicationDirPath();
-    QString filePath = exePath + QDir::separator() + CYCLOGRAM_FILE;
     QFile file(filePath);
-    if (!file.open(QIODevice::ReadWrite | QIODevice::Text)) {
-        emit logMessage("Не удалось открыть файл для записи: " + filePath, "system");
-        return false;
-    }
+    if (!file.open(QIODevice::ReadWrite | QIODevice::Text)) return false;
 
     QStringList lines;
-    QTextStream stream(&file);
-    while (!stream.atEnd()) {
-        QString line = stream.readLine();
-        if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive)) {
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        QString line = in.readLine();
+        if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive))
             line = "START_UTC_TIME = " + time.toString("hh:mm:ss");
-        }
-        // Строку SET_UTC_TIME не трогаем
         lines.append(line);
     }
     file.resize(0);
     QTextStream out(&file);
-    for (const QString &line : lines) {
-        out << line << "\n";
-    }
-    file.close();
+    for (const QString &line : lines) out << line << "\n";
     return true;
 }
+
+// ─── pingBcvm ────────────────────────────────────────────────────────────────
 
 bool Stand::pingBcvm() const
 {
@@ -261,24 +200,19 @@ bool Stand::pingBcvm() const
 #endif
     QProcess ping;
     ping.start("ping", args);
-    if (!ping.waitForFinished(2000)) {
-        ping.kill();
-        ping.waitForFinished(500);
-        return false;
-    }
-    if (ping.exitCode() != 0)
-        return false;
-    QString output = ping.readAllStandardOutput();
-    return output.contains("TTL=") || output.contains("ttl=") || output.contains("time=");
+    if (!ping.waitForFinished(2000)) { ping.kill(); ping.waitForFinished(500); return false; }
+    if (ping.exitCode() != 0) return false;
+    const QString out = ping.readAllStandardOutput();
+    return out.contains("TTL=") || out.contains("ttl=") || out.contains("time=");
 }
+
+// ─── sendToBoard ─────────────────────────────────────────────────────────────
 
 void Stand::sendToBoard()
 {
     if (m_running) {
-        emit logMessage("Предыдущий тест ещё выполняется. Останавливаем...", "system");
         m_running = false;
-        if (m_worker.joinable())
-            m_worker.join();
+        if (m_worker.joinable()) m_worker.join();
     }
 
     if (!m_serial || !m_serial->isOpen()) {
@@ -286,29 +220,26 @@ void Stand::sendToBoard()
         return;
     }
     if (!pingBcvm()) {
-        emit logMessage("ОШИБКА: ЯВ (БЦВМ) недоступен. Проверьте подключение к сети.", "system");
-        return;   // <-- блокируем выполнение, ничего не делаем
-    }
-
-    // Вычисляем время до старта (разница между START_UTC_TIME и SET_UTC_TIME)
-    int secsToStart = m_setTime.secsTo(m_startTime);
-    if (secsToStart < 0) {
-        secsToStart += 24 * 3600; // переход через сутки
-    }
-    m_timeToStartMs = static_cast<int64_t>(secsToStart) * 1000;
-
-    // Проверка: время до старта должно быть больше 1 секунды
-    if (m_timeToStartMs < 1000) {
-        emit logMessage("Время до старта менее 1 секунды. Проверьте SET_UTC_TIME и START_UTC_TIME.", "system");
+        emit logMessage("ОШИБКА: БЦВМ недоступна. Проверьте подключение.", "system");
         return;
     }
 
-    emit logMessage(QString("Время до старта: %1 секунд (%2 мс)").arg(secsToStart).arg(m_timeToStartMs), "system");
+    QTime setTime, startTime;
+    { QMutexLocker l(&m_eventsMutex); setTime = m_setTime; startTime = m_startTime; }
 
-    // Формируем датаграмму из файла с заменой START_UTC_TIME на установленное время
-    QString exePath = QCoreApplication::applicationDirPath();
-    QString filePath = exePath + QDir::separator() + CYCLOGRAM_FILE;
-    QFile file(filePath);
+    int secsToStart = setTime.secsTo(startTime);
+    if (secsToStart < 0) secsToStart += 24 * 3600;
+    m_timeToStartMs = static_cast<int64_t>(secsToStart) * 1000;
+
+    if (m_timeToStartMs < 1000) {
+        emit logMessage("Время до старта менее 1 с. Проверьте SET/START_UTC_TIME.", "system");
+        return;
+    }
+    emit logMessage(QString("Время до старта: %1 с (%2 мс)").arg(secsToStart).arg(m_timeToStartMs), "system");
+
+    // Отправляем файл циклограммы по UDP
+    const QString path = cyclogramFilePath();
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         emit logMessage("Не удалось открыть файл для отправки", "system");
         return;
@@ -317,42 +248,31 @@ void Stand::sendToBoard()
     QTextStream stream(&file);
     while (!stream.atEnd()) {
         QString line = stream.readLine();
-        if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive)) {
-            line = "START_UTC_TIME = " + m_startTime.toString("hh:mm:ss");
-        }
+        if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive))
+            line = "START_UTC_TIME = " + startTime.toString("hh:mm:ss");
         lines.append(line);
     }
     file.close();
-    QString content = lines.join("\n");
-    QByteArray datagram = content.toUtf8();
 
-    // Отправка UDP
-    QUdpSocket udpSocket;
-    qint64 sent = udpSocket.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
-    if (sent == -1) {
-        emit logMessage("Ошибка отправки UDP: " + udpSocket.errorString(), "system");
-        return;
-    } else {
-        emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
-    }
+    const QByteArray datagram = lines.join("\n").toUtf8();
+    QUdpSocket udp;
+    const qint64 sent = udp.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
+    if (sent == -1) { emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return; }
+    emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
 
-
-    // Сброс состояния
     m_masks.clear();
-    m_syncFound = false;
-    m_syncIndex = -1;
-    m_analysisDone = false;
+    m_syncFound   = false;
+    m_syncIndex   = -1;
+    m_analysisDone= false;
+    m_stopped     = false;
 
-    // Очистка буфера COM-порта
     m_serial->clear(QSerialPort::AllDirections);
-    emit logMessage("Буфер COM-порта очищен", "system");
-
     m_running = true;
-
-    // Запуск потока чтения с m_timeToStartMs
-    m_worker = std::thread(&Stand::readingThread, this, m_timeToStartMs);
+    m_worker  = std::thread(&Stand::readingThread, this, m_timeToStartMs);
     updatePhase(Phase::Countdown);
 }
+
+// ─── readingThread ────────────────────────────────────────────────────────────
 
 void Stand::readingThread(int64_t timeToStartMs)
 {
@@ -362,304 +282,234 @@ void Stand::readingThread(int64_t timeToStartMs)
 
     while (m_running) {
         char byte = 0;
-        qint64 bytesRead = m_serial->read(&byte, 1);
-        if (bytesRead == -1) {
-            emit logMessage("Ошибка чтения из COM-порта, останов сбора", "system");
-            m_running = false;
-            break;
-        }
-        if (bytesRead != 1) {
-            QThread::msleep(1);
-            continue;
-        }
+        if (m_serial->read(&byte, 1) != 1) { QThread::msleep(1); continue; }
 
-        uint8_t mask = static_cast<uint8_t>(byte);
+        const uint8_t mask = static_cast<uint8_t>(byte);
         m_masks.push_back({absoluteIndex, mask});
 
-        // Обновление таймера каждые 1000 байт (1 секунда)
+        // Таймер (раз в секунду)
         if (absoluteIndex % 1000 == 0) {
             if (!started && absoluteIndex < timeToStartMs) {
-                // Обратный отсчёт
-                int64_t remaining = timeToStartMs - absoluteIndex;
-                int secs = remaining / 1000;
-                QString timeStr = QString("%1:%2")
-                                      .arg(secs/60, 2, 10, QChar('0'))
-                                      .arg(secs%60, 2, 10, QChar('0'));
-                emit timerUpdated(timeStr, "#e3b341");
-
-                // Вычисляем время до следующего события (включая отрицательные)
+                const int64_t rem = timeToStartMs - absoluteIndex;
+                const int secs = rem / 1000;
+                emit timerUpdated(QString("%1:%2").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')), "#e3b341");
                 updateNextEvent(absoluteIndex, timeToStartMs);
             } else if (started) {
-                // Время полёта
-                int64_t flightMs = absoluteIndex - timeToStartMs;
-                int secs = flightMs / 1000;
-                int ms = flightMs % 1000;
-                QString timeStr = QString("%1:%2.%3")
-                                      .arg(secs/60, 2, 10, QChar('0'))
-                                      .arg(secs%60, 2, 10, QChar('0'))
-                                      .arg(ms/100, 1, 10, QChar('0'));
-                emit timerUpdated(timeStr, "#3fb950");
-
-                // Вычисляем время до следующего события
+                const int64_t flightMs = absoluteIndex - timeToStartMs;
+                const int secs = flightMs / 1000, ms = flightMs % 1000;
+                emit timerUpdated(QString("%1:%2.%3").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')).arg(ms/100), "#3fb950");
                 updateNextEvent(absoluteIndex, timeToStartMs);
             }
         }
 
-        // Проверка наступления старта
         if (!started && absoluteIndex >= timeToStartMs) {
             started = true;
             emit logMessage("─── СТАРТ ───", "system");
             updatePhase(Phase::Running);
         }
 
-        // Обработка масок (срабатывания каналов)
+        // Обработка входящих бит-масок
         uint8_t newBits = mask & ~firedBits;
+        if (newBits & SYNC_MASK) {
+            emit logMessage(QString("[%1] Контакт подъёма (канал 8)").arg(absoluteIndex), "event");
+            m_syncIndex = absoluteIndex;
+            m_syncFound = true;
+            newBits    &= ~SYNC_MASK;
+            firedBits  |= SYNC_MASK;
+        }
         if (newBits != 0) {
-            // Канал 8 – синхросигнал (Контакт подъёма)
-            if (newBits & SYNC_MASK) {
-                emit logMessage(QString("[%1] Контакт подъёма, начало движения").arg(absoluteIndex), "event");
-                m_syncIndex = absoluteIndex;
-                m_syncFound = true;
-                newBits &= ~SYNC_MASK;
-                firedBits |= SYNC_MASK;
-            }
-
-            // Остальные каналы
-            if (newBits != 0) {
-                QStringList channels;
-                if (newBits & 0x01) channels << "1";
-                if (newBits & 0x02) channels << "2";
-                if (newBits & 0x04) channels << "3";
-                if (newBits & 0x08) channels << "4";
-                if (newBits & 0x10) channels << "5";
-                if (newBits & 0x20) channels << "6";
-                if (newBits & 0x40) channels << "7";
-
-                QString msg = QString("[%1] срабатывание канала(ов): %2")
-                                  .arg(absoluteIndex)
-                                  .arg(channels.join(", "));
-                emit logMessage(msg, "event");
-                firedBits |= newBits;
-            }
+            QStringList chs;
+            for (int b = 0; b < 7; ++b) if (newBits & (1 << b)) chs << QString::number(b + 1);
+            emit logMessage(QString("[%1] срабатывание канала(ов): %2").arg(absoluteIndex).arg(chs.join(", ")), "event");
+            firedBits |= newBits;
         }
 
-        // Проверка событий циклограммы (универсальная логика)
-        QMutexLocker locker(&m_eventsMutex);
-        for (int i = 0; i < m_events.size(); ++i) {
-            EventRow &ev = m_events[i];
-            if (!ev.hasChannels || ev.status != "pending") continue;
+        // Проверка событий циклограммы
+        // Сначала собираем результаты под мьютексом, потом эмитим — вне мьютекса
+        struct PendingSignal { bool fired; int id; int tick; };
+        QVector<PendingSignal> pending;
+        {
+            QMutexLocker locker(&m_eventsMutex);
+            for (auto &ev : m_events) {
+                if (!ev.hasChannels || ev.status != "pending") continue;
+                const int64_t expectedIdx = timeToStartMs + ev.time_ms;
+                if (absoluteIndex < expectedIdx) continue;
 
-            int64_t eventAbsIndex = timeToStartMs + ev.time_ms;
-
-            if (absoluteIndex >= eventAbsIndex) {
-                // Найти маску для этого события
                 uint8_t neededMask = 0;
-                for (const auto &m : m_mappings) {
-                    if (m.key == ev.key) {
-                        neededMask = m.mask;
-                        break;
-                    }
-                }
-                if (neededMask == 0) continue; // без маски не отслеживаем
+                for (const auto &m : m_mappings) { if (m.key == ev.key) { neededMask = m.mask; break; } }
+                if (neededMask == 0) continue;
 
-                // Проверить, появились ли все нужные биты
                 if ((firedBits & neededMask) == neededMask) {
-                    ev.status = "ok";
-                    ev.firedTick = absoluteIndex;
-                    emit eventFired(ev.id, ev.firedTick);
-                    emit logMessage(QString("[%1] событие '%2' выполнено (каналы %3)")
-                                        .arg(ev.firedTick).arg(ev.key).arg(ev.channels), "event");
-                } else if (absoluteIndex >= eventAbsIndex + 5) { // задержка 5 мс
-                    ev.status = "fail";
-                    ev.firedTick = -1;
-                    emit eventFailed(ev.id);
-                    emit logMessage(QString("[%1] событие '%2' НЕ СРАБОТАЛО (каналы %3)")
+                    ev.status   = "ok";
+                    ev.firedTick= static_cast<int>(absoluteIndex);
+                    pending.push_back({true, ev.id, ev.firedTick});
+                    emit logMessage(QString("[%1] '%2' выполнено (каналы %3)")
+                                        .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event");
+                } else if (absoluteIndex >= expectedIdx + 5) {
+                    ev.status   = "fail";
+                    ev.firedTick= -1;
+                    pending.push_back({false, ev.id, -1});
+                    emit logMessage(QString("[%1] '%2' НЕ СРАБОТАЛО (каналы %3)")
                                         .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event-post");
                 }
             }
         }
+        // Эмитим вне мьютекса — исключаем deadlock и гарантируем доставку в GUI-тред
+        for (const auto &p : pending) {
+            if (p.fired) emit eventFired(p.id, p.tick);
+            else         emit eventFailed(p.id);
+        }
 
-        absoluteIndex++;
+        ++absoluteIndex;
 
-        // Проверка завершения полёта по таймауту
         if (started && (absoluteIndex - timeToStartMs) > m_flightDurationMs + 100) {
-            emit logMessage("Достигнут конец полётного задания, остановка сбора", "system");
             m_running = false;
             break;
         }
     }
 
-    // Если синхросигнал найден, выполняем анализ
     if (m_syncFound && !m_analysisDone) {
         emit flightComplete();
     } else if (!m_syncFound && started) {
-        // Синхросигнал не найден, но старт наступил – выполняем анализ с предупреждением
-        emit logMessage("ВНИМАНИЕ: Синхроимпульс (канал 8) не найден. Анализ будет выполнен с использованием расчётного времени старта.", "system");
-        m_syncIndex = timeToStartMs; // Используем расчётное время как синхроимпульс
-        m_syncFound = true; // Принудительно считаем, что синхроимпульс есть
-       emit flightComplete();
+        emit logMessage("ВНИМАНИЕ: синхроимпульс (канал 8) не найден. Используется расчётное T0.", "system");
+        m_syncIndex = timeToStartMs;
+        m_syncFound = true;
+        emit flightComplete();
     } else {
-        emit logMessage("Полёт прерван до старта или ошибка. Анализ невозможен.", "system");
+        emit logMessage("Полёт прерван до старта. Анализ невозможен.", "system");
         updatePhase(Phase::Stopped);
     }
 }
+
+// ─── completeFlight (GUI-тред) ───────────────────────────────────────────────
 
 void Stand::completeFlight()
 {
+    // Если оператор нажал СТОП — игнорируем завершение
+    if (m_stopped) return;
+
     updatePhase(Phase::Completed);
     emit logMessage("═══ Полётное задание завершено ═══", "system");
 
-    if (!m_syncFound) {
-        emit logMessage("ВНИМАНИЕ: Синхроимпульс (канал 8) не найден. Используется расчётное время старта.", "system");
-        m_syncIndex = m_timeToStartMs;
-        m_syncFound = true;
-    }
+    if (!m_syncFound) { m_syncIndex = m_timeToStartMs; m_syncFound = true; }
 
-    performAnalysis(m_timeToStartMs);
+    QVector<EventRow> snapshot;
+    { QMutexLocker l(&m_eventsMutex); snapshot = m_events; }
+
+    const QVector<EventRow> result = analyzeEvents(snapshot, m_syncIndex);
+
+    { QMutexLocker l(&m_eventsMutex); m_events = result; }
+
+    for (const auto &ev : result) {
+        if (ev.calculatedMs != -1) {
+            const QString color = (ev.deviationMs == 0) ? "#3fb950" : (ev.deviationMs <= 5) ? "#e3b341" : "#f85149";
+            emit logMessage(QString("[%1 мс] %2 (откл. %3 мс)")
+                                .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event-post");
+            Q_UNUSED(color)
+        } else {
+            emit logMessage(QString("[—] %1 НЕ СРАБОТАЛО").arg(ev.description), "event-post");
+        }
+    }
+    emit analysisDone(result);
     m_analysisDone = true;
 }
 
-void Stand::performAnalysis(int64_t timeToStartMs)
+// ─── analyzeEvents (static, pure) ────────────────────────────────────────────
+
+QVector<EventRow> Stand::analyzeEvents(const QVector<EventRow> &events, int64_t syncIndex)
 {
-    if (!m_syncFound) {
-        emit logMessage("Синхронизация не найдена, анализ невозможен", "system");
-        return;
-    }
-    int64_t baseTime = m_syncFound ? m_syncIndex : timeToStartMs;
-
-    {
-        QMutexLocker locker(&m_eventsMutex);
-        for (auto &ev : m_events) {
-            if (ev.status == "ok") {
-                ev.calculatedMs = ev.firedTick - baseTime;
-                ev.deviationMs = qAbs(ev.calculatedMs - ev.time_ms);
-            } else if (ev.status == "fail") {
-                ev.calculatedMs = -1;
-                ev.deviationMs = -1;
-            } else {
-                ev.deviationMs = -1;
-            }
-        }
-    }
-    emit analysisDone(m_events);
-
-    // Лог с цветовой индикацией (используем описание)
-    for (const auto &ev : m_events) {
-        if (ev.calculatedMs != -1) {
-            QString color;
-            if (ev.deviationMs == 0) color = "#3fb950";
-            else if (ev.deviationMs <= 5) color = "#e3b341";
-            else color = "#f85149";
-            QString msg = QString("[%1 мс] %2 (отклонение %3 мс)")
-                              .arg(ev.calculatedMs)
-                              .arg(ev.description.isEmpty() ? ev.key : ev.description)
-                              .arg(ev.deviationMs);
-            emit logMessage(msg, "event-post");
+    QVector<EventRow> result = events;
+    for (auto &ev : result) {
+        if (ev.status == "ok") {
+            ev.calculatedMs = static_cast<int>(ev.firedTick - syncIndex);
+            ev.deviationMs  = qAbs(ev.calculatedMs - ev.time_ms);
         } else {
-            QString msg = QString("[%1] НЕ СРАБОТАЛО").arg(ev.description.isEmpty() ? ev.key : ev.description);
-            emit logMessage(msg, "event-post");
+            ev.calculatedMs = -1;
+            ev.deviationMs  = -1;
         }
     }
+    return result;
 }
+
+// ─── stop ─────────────────────────────────────────────────────────────────────
 
 void Stand::stop()
 {
-    // Отправка команды STOP по UDP
-    QUdpSocket udpSocket;
-    char stopCmd = 99;
-    QByteArray datagram(&stopCmd, 1);
-    qint64 sent = udpSocket.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
-    if (sent == 1) {
+    m_stopped = true;
+
+    QUdpSocket udp;
+    const char stopCmd = 99;
+    if (udp.writeDatagram(QByteArray(&stopCmd, 1), QHostAddress(BCVM_IP), UDP_PORT) == 1)
         emit logMessage("Команда STOP отправлена на БЦВМ", "system");
-    } else {
-        emit logMessage("Ошибка отправки команды STOP: " + udpSocket.errorString(), "system");
-    }
+    else
+        emit logMessage("Ошибка отправки STOP: " + udp.errorString(), "system");
 
     m_running = false;
-    if (m_worker.joinable())
-        m_worker.join();
+    if (m_worker.joinable()) m_worker.join();
 
-    // Обновляем статусы для всех событий, которые ещё в ожидании
-    // Обновляем статусы событий под мьютексом
+    QVector<EventRow> snapshot;
     {
-        QMutexLocker locker(&m_eventsMutex);
+        QMutexLocker l(&m_eventsMutex);
         for (auto &ev : m_events) {
             if (ev.hasChannels && ev.status == "pending") {
-                ev.status = "fail";
-                ev.firedTick = -1;
-                ev.calculatedMs = -1;
-                ev.deviationMs = -1;
+                ev.status = "fail"; ev.firedTick = -1; ev.calculatedMs = -1; ev.deviationMs = -1;
             }
         }
+        snapshot = m_events;
     }
-    // Отправляем обновлённый список в UI
-    emit analysisDone(m_events);
+    emit analysisDone(snapshot);
 
-    // Переключаем фазу
-    if (m_phase == Phase::Countdown || m_phase == Phase::Running) {
+    if (m_phase == Phase::Countdown || m_phase == Phase::Running)
         updatePhase(Phase::Stopped);
-        emit logMessage("═══ СТОП: задание прервано оператором ═══", "system");
-    } else {
+    else
         updatePhase(Phase::Idle);
+    emit logMessage("═══ СТОП: задание прервано оператором ═══", "system");
+}
+
+// ─── updateNextEvent ─────────────────────────────────────────────────────────
+
+void Stand::updateNextEvent(int64_t absoluteIndex, int64_t timeToStartMs)
+{
+    QString result;
+    {
+        QMutexLocker locker(&m_eventsMutex);
+        int64_t nextTime = INT64_MAX;
+        QString nextKey;
+        for (const auto &ev : m_events) {
+            if (ev.status != "pending" || !ev.hasChannels) continue;
+            const int64_t t = timeToStartMs + ev.time_ms;
+            if (t > absoluteIndex && t < nextTime) { nextTime = t; nextKey = ev.description.isEmpty() ? ev.key : ev.description; }
+        }
+        if (nextTime != INT64_MAX) {
+            const int64_t rem = nextTime - absoluteIndex;
+            const int secs = rem / 1000, ms = (rem % 1000) / 100;
+            result = QString("%1:%2.%3 (%4)").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')).arg(ms).arg(nextKey);
+        } else {
+            result = "--:-- (нет событий)";
+        }
+    }
+    emit nextEventTimer(result);
+}
+
+// ─── resetForNewTest ─────────────────────────────────────────────────────────
+
+void Stand::resetForNewTest()
+{
+    if (m_running) { m_running = false; if (m_worker.joinable()) m_worker.join(); }
+    m_syncFound = false; m_syncIndex = -1; m_analysisDone = false; m_stopped = false;
+    m_masks.clear();
+    {
+        QMutexLocker l(&m_eventsMutex);
+        for (auto &ev : m_events) {
+            ev.status = "pending"; ev.firedTick = -1; ev.calculatedMs = -1; ev.deviationMs = 0;
+        }
     }
 }
+
+// ─── updatePhase ─────────────────────────────────────────────────────────────
 
 void Stand::updatePhase(Phase newPhase)
 {
     m_phase = newPhase;
     emit phaseChanged(newPhase);
-}
-
-void Stand::updateNextEvent(int64_t absoluteIndex, int64_t timeToStartMs)
-{
-    QMutexLocker locker(&m_eventsMutex);
-    int64_t nextEventTime = INT64_MAX;
-    QString nextEventKey;
-
-    for (const auto &ev : m_events) {
-        if (ev.status != "pending" || !ev.hasChannels) continue;
-        int64_t eventAbsIndex = timeToStartMs + ev.time_ms;
-        if (eventAbsIndex > absoluteIndex && eventAbsIndex < nextEventTime) {
-            nextEventTime = eventAbsIndex;
-            nextEventKey = ev.description.isEmpty() ? ev.key : ev.description;
-        }
-    }
-
-    if (nextEventTime != INT64_MAX) {
-        int64_t remaining = nextEventTime - absoluteIndex;
-        int secs = remaining / 1000;
-        int ms = (remaining % 1000) / 100;
-        QString timeStr = QString("%1:%2.%3")
-                              .arg(secs/60, 2, 10, QChar('0'))
-                              .arg(secs%60, 2, 10, QChar('0'))
-                              .arg(ms, 1, 10, QChar('0'));
-        emit nextEventTimer(timeStr + " (" + nextEventKey + ")");
-    } else {
-        emit nextEventTimer("--:-- (нет событий)");
-    }
-}
-
-void Stand::resetForNewTest()
-{
-    // Остановить текущий поток, если работает
-    if (m_running) {
-        m_running = false;
-        if (m_worker.joinable())
-            m_worker.join();
-    }
-    // Сброс флагов
-    m_syncFound = false;
-    m_syncIndex = -1;
-    m_analysisDone = false;
-    m_masks.clear(); // если оставили
-    // Сброс событий (очистить статусы)
-    {
-        QMutexLocker locker(&m_eventsMutex);
-        for (auto &ev : m_events) {
-            ev.status = "pending";
-            ev.firedTick = -1;
-            ev.calculatedMs = -1;
-            ev.deviationMs = 0;
-        }
-    }
 }

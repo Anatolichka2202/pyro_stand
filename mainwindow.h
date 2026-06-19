@@ -7,6 +7,7 @@
 #include <QLineEdit>
 #include <QTableWidget>
 #include <QTextEdit>
+#include <QTimer>
 #include "types.h"
 #include "stand.h"
 
@@ -18,40 +19,38 @@ public:
     ~MainWindow();
 
 private slots:
-    void onLoadToBoard();   // "ЗАГРУЗИТЬ НА БОРТ"
+    void onLoadToBoard();
     void onSetTime();
     void onStop();
+    void onReset();
 
 private:
     void setupUI();
-    void resetState();
     void setPhase(Phase newPhase);
     void updateTimer(const QString &text, const QString &color);
     void updateNextEventTimer(const QString &text);
     void addLog(const QString &text, const QString &type = "system");
     void updateTable(const QVector<EventRow> &events);
     void updateTableRow(int row, const EventRow &data);
-    void updatePhaseLabel();  // обновляет цвет и текст m_phaseLabel с учётом мигания
+    void updatePhaseLabel();
 
-    QLabel *m_timerLabel;
-    QLabel *m_phaseLabel;
-    QLabel *m_nextEventLabel;
-    QTableWidget *m_table;
-    QTextEdit *m_logEdit;
-    QPushButton *m_loadBtn;
-    QPushButton *m_setTimeBtn;
-    QPushButton *m_stopBtn;
-    QLineEdit *m_timeInput;
+    QLabel       *m_timerLabel     = nullptr;
+    QLabel       *m_phaseLabel     = nullptr;
+    QLabel       *m_nextEventLabel = nullptr;
+    QTableWidget *m_table          = nullptr;
+    QTextEdit    *m_logEdit        = nullptr;
+    QPushButton  *m_loadBtn        = nullptr;
+    QPushButton  *m_setTimeBtn     = nullptr;
+    QPushButton  *m_stopBtn        = nullptr;
+    QPushButton  *m_resetBtn       = nullptr;
+    QLineEdit    *m_timeInput      = nullptr;
 
-    Phase m_phase = Phase::Idle;
-    QVector<EventRow> m_events;
-    int m_logId = 0;
+    Stand *m_stand = nullptr;
+    Phase  m_phase = Phase::Idle;
     QVector<EventRow> m_displayEvents;
-    Stand *m_stand;
 
-    QTimer *m_blinkTimer;
-    bool m_blinkState;
-
+    QTimer *m_blinkTimer = nullptr;
+    bool    m_blinkState = false;
 };
 
 #endif // MAINWINDOW_H

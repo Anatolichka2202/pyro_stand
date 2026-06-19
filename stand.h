@@ -11,15 +11,21 @@
 #include "serial_port.h"
 #include <QMutex>
 
+// Forward declaration — полный заголовок не нужен в stand.h,
+// session_logger.h включается только в stand.cpp и mainwindow.h
+class SessionLogger;
+
 class Stand : public QObject
 {
     Q_OBJECT
 public:
     // portName injectable для тестов (пустая строка = порт не открывается)
     // port: инжектируемый ISerialPort (nullptr = использовать RealSerialPort)
+    // logger: опциональный SessionLogger (nullptr = логгер не используется)
     explicit Stand(QObject *parent = nullptr,
                    const QString &portName = DEFAULT_PORT,
-                   std::unique_ptr<ISerialPort> port = nullptr);
+                   std::unique_ptr<ISerialPort> port = nullptr,
+                   SessionLogger *logger = nullptr);
     ~Stand();
 
     // filePath: если пустой — ищет cyclogram.ini рядом с .exe
@@ -91,6 +97,8 @@ private:
     int64_t m_timeToStartMs = 0;
 
     mutable QMutex m_eventsMutex;
+
+    SessionLogger *m_logger = nullptr; // не владеет — владеет MainWindow
 
     static constexpr const char* DEFAULT_PORT   = "COM7";
     static constexpr int   BAUD_RATE            = 115200;

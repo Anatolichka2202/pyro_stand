@@ -17,6 +17,8 @@ add_executable(pyro_stand
     mainwindow.h
     stand.cpp
     stand.h
+    session_logger.cpp
+    session_logger.h
     types.h
     timeline_widget.cpp
     timeline_widget.h

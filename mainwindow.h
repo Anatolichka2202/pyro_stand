@@ -9,9 +9,11 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QWidget>
+#include <memory>
 #include "types.h"
 #include "stand.h"
 #include "timeline_widget.h"
+#include "session_logger.h"
 
 class MainWindow : public QMainWindow
 {
@@ -75,7 +77,9 @@ private:
     // T18: timeline
     TimelineWidget *m_timeline = nullptr;
 
-    Stand *m_stand = nullptr;
+    // T16: m_stand уничтожается перед m_logger (порядок деструкторов = обратный порядку объявления)
+    std::unique_ptr<SessionLogger> m_logger;
+    std::unique_ptr<Stand>         m_stand;
     Phase  m_phase = Phase::Idle;
     QVector<EventRow> m_displayEvents;
 

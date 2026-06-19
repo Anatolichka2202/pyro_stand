@@ -133,11 +133,11 @@ bool Stand::loadCyclogram(const QString &filePath)
         return false;
     }
 
-    int maxTrackedTime = 0;
+    int maxEventTime = 0;
     for (const auto &ev : events) {
-        if (ev.hasChannels && ev.time_ms > maxTrackedTime) maxTrackedTime = ev.time_ms;
+        if (ev.time_ms > maxEventTime) maxEventTime = ev.time_ms;
     }
-    m_flightDurationMs = maxTrackedTime + FLIGHT_SAFETY_MS;
+    m_flightDurationMs = maxEventTime + FLIGHT_SAFETY_MS;
 
     {
         QMutexLocker l(&m_eventsMutex);

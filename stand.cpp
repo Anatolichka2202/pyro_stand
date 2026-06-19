@@ -484,10 +484,7 @@ void Stand::stop()
     }
     emit analysisDone(snapshot);
 
-    if (m_phase == Phase::Countdown || m_phase == Phase::Running)
-        updatePhase(Phase::Stopped);
-    else
-        updatePhase(Phase::Idle);
+    updatePhase(Phase::Stopped);
     emit logMessage("═══ СТОП: задание прервано оператором ═══", "system");
 }
 

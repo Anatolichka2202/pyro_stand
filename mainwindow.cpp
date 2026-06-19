@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include <QCoreApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -20,19 +21,36 @@ MainWindow::MainWindow(QWidget *parent)
         updatePhaseLabel();
     });
 
-    m_stand = new Stand(this);
+    // T16: создаём логгер сессии — один файл на запуск приложения.
+    // Порядок: m_logger создаётся первым, m_stand — вторым.
+    // При разрушении MainWindow: m_stand уничтожается первым (unique_ptr),
+    // что джойнит рабочий поток, затем m_logger — безопасно закрывает файл.
+    m_logger = std::make_unique<SessionLogger>(QCoreApplication::applicationDirPath());
+    // Stand не получает Qt-родителя — управляется через unique_ptr
+    m_stand = std::make_unique<Stand>(nullptr, "COM7", nullptr, m_logger.get());
 
     // ── Сигналы Stand → MainWindow ──────────────────────────────────────────
     // Все лямбды получают явный контекст (this), чтобы Qt гарантированно
     // ставил вызов в очередь GUI-треда при эмите из рабочего потока.
 
-    connect(m_stand, &Stand::phaseChanged,    this, &MainWindow::setPhase);
-    connect(m_stand, &Stand::timerUpdated,    this, &MainWindow::updateTimer);
-    connect(m_stand, &Stand::nextEventTimer,  this, &MainWindow::updateNextEventTimer);
-    connect(m_stand, &Stand::logMessage,      this, &MainWindow::addLog);
+    connect(m_stand.get(), &Stand::phaseChanged,    this, &MainWindow::setPhase);
+    connect(m_stand.get(), &Stand::timerUpdated,    this, &MainWindow::updateTimer);
+    connect(m_stand.get(), &Stand::nextEventTimer,  this, &MainWindow::updateNextEventTimer);
+    connect(m_stand.get(), &Stand::logMessage,      this, &MainWindow::addLog);
+
+    // T16: дублировать logMessage в файл сессии
+    connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &type) {
+        if (!m_logger) return;
+        // Маппинг типов сигнала → уровни логгера
+        QString level;
+        if      (type == "event" || type == "event-post") level = "EVENT";
+        else if (type == "system")                        level = "INFO";
+        else                                              level = "INFO";
+        m_logger->log(level, msg);
+    });
 
     // T11: БЦВМ indicator — parse logMessage for known strings
-    connect(m_stand, &Stand::logMessage, this, [this](const QString &msg, const QString &) {
+    connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &) {
         if (msg.contains("БЦВМ недоступна"))
             updateBcvmIndicator(false);
         if (msg.contains("Циклограмма отправлена"))
@@ -40,14 +58,14 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // T11: COM indicator — go red on portError
-    connect(m_stand, &Stand::portError, this, [this](const QString &msg) {
+    connect(m_stand.get(), &Stand::portError, this, [this](const QString &msg) {
         updateComIndicator(false);
         m_loadBtn->setEnabled(false);
         m_resetBtn->setEnabled(false);
         QMessageBox::critical(this, "Ошибка", msg);
     });
 
-    connect(m_stand, &Stand::eventFired, this, [this](int eventId, int tick) {
+    connect(m_stand.get(), &Stand::eventFired, this, [this](int eventId, int tick) {
         for (int i = 0; i < m_displayEvents.size(); ++i) {
             if (m_displayEvents[i].id == eventId) {
                 m_displayEvents[i].firedTick = tick;
@@ -70,7 +88,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    connect(m_stand, &Stand::eventFailed, this, [this](int eventId) {
+    connect(m_stand.get(), &Stand::eventFailed, this, [this](int eventId) {
         for (int i = 0; i < m_displayEvents.size(); ++i) {
             if (m_displayEvents[i].id == eventId) {
                 m_displayEvents[i].status    = "fail";
@@ -92,7 +110,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    connect(m_stand, &Stand::analysisDone, this, [this](const QVector<EventRow> &events) {
+    connect(m_stand.get(), &Stand::analysisDone, this, [this](const QVector<EventRow> &events) {
         m_displayEvents.clear();
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
         updateTable(m_displayEvents);
@@ -482,11 +500,23 @@ void MainWindow::updateNextEventTimer(const QString &text)
 
 void MainWindow::addLog(const QString &text, const QString &type)
 {
-    QString color = "#c8d0dc";
-    if      (type == "system")     color = "#8b949e";
-    else if (type == "event")      color = "#c8d0dc";
-    else if (type == "event-post") color = "#f85149";
-    m_logEdit->append(QString("<span style=\"color:%1;\">%2</span>").arg(color, text.toHtmlEscaped()));
+    // T16: цветовая схема логов
+    // system/INFO → серый (#8b949e)
+    // event (ok, срабатывание) → светлый (#c8d0dc) — зелёный назначается только при подтверждённом OK
+    // event-post (после анализа, провал) → красный (#f85149)
+    // error → жирный красный
+    QString color    = "#c8d0dc";
+    bool    isBold   = false;
+    if      (type == "system")     { color = "#8b949e"; }
+    else if (type == "event")      { color = "#3fb950"; }
+    else if (type == "event-post") { color = "#f85149"; }
+    else if (type == "error")      { color = "#f85149"; isBold = true; }
+
+    const QString escaped = text.toHtmlEscaped();
+    const QString styled  = isBold
+        ? QString("<b style=\"color:%1;\">%2</b>").arg(color, escaped)
+        : QString("<span style=\"color:%1;\">%2</span>").arg(color, escaped);
+    m_logEdit->append(styled);
 }
 
 void MainWindow::updateTable(const QVector<EventRow> &events)

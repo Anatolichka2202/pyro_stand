@@ -1,5 +1,6 @@
 #include "stand.h"
 #include "real_serial_port.h"
+#include "session_logger.h"
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
@@ -9,8 +10,9 @@
 #include <QProcess>
 #include <QDateTime>
 
-Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPort> port)
-    : QObject(parent), m_portName(portName)
+Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPort> port,
+             SessionLogger *logger)
+    : QObject(parent), m_portName(portName), m_logger(logger)
 {
     m_mappings = {
         {"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12", 0x03, "1, 2"},
@@ -129,8 +131,12 @@ bool Stand::loadCyclogram(const QString &filePath)
     }
 
     int maxTrackedTime = 0;
+    int trackedCount = 0;
     for (const auto &ev : events) {
-        if (ev.hasChannels && ev.time_ms > maxTrackedTime) maxTrackedTime = ev.time_ms;
+        if (ev.hasChannels) {
+            ++trackedCount;
+            if (ev.time_ms > maxTrackedTime) maxTrackedTime = ev.time_ms;
+        }
     }
     m_flightDurationMs = maxTrackedTime + FLIGHT_SAFETY_MS;
 
@@ -139,6 +145,16 @@ bool Stand::loadCyclogram(const QString &filePath)
         m_events   = events;
         m_setTime  = setTime;
         m_startTime = startTime;
+    }
+
+    // Записываем заголовок сессии в лог-файл
+    if (m_logger) {
+        m_logger->writeHeader(path,
+                              setTime,  setTime.toString("hh:mm:ss"),
+                              startTime, startTime.toString("hh:mm:ss"),
+                              trackedCount);
+        m_logger->log("INFO", QString("Загружена циклограмма: %1 событий, из них отслеживаемых: %2")
+                                   .arg(events.size()).arg(trackedCount));
     }
 
     emit logMessage(QString("Загружено событий: %1").arg(events.size()), "system");
@@ -286,7 +302,9 @@ void Stand::startReadingForTest(int64_t timeToStartMs)
 void Stand::readingThread(int64_t timeToStartMs)
 {
     if (!m_port || !m_port->open(m_portName, BAUD_RATE)) {
-        emit portError("Не удалось открыть COM-порт в потоке чтения");
+        const QString errMsg = "Не удалось открыть COM-порт в потоке чтения";
+        if (m_logger) m_logger->log("ERROR", errMsg);
+        emit portError(errMsg);
         return;
     }
 
@@ -297,7 +315,9 @@ void Stand::readingThread(int64_t timeToStartMs)
     while (m_running) {
         if (!m_port->waitForReadyRead(100)) {
             if (!m_port->isOpen() || m_port->hasError()) {
-                emit portError(QString("COM-порт отключён: %1").arg(m_port->errorString()));
+                const QString errMsg = QString("COM-порт отключён: %1").arg(m_port->errorString());
+                if (m_logger) m_logger->log("ERROR", errMsg);
+                emit portError(errMsg);
                 m_running = false;
                 break;
             }
@@ -327,6 +347,7 @@ void Stand::readingThread(int64_t timeToStartMs)
 
         if (!started && absoluteIndex >= timeToStartMs) {
             started = true;
+            if (m_logger) m_logger->log("INFO", "─── СТАРТ ───");
             emit logMessage("─── СТАРТ ───", "system");
             updatePhase(Phase::Running);
         }
@@ -349,7 +370,7 @@ void Stand::readingThread(int64_t timeToStartMs)
 
         // Проверка событий циклограммы
         // Сначала собираем результаты под мьютексом, потом эмитим — вне мьютекса
-        struct PendingSignal { bool fired; int id; int tick; };
+        struct PendingSignal { bool fired; int id; int tick; QString key; int planMs; };
         QVector<PendingSignal> pending;
         {
             QMutexLocker locker(&m_eventsMutex);
@@ -365,13 +386,13 @@ void Stand::readingThread(int64_t timeToStartMs)
                 if ((firedBits & neededMask) == neededMask) {
                     ev.status   = "ok";
                     ev.firedTick= static_cast<int>(absoluteIndex);
-                    pending.push_back({true, ev.id, ev.firedTick});
+                    pending.push_back({true, ev.id, ev.firedTick, ev.key, ev.time_ms});
                     emit logMessage(QString("[%1] '%2' выполнено (каналы %3)")
                                         .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event");
                 } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
                     ev.status   = "fail";
                     ev.firedTick= -1;
-                    pending.push_back({false, ev.id, -1});
+                    pending.push_back({false, ev.id, -1, ev.key, ev.time_ms});
                     emit logMessage(QString("[%1] '%2' НЕ СРАБОТАЛО (каналы %3)")
                                         .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event-post");
                 }
@@ -379,8 +400,24 @@ void Stand::readingThread(int64_t timeToStartMs)
         }
         // Эмитим вне мьютекса — исключаем deadlock и гарантируем доставку в GUI-тред
         for (const auto &p : pending) {
-            if (p.fired) emit eventFired(p.id, p.tick);
-            else         emit eventFailed(p.id);
+            if (p.fired) {
+                if (m_logger) {
+                    // actual_ms и dev_ms будут уточнены после анализа; здесь — tick-based
+                    const int actualMs = p.tick;
+                    const int devMs    = qAbs(actualMs - (static_cast<int>(timeToStartMs) + p.planMs));
+                    m_logger->log("EVENT",
+                        QString("id=%1 key=%2 tick=%3 plan_ms=%4 actual_ms=%5 dev_ms=%6 status=OK")
+                            .arg(p.id).arg(p.key).arg(p.tick).arg(p.planMs).arg(actualMs).arg(devMs));
+                }
+                emit eventFired(p.id, p.tick);
+            } else {
+                if (m_logger) {
+                    m_logger->log("EVENT",
+                        QString("id=%1 key=%2 tick=-1 plan_ms=%3 actual_ms=-1 dev_ms=-1 status=FAIL")
+                            .arg(p.id).arg(p.key).arg(p.planMs));
+                }
+                emit eventFailed(p.id);
+            }
         }
 
         ++absoluteIndex;

@@ -84,6 +84,7 @@ private:
     static constexpr quint16 UDP_PORT = 4000;
     static constexpr const char* BCVM_IP = "192.168.17.246";
     static constexpr int FLIGHT_SAFETY_MARGIN_MS = 1000;
+    static constexpr int FAIL_MARGIN_MS          = 5;    // задержка до признания события провальным (мс)
     static constexpr int RETRY_COUNT = 3;
 };
 

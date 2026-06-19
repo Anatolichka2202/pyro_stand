@@ -2,14 +2,10 @@
 #define TYPES_H
 
 #include <QString>
+#include <QMetaType>
 
-// Режим времени (для отладки)
-enum class TimeMode {
-    UTC,
-    MSK
-};
+enum class TimeMode { UTC, MSK };
 
-// Состояния системы
 enum class Phase {
     Idle,
     Loaded,
@@ -18,25 +14,25 @@ enum class Phase {
     Completed,
     Stopped
 };
+Q_DECLARE_METATYPE(Phase)
 
-// Структура события циклограммы (используется и в логике, и в UI)
 struct EventRow {
-    int id;
-    QString key;           // ключ из файла
-    QString description;   // описание (комментарий)
-    int time_ms;           // относительное время в мс (может быть отрицательным)
-    QString channels;      // строка каналов, например "1, 2"
-    bool hasChannels;      // true если событие отслеживается
-    int firedTick;         // -1 если не сработало
-    int calculatedMs;      // -1 если не вычислено
-    QString status;        // "pending", "ok", "fail"
-    int deviationMs;       // отклонение вычисленного от ожидаемого (для анализа)
+    int     id          = 0;
+    QString key;
+    QString description;
+    int     time_ms     = 0;
+    QString channels;
+    bool    hasChannels = false;
+    int     firedTick   = -1;
+    int     calculatedMs= -1;
+    QString status;         // "pending" | "ok" | "fail"
+    int     deviationMs = 0;
 };
+Q_DECLARE_METATYPE(QVector<EventRow>)
 
-// Маппинг ключ -> битовая маска каналов
 struct ChannelMapping {
     QString key;
-    uint8_t mask;
+    uint8_t mask    = 0;
     QString channelsStr;
 };
 

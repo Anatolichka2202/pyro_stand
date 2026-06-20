@@ -6,7 +6,8 @@
 #include <QPushButton>
 #include <QTimeEdit>
 #include <QTableWidget>
-#include <QTextEdit>
+#include <QHeaderView>
+#include <QDateTime>
 #include <QTimer>
 #include <QWidget>
 #include "types.h"
@@ -53,7 +54,7 @@ private:
     QLabel       *m_phaseLabel     = nullptr;
     QLabel       *m_nextEventLabel = nullptr;
     QTableWidget *m_table          = nullptr;
-    QTextEdit    *m_logEdit        = nullptr;
+    QTableWidget *m_logTable       = nullptr;
     QPushButton  *m_loadBtn        = nullptr;
     QPushButton  *m_setTimeBtn     = nullptr;
     QPushButton  *m_stopBtn        = nullptr;

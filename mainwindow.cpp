@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "platform.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -9,11 +10,39 @@
 #include <QDateTime>
 #include <QCoreApplication>
 
+// ─── Production constructor ───────────────────────────────────────────────────
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUI();
 
+    // T16: logger создаётся первым, stand — вторым.
+    // Деструкторы: m_stand (join worker thread) → m_logger (close file).
+    m_logger = std::make_unique<SessionLogger>(QCoreApplication::applicationDirPath());
+    m_stand  = std::make_unique<Stand>(nullptr, DEFAULT_SERIAL_PORT, nullptr, m_logger.get());
+
+    connectStand();
+    finalizeInit({});
+}
+
+// ─── Test / demo constructor ──────────────────────────────────────────────────
+
+MainWindow::MainWindow(std::unique_ptr<Stand> stand,
+                       const QString &cyclogramPath,
+                       QWidget *parent)
+    : QMainWindow(parent)
+{
+    setupUI();
+    m_stand = std::move(stand); // m_logger stays nullptr → no file logging
+    connectStand();
+    finalizeInit(cyclogramPath);
+}
+
+// ─── connectStand ─────────────────────────────────────────────────────────────
+
+void MainWindow::connectStand()
+{
     m_blinkTimer = new QTimer(this);
     m_blinkTimer->setInterval(500);
     connect(m_blinkTimer, &QTimer::timeout, this, [this]() {
@@ -21,20 +50,18 @@ MainWindow::MainWindow(QWidget *parent)
         updatePhaseLabel();
     });
 
-    m_logger = std::make_unique<SessionLogger>(QCoreApplication::applicationDirPath());
-    m_stand  = std::make_unique<Stand>(nullptr, "COM7", nullptr, m_logger.get());
-
     connect(m_stand.get(), &Stand::phaseChanged,    this, &MainWindow::setPhase);
     connect(m_stand.get(), &Stand::timerTick,        this, &MainWindow::updateTimer);
     connect(m_stand.get(), &Stand::nextEventChanged, this, &MainWindow::updateNextEventTimer);
-    connect(m_stand.get(), &Stand::logMessage,      this, &MainWindow::addLog);
+    connect(m_stand.get(), &Stand::logMessage,       this, &MainWindow::addLog);
 
     connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &type) {
         if (!m_logger) return;
-        QString level = (type == "event" || type == "event-post") ? "EVENT" : "INFO";
+        const QString level = (type == "event" || type == "event-post") ? "EVENT" : "INFO";
         m_logger->log(level, msg);
     });
 
+    // T11: БЦВМ indicator
     connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &) {
         if (msg.contains("БЦВМ недоступна"))
             updateBcvmIndicator(false);
@@ -42,6 +69,7 @@ MainWindow::MainWindow(QWidget *parent)
             updateBcvmIndicator(true);
     });
 
+    // T11: COM indicator
     connect(m_stand.get(), &Stand::portError, this, [this](const QString &msg) {
         updateComIndicator(false);
         m_loadBtn->setEnabled(false);
@@ -56,10 +84,8 @@ MainWindow::MainWindow(QWidget *parent)
                 m_displayEvents[i].status    = "ok";
                 updateTableRow(i, m_displayEvents[i]);
                 for (const QString &part : m_displayEvents[i].channels.split(',')) {
-                    bool ok = false;
-                    int c = part.trimmed().toInt(&ok);
-                    if (ok && c >= 1 && c <= 8)
-                        updateChannelDot(c, "#3fb950");
+                    bool ok = false; int c = part.trimmed().toInt(&ok);
+                    if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#3fb950");
                 }
                 m_timeline->markEventFired(eventId, "ok");
                 m_timeline->setPlayheadMs(tick);
@@ -75,10 +101,8 @@ MainWindow::MainWindow(QWidget *parent)
                 m_displayEvents[i].firedTick = -1;
                 updateTableRow(i, m_displayEvents[i]);
                 for (const QString &part : m_displayEvents[i].channels.split(',')) {
-                    bool ok = false;
-                    int c = part.trimmed().toInt(&ok);
-                    if (ok && c >= 1 && c <= 8)
-                        updateChannelDot(c, "#f85149");
+                    bool ok = false; int c = part.trimmed().toInt(&ok);
+                    if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#f85149");
                 }
                 m_timeline->markEventFired(eventId, "fail");
                 break;
@@ -95,12 +119,16 @@ MainWindow::MainWindow(QWidget *parent)
         m_summaryStrip->setVisible(true);
         m_timeline->setEvents(events);
     });
+}
 
-    m_stand->loadCyclogram();
+// ─── finalizeInit ─────────────────────────────────────────────────────────────
+
+void MainWindow::finalizeInit(const QString &cyclogramPath)
+{
+    m_stand->loadCyclogram(cyclogramPath);
     m_timeline->setEvents(m_stand->getEvents());
     setPhase(m_stand->getPhase());
     updateComIndicator(m_stand->isPortOpen());
-
     if (!m_stand->isPortOpen()) {
         m_loadBtn->setEnabled(false);
         m_resetBtn->setEnabled(false);
@@ -180,14 +208,17 @@ void MainWindow::setupUI()
     timerCaption->setStyleSheet("font-size: 9px; letter-spacing: 0.2em; color: #8b949e; text-transform: uppercase;");
 
     m_timerLabel = new QLabel("--:--", this);
+    m_timerLabel->setObjectName("timerLabel");
     m_timerLabel->setStyleSheet(
         "font-size: 52px; font-weight: 600; color: #484f58; font-family: 'JetBrains Mono';");
 
     QHBoxLayout *phaseLine = new QHBoxLayout();
     phaseLine->setSpacing(14);
     m_phaseLabel = new QLabel("● ОЖИДАНИЕ", this);
+    m_phaseLabel->setObjectName("phaseLabel");
     m_phaseLabel->setStyleSheet("font-size: 10px; letter-spacing: 0.15em; color: #8b949e;");
     m_nextEventLabel = new QLabel("До события: --:--", this);
+    m_nextEventLabel->setObjectName("nextEventLabel");
     m_nextEventLabel->setStyleSheet("font-size: 12px; color: #8b949e;");
     phaseLine->addWidget(m_phaseLabel);
     phaseLine->addWidget(m_nextEventLabel);
@@ -424,6 +455,7 @@ void MainWindow::setupUI()
     summaryLayout->setSpacing(16);
 
     m_summaryLabel = new QLabel(this);
+    m_summaryLabel->setObjectName("summaryLabel");
     m_summaryLabel->setStyleSheet(
         "font-size: 12px; color: #e6edf3; background: transparent; border: none;");
 

@@ -17,6 +17,7 @@ add_executable(pyro_stand
     mainwindow.h
     stand.cpp
     stand.h
+    platform.h
     session_logger.cpp
     session_logger.h
     types.h
@@ -37,7 +38,7 @@ enable_testing()
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
 function(add_stand_test name src)
-    add_executable(${name} ${src} stand.cpp stand.h types.h serial_port.h real_serial_port.h)
+    add_executable(${name} ${src} stand.cpp stand.h platform.h types.h serial_port.h real_serial_port.h)
     target_link_libraries(${name}
         Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort)
     add_test(NAME ${name} COMMAND ${name})

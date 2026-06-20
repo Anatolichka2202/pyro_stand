@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta charset="UTF-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #15191f; font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; }
+    @keyframes ph-run { from { left: 397px; } to { left: 1127px; } }
+    @keyframes ph-glow { 0%,100% { box-shadow: 0 0 10px 1px rgba(88,166,255,0.55); } 50% { box-shadow: 0 0 16px 3px rgba(88,166,255,0.85); } }
+  </style>
+</helmet>
+
+<div style="width:1280px; padding:28px 24px; display:flex; flex-direction:column; gap:8px;">
+
+  <!-- file header -->
+  <div style="margin-bottom:8px;">
+    <div style="font-size:18px; font-weight:600; color:#e6edf3; letter-spacing:0.01em;">T18 — Timeline · редизайн виджета</div>
+    <div style="font-size:12px; color:#8b949e; margin-top:4px; line-height:1.5;">Высота виджета 72px (предлагаю вместо 64 — влезают подпись-номер и время). Кружки вместо линий-тиков · T0 красная линия + подпись · playhead с glow. Главное: <b style="color:#c8d0dc;">кластер слипающихся пиро-событий свёрнут в групп-узел</b>, который раскрывается. Рамка = точные границы 72px виджета.</div>
+  </div>
+
+  <!-- ============ STATE 1: LOADED (all pending) ============ -->
+  <div style="font-size:10px; letter-spacing:0.15em; color:#58a6ff; text-transform:uppercase; margin-top:8px;">● Загружено — все события ожидают (pending)</div>
+  <div style="position:relative; height:72px; background:#0d1117; border:1px solid #30363d; border-radius:6px; overflow:hidden;">
+    <!-- axis -->
+    <div style="position:absolute; left:32px; right:32px; top:44px; height:2px; background:#30363d;"></div>
+    <!-- T0 marker -->
+    <div style="position:absolute; left:397px; top:8px; width:2px; height:56px; background:#f85149; transform:translateX(-1px);"></div>
+    <div style="position:absolute; left:397px; top:2px; transform:translateX(-50%); font-size:9px; font-weight:700; color:#f85149; letter-spacing:0.1em;">T0</div>
+    <!-- playhead at start, no glow (not running) -->
+    <div style="position:absolute; left:32px; top:6px; width:2px; height:60px; background:#3b6ea5; transform:translateX(-1px);"></div>
+
+    <!-- cluster group node (4 pyro events, pending) -->
+    <div style="position:absolute; left:106px; top:30px; transform:translateX(-50%); display:flex; align-items:center; gap:4px; height:24px; padding:0 8px 0 6px; background:#0d1117; border:1.5px solid #8b949e; border-radius:12px;">
+      <div style="display:flex; gap:-4px;">
+        <div style="width:8px; height:8px; border-radius:50%; border:1.5px solid #8b949e; background:#0d1117;"></div>
+      </div>
+      <span style="font-size:11px; font-weight:700; color:#c8d0dc; font-family:'JetBrains Mono';">4</span>
+    </div>
+    <div style="position:absolute; left:106px; top:18px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">1–4</div>
+    <div style="position:absolute; left:106px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono'; white-space:nowrap;">−8.0с</div>
+
+    <!-- T0 event circle pending -->
+    <div style="position:absolute; left:397px; top:39px; transform:translateX(-50%); width:11px; height:11px; border-radius:50%; border:2px solid #8b949e; background:#0d1117;"></div>
+    <div style="position:absolute; left:397px; top:20px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">5</div>
+    <div style="position:absolute; left:397px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono';">0.0с</div>
+
+    <!-- +20 event circle pending -->
+    <div style="position:absolute; left:1127px; top:39px; transform:translateX(-50%); width:11px; height:11px; border-radius:50%; border:2px solid #8b949e; background:#0d1117;"></div>
+    <div style="position:absolute; left:1127px; top:20px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">6</div>
+    <div style="position:absolute; left:1127px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono';">+20.0с</div>
+  </div>
+
+  <!-- ============ STATE 2: RUNNING (mid-flight, animated playhead) ============ -->
+  <div style="font-size:10px; letter-spacing:0.15em; color:#3fb950; text-transform:uppercase; margin-top:16px;">● Выполнение — playhead движется, glow активен</div>
+  <div style="position:relative; height:72px; background:#0d1117; border:1px solid #30363d; border-radius:6px; overflow:hidden;">
+    <div style="position:absolute; left:32px; right:32px; top:44px; height:2px; background:#30363d;"></div>
+    <!-- progress fill up to playhead -->
+    <div style="position:absolute; left:32px; top:44px; height:2px; width:680px; background:#58a6ff;"></div>
+    <div style="position:absolute; left:397px; top:8px; width:2px; height:56px; background:#f85149; transform:translateX(-1px);"></div>
+    <div style="position:absolute; left:397px; top:2px; transform:translateX(-50%); font-size:9px; font-weight:700; color:#f85149; letter-spacing:0.1em;">T0</div>
+
+    <!-- cluster fired OK (green) -->
+    <div style="position:absolute; left:106px; top:30px; transform:translateX(-50%); display:flex; align-items:center; gap:4px; height:24px; padding:0 8px 0 6px; background:rgba(63,185,80,0.12); border:1.5px solid #3fb950; border-radius:12px;">
+      <div style="width:8px; height:8px; border-radius:50%; background:#3fb950;"></div>
+      <span style="font-size:11px; font-weight:700; color:#3fb950; font-family:'JetBrains Mono';">4</span>
+    </div>
+    <div style="position:absolute; left:106px; top:18px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">1–4</div>
+    <div style="position:absolute; left:106px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono'; white-space:nowrap;">−8.0с</div>
+
+    <!-- T0 fired OK -->
+    <div style="position:absolute; left:397px; top:39px; transform:translateX(-50%); width:11px; height:11px; border-radius:50%; background:#3fb950;"></div>
+    <div style="position:absolute; left:397px; top:20px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">5</div>
+    <div style="position:absolute; left:397px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono';">0.0с</div>
+
+    <!-- +20 pending -->
+    <div style="position:absolute; left:1127px; top:39px; transform:translateX(-50%); width:11px; height:11px; border-radius:50%; border:2px solid #8b949e; background:#0d1117;"></div>
+    <div style="position:absolute; left:1127px; top:20px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">6</div>
+    <div style="position:absolute; left:1127px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono';">+20.0с</div>
+
+    <!-- animated playhead with glow -->
+    <div style="position:absolute; top:6px; width:2px; height:60px; background:#58a6ff; transform:translateX(-1px); border-radius:1px; animation: ph-run 9s linear infinite alternate, ph-glow 1.6s ease-in-out infinite; left:712px;"></div>
+  </div>
+
+  <!-- ============ STATE 3: COMPLETED with a fail ============ -->
+  <div style="font-size:10px; letter-spacing:0.15em; color:#8b949e; text-transform:uppercase; margin-top:16px;">● Завершено — событие 6 не в допуске (fail)</div>
+  <div style="position:relative; height:72px; background:#0d1117; border:1px solid #30363d; border-radius:6px; overflow:hidden;">
+    <div style="position:absolute; left:32px; right:32px; top:44px; height:2px; background:#30363d;"></div>
+    <div style="position:absolute; left:32px; top:44px; height:2px; width:1095px; background:#58a6ff;"></div>
+    <div style="position:absolute; left:397px; top:8px; width:2px; height:56px; background:#f85149; transform:translateX(-1px);"></div>
+    <div style="position:absolute; left:397px; top:2px; transform:translateX(-50%); font-size:9px; font-weight:700; color:#f85149; letter-spacing:0.1em;">T0</div>
+
+    <div style="position:absolute; left:106px; top:30px; transform:translateX(-50%); display:flex; align-items:center; gap:4px; height:24px; padding:0 8px 0 6px; background:rgba(63,185,80,0.12); border:1.5px solid #3fb950; border-radius:12px;">
+      <div style="width:8px; height:8px; border-radius:50%; background:#3fb950;"></div>
+      <span style="font-size:11px; font-weight:700; color:#3fb950; font-family:'JetBrains Mono';">4</span>
+    </div>
+    <div style="position:absolute; left:106px; top:18px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">1–4</div>
+    <div style="position:absolute; left:106px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono'; white-space:nowrap;">−8.0с</div>
+
+    <div style="position:absolute; left:397px; top:39px; transform:translateX(-50%); width:11px; height:11px; border-radius:50%; background:#3fb950;"></div>
+    <div style="position:absolute; left:397px; top:20px; transform:translateX(-50%); font-size:10px; color:#8b949e; font-weight:600;">5</div>
+    <div style="position:absolute; left:397px; top:58px; transform:translateX(-50%); font-size:9px; color:#8b949e; font-family:'JetBrains Mono';">0.0с</div>
+
+    <!-- +20 FAIL -->
+    <div style="position:absolute; left:1127px; top:37px; transform:translateX(-50%); width:13px; height:13px; border-radius:50%; background:#f85149; box-shadow:0 0 8px 1px rgba(248,81,73,0.5);"></div>
+    <div style="position:absolute; left:1127px; top:20px; transform:translateX(-50%); font-size:10px; color:#f85149; font-weight:700;">6</div>
+    <div style="position:absolute; left:1127px; top:58px; transform:translateX(-50%); font-size:9px; color:#f85149; font-family:'JetBrains Mono';">+20.0с</div>
+
+    <div style="position:absolute; left:1127px; top:6px; width:2px; height:60px; background:#58a6ff; transform:translateX(-1px); box-shadow:0 0 10px 1px rgba(88,166,255,0.55);"></div>
+  </div>
+
+  <!-- ============ STATE 4: cluster expanded ============ -->
+  <div style="font-size:10px; letter-spacing:0.15em; color:#e3b341; text-transform:uppercase; margin-top:16px;">● Групп-узел раскрыт — клик по «4» показывает слипшиеся события</div>
+  <div style="position:relative; height:160px; background:#0d1117; border:1px solid #30363d; border-radius:6px; overflow:hidden;">
+    <div style="position:absolute; left:32px; right:32px; top:132px; height:2px; background:#30363d;"></div>
+    <div style="position:absolute; left:397px; top:96px; width:2px; height:56px; background:#f85149; transform:translateX(-1px);"></div>
+    <div style="position:absolute; left:397px; top:90px; transform:translateX(-50%); font-size:9px; font-weight:700; color:#f85149; letter-spacing:0.1em;">T0</div>
+
+    <!-- highlighted cluster node -->
+    <div style="position:absolute; left:106px; top:118px; transform:translateX(-50%); display:flex; align-items:center; gap:4px; height:24px; padding:0 8px 0 6px; background:rgba(88,166,255,0.12); border:1.5px solid #58a6ff; border-radius:12px;">
+      <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff;"></div>
+      <span style="font-size:11px; font-weight:700; color:#58a6ff; font-family:'JetBrains Mono';">4</span>
+    </div>
+    <!-- connector -->
+    <div style="position:absolute; left:106px; top:60px; width:1px; height:58px; background:#30363d;"></div>
+
+    <!-- popover -->
+    <div style="position:absolute; left:20px; top:12px; width:300px; background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px 10px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
+      <div style="font-size:9px; letter-spacing:0.12em; color:#8b949e; text-transform:uppercase; margin-bottom:6px;">Кластер · 4 события · −8.00…−7.93с</div>
+      <div style="display:flex; flex-direction:column; gap:5px;">
+        <div style="display:flex; align-items:center; gap:8px; font-size:11px;"><div style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex:none;"></div><span style="color:#8b949e; font-family:'JetBrains Mono'; flex:none; width:18px;">1</span><span style="color:#c8d0dc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Пиросвечи 9–12</span><span style="color:#3fb950; font-family:'JetBrains Mono';">+2мс</span></div>
+        <div style="display:flex; align-items:center; gap:8px; font-size:11px;"><div style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex:none;"></div><span style="color:#8b949e; font-family:'JetBrains Mono'; flex:none; width:18px;">2</span><span style="color:#c8d0dc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Пиросвечи 1–8</span><span style="color:#3fb950; font-family:'JetBrains Mono';">+1мс</span></div>
+        <div style="display:flex; align-items:center; gap:8px; font-size:11px;"><div style="width:8px;height:8px;border-radius:50%;background:#e3b341;flex:none;"></div><span style="color:#8b949e; font-family:'JetBrains Mono'; flex:none; width:18px;">3</span><span style="color:#c8d0dc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ГГ камеры А</span><span style="color:#e3b341; font-family:'JetBrains Mono';">+4мс</span></div>
+        <div style="display:flex; align-items:center; gap:8px; font-size:11px;"><div style="width:8px;height:8px;border-radius:50%;background:#3fb950;flex:none;"></div><span style="color:#8b949e; font-family:'JetBrains Mono'; flex:none; width:18px;">4</span><span style="color:#c8d0dc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">ГГ камеры Б</span><span style="color:#3fb950; font-family:'JetBrains Mono';">0мс</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- legend -->
+  <div style="display:flex; gap:20px; align-items:center; margin-top:18px; flex-wrap:wrap; font-size:11px; color:#8b949e;">
+    <span style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#6e7681;">Легенда:</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;border-radius:50%;border:2px solid #8b949e;box-sizing:border-box;"></div>ожидает</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;border-radius:50%;background:#3fb950;"></div>сработало OK</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;border-radius:50%;background:#e3b341;"></div>OK с допуском</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:11px;height:11px;border-radius:50%;background:#f85149;"></div>не в допуске / не сработало</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:2px;height:14px;background:#f85149;"></div>T0</span>
+    <span style="display:flex; align-items:center; gap:6px;"><div style="width:2px;height:14px;background:#58a6ff;box-shadow:0 0 6px 1px rgba(88,166,255,0.6);"></div>playhead</span>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1280, &quot;height&quot;: 760}}"></script>
+</body>
+</html>

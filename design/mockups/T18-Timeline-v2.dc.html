@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+      overflow: hidden;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      width: 1280px;
+      height: 800px;
+      gap: 12px;
+      padding: 12px;
+    }
+    /* HEADER COMPACT */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 12px 16px;
+      height: 72px;
+    }
+    .header-timer {
+      font-size: 56px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      font-variant-numeric: tabular-nums;
+      min-width: 320px;
+      text-align: center;
+    }
+    .header-timer.countdown { color: #e3b341; text-shadow: 0 0 10px rgba(227, 179, 65, 0.3); }
+    .header-timer.running { color: #3fb950; text-shadow: 0 0 10px rgba(63, 185, 80, 0.3); }
+    .header-timer.stopped { color: #f85149; }
+    .header-left {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      flex: 1;
+    }
+    .status-badge {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px 10px;
+      background: #0d1117;
+      border-radius: 3px;
+      border: 1px solid #30363d;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #3fb950;
+    }
+    .channels-compact {
+      display: flex;
+      gap: 4px;
+      font-size: 11px;
+      color: #8b949e;
+      padding: 4px 8px;
+      background: #0d1117;
+      border-radius: 3px;
+      border: 1px solid #30363d;
+    }
+    .ch-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #30363d;
+    }
+    .ch-dot.active { background: #58a6ff; }
+    .header-right {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .next-event {
+      text-align: right;
+    }
+    .next-event-label { color: #8b949e; font-size: 10px; }
+    .next-event-time { color: #58a6ff; font-weight: 600; font-size: 16px; }
+    /* MAIN CONTENT */
+    .main { display: flex; gap: 12px; flex: 1; }
+    .left-sidebar {
+      width: 160px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .button-group {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .group-label { font-size: 10px; text-transform: uppercase; color: #8b949e; letter-spacing: 0.5px; margin-bottom: 2px; }
+    button {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #e6edf3;
+      border-radius: 3px;
+      padding: 5px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    button:hover { background: #161b22; border-color: #58a6ff; }
+    button.success { background: #3fb950; color: #fff; border: none; }
+    button.success:hover { background: #56d364; }
+    button.danger { background: #f85149; color: #fff; border: none; }
+    button.danger:hover { background: #ff6b5b; }
+    .time-display {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 3px;
+      padding: 6px 8px;
+      font-size: 11px;
+      font-family: monospace;
+      text-align: center;
+      color: #e6edf3;
+    }
+    .stats-box {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 3px;
+      padding: 8px;
+      font-size: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .stat-item { display: flex; justify-content: space-between; }
+    .stat-ok { color: #3fb950; }
+    .stat-fail { color: #f85149; }
+    /* CENTER: Timeline + Table */
+    .center {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      gap: 12px;
+    }
+    /* TIMELINE LARGE */
+    .timeline-section {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #8b949e; }
+    .timeline-large {
+      position: relative;
+      height: 76px;
+      background: linear-gradient(to bottom, #0d1117 0%, #0d1117 50%, rgba(88, 166, 255, 0.05) 50%, rgba(88, 166, 255, 0.05) 100%);
+      border-radius: 3px;
+      border: 1px solid #30363d;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .timeline-track {
+      position: absolute;
+      height: 3px;
+      background: #30363d;
+      top: 38px;
+      left: 16px;
+      right: 16px;
+    }
+    .timeline-t0-mark {
+      position: absolute;
+      width: 3px;
+      height: 44px;
+      background: #f85149;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-1.5px);
+      box-shadow: 0 0 8px rgba(248, 81, 73, 0.4);
+    }
+    .timeline-t0-text {
+      position: absolute;
+      font-size: 11px;
+      font-weight: 700;
+      color: #f85149;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+    .timeline-event {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .timeline-tick {
+      width: 4px;
+      height: 14px;
+      background: #58a6ff;
+      border-radius: 1px;
+      margin-bottom: 3px;
+    }
+    .timeline-label {
+      font-size: 11px;
+      color: #58a6ff;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    .timeline-time {
+      font-size: 9px;
+      color: #8b949e;
+    }
+    .timeline-playhead {
+      position: absolute;
+      width: 3px;
+      height: 68px;
+      background: #58a6ff;
+      top: 4px;
+      left: 16px;
+      box-shadow: 0 0 12px rgba(88, 166, 255, 0.8);
+      z-index: 10;
+    }
+    .timeline-playhead.animating {
+      animation: playhead-move-v2 30s linear forwards;
+    }
+    @keyframes playhead-move-v2 {
+      from { left: 16px; }
+      to { left: calc(100% - 16px - 3px); }
+    }
+    /* TABLE COMPACT */
+    .table-section {
+      flex: 1;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: hidden;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      flex: 1;
+      overflow: auto;
+    }
+    thead { display: none; }
+    tbody { display: flex; flex-direction: column; overflow-y: auto; }
+    tr {
+      display: flex;
+      gap: 8px;
+      padding: 6px;
+      border-bottom: 1px solid #30363d;
+      align-items: center;
+    }
+    tr:hover { background: #1c2d3a; }
+    tr.active { background: #1c2d3a; border-left: 2px solid #58a6ff; padding-left: 6px; }
+    td {
+      flex: 1;
+      padding: 0;
+      display: flex;
+      align-items: center;
+    }
+    td:nth-child(1) { flex: 0 0 28px; color: #8b949e; text-align: center; }
+    td:nth-child(2) { flex: 0 0 140px; }
+    td:nth-child(3) { flex: 0 0 70px; font-size: 10px; }
+    td:nth-child(4) { flex: 0 0 50px; text-align: right; }
+    td:nth-child(5) { flex: 0 0 50px; text-align: right; }
+    td:nth-child(6) { flex: 0 0 60px; text-align: right; font-weight: 600; }
+    td:nth-child(7) { flex: 0 0 40px; text-align: center; }
+    .status-ok { color: #3fb950; }
+    .status-fail { color: #f85149; }
+    .status-warn { color: #e3b341; }
+    /* RIGHT SIDEBAR: LOG */
+    .right-sidebar {
+      width: 200px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .log-panel {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 10px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: hidden;
+    }
+    .log-content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .log-entry {
+      display: flex;
+      gap: 6px;
+      font-size: 10px;
+      padding: 3px;
+      border-left: 2px solid transparent;
+      border-radius: 2px;
+    }
+    .log-entry.info { border-left-color: #58a6ff; }
+    .log-entry.ok { border-left-color: #3fb950; color: #3fb950; }
+    .log-entry.fail { border-left-color: #f85149; color: #f85149; }
+    .log-entry.warn { border-left-color: #e3b341; color: #e3b341; }
+    .log-time { color: #8b949e; flex: 0 0 60px; font-family: monospace; font-size: 9px; }
+    .log-msg { flex: 1; color: #e6edf3; }
+  </style>
+</helmet>
+
+<div class="container">
+  <!-- HEADER: LARGE TIMER + STATUS -->
+  <div class="header">
+    <div class="header-left">
+      <div class="status-badge">
+        <div class="status-item">
+          <div class="status-dot"></div>
+          <span>COM7</span>
+        </div>
+        <div class="status-item">
+          <div class="status-dot"></div>
+          <span>БЦВМ</span>
+        </div>
+      </div>
+      <div class="channels-compact">
+        <span>CH:</span>
+        <div class="ch-dot active"></div>
+        <div class="ch-dot active"></div>
+        <div class="ch-dot"></div>
+        <div class="ch-dot"></div>
+        <div class="ch-dot"></div>
+        <div class="ch-dot"></div>
+        <div class="ch-dot"></div>
+        <div class="ch-dot active"></div>
+      </div>
+    </div>
+    <div class="header-timer countdown" id="timerDisplay">T-00:00:08</div>
+    <div class="next-event">
+      <div class="next-event-label">Следующее:</div>
+      <div class="next-event-time">3.2 сек</div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="main">
+    <!-- LEFT SIDEBAR: CONTROLS -->
+    <div class="left-sidebar">
+      <div class="button-group">
+        <div class="group-label">Циклограмма</div>
+        <button>Загрузить</button>
+        <button class="success">Запустить</button>
+      </div>
+      <div class="button-group">
+        <div class="group-label">Управление</div>
+        <button class="danger">СТОП</button>
+        <button>Сброс</button>
+      </div>
+      <div class="button-group">
+        <div class="group-label">Старт</div>
+        <div class="time-display">10:00:30</div>
+      </div>
+      <div style="flex: 1;"></div>
+      <div class="stats-box">
+        <div style="font-size: 10px; color: #8b949e; text-transform: uppercase;">Результат</div>
+        <div class="stat-item">
+          <span>✓ OK:</span>
+          <span class="stat-ok">2</span>
+        </div>
+        <div class="stat-item">
+          <span>✗ FAIL:</span>
+          <span class="stat-fail">1</span>
+        </div>
+        <div class="stat-item">
+          <span>Макс. откл:</span>
+          <span class="stat-fail">87 мс</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER: TIMELINE + TABLE -->
+    <div class="center">
+      <!-- TIMELINE -->
+      <div class="timeline-section">
+        <div class="section-title">Таймлайн событий</div>
+        <div class="timeline-large" id="timelineContainer">
+          <div class="timeline-track"></div>
+          <div class="timeline-t0-mark"></div>
+          <div class="timeline-t0-text">T0</div>
+          <div class="timeline-playhead" id="playhead"></div>
+          
+          <!-- Events -->
+          <div class="timeline-event" style="left: 60px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">1</div>
+            <div class="timeline-time">-8.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 140px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">2</div>
+            <div class="timeline-time">-4.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 220px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">3</div>
+            <div class="timeline-time">0.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 300px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">4</div>
+            <div class="timeline-time">4.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 380px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">5</div>
+            <div class="timeline-time">8.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 460px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">6</div>
+            <div class="timeline-time">12.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 540px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">7</div>
+            <div class="timeline-time">16.0s</div>
+          </div>
+          <div class="timeline-event" style="left: 620px;">
+            <div class="timeline-tick"></div>
+            <div class="timeline-label">8</div>
+            <div class="timeline-time">20.0s</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TABLE: EVENTS -->
+      <div class="table-section">
+        <div class="section-title">События</div>
+        <table>
+          <tbody>
+            <tr class="active">
+              <td>#</td>
+              <td>LIFT_OFF_CONTACT</td>
+              <td>CH1, CH2</td>
+              <td>0</td>
+              <td>1.2</td>
+              <td class="status-ok">+1.2</td>
+              <td class="status-ok">✓</td>
+            </tr>
+            <tr>
+              <td>#</td>
+              <td>MAIN_ENGINE_CUT</td>
+              <td>CH3, CH4, CH7</td>
+              <td>12000</td>
+              <td>12003</td>
+              <td class="status-ok">+3</td>
+              <td class="status-ok">✓</td>
+            </tr>
+            <tr>
+              <td>#</td>
+              <td>RECOVERY_CHUTE</td>
+              <td>CH5, CH6</td>
+              <td>15000</td>
+              <td>15087</td>
+              <td class="status-fail">+87</td>
+              <td class="status-fail">✗</td>
+            </tr>
+            <tr>
+              <td>#</td>
+              <td>DUMMY_EVENT</td>
+              <td>CH8</td>
+              <td>20000</td>
+              <td>20035</td>
+              <td class="status-warn">+35</td>
+              <td class="status-warn">⚠</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RIGHT SIDEBAR: LOG -->
+    <div class="right-sidebar">
+      <div class="log-panel">
+        <div class="section-title">Лог</div>
+        <div class="log-content">
+          <div class="log-entry info">
+            <span class="log-time">10:00:22</span>
+            <span class="log-msg">Циклограмма загружена</span>
+          </div>
+          <div class="log-entry ok">
+            <span class="log-time">10:00:30</span>
+            <span class="log-msg">LIFT_OFF ✓</span>
+          </div>
+          <div class="log-entry ok">
+            <span class="log-time">10:00:42</span>
+            <span class="log-msg">ENGINE_CUT ✓</span>
+          </div>
+          <div class="log-entry fail">
+            <span class="log-time">10:00:45</span>
+            <span class="log-msg">RECOVERY ✗ +87ms</span>
+          </div>
+          <div class="log-entry warn">
+            <span class="log-time">10:00:55</span>
+            <span class="log-msg">DUMMY ⚠ +35ms</span>
+          </div>
+          <div class="log-entry info">
+            <span class="log-time">10:01:00</span>
+            <span class="log-msg">Полёт завершён</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: {
+    &quot;width&quot;: 1280,
+    &quot;height&quot;: 800
+  }
+}">
+class Component extends DCLogic {
+  state = {
+    phase: 'countdown',
+    time: -8000,
+    playheadActive: false,
+  };
+
+  componentDidMount() {
+    const interval = setInterval(() => {
+      if (this.state.phase === 'countdown' && this.state.time < 0) {
+        this.setState(s => ({ time: s.time + 1000 }));
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }
+
+  renderVals() {
+    const { phase, time } = this.state;
+    
+    const formatTime = (ms) => {
+      const sign = ms < 0 ? '-' : '+';
+      const absMs = Math.abs(ms);
+      const mins = Math.floor(absMs / 60000);
+      const secs = Math.floor((absMs % 60000) / 1000);
+      const hundreds = Math.floor((absMs % 1000) / 10);
+      
+      if (mins > 0) {
+        return `${sign}${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+      return `${sign}${secs}.${hundreds.toString().padStart(2, '0')}s`;
+    };
+
+    return {
+      formatTime,
+      phase,
+      time,
+      timerClass: `header-timer ${phase}`,
+      timerText: formatTime(time),
+    };
+  }
+}
+</script>
+</body>
+</html>

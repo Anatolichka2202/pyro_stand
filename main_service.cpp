@@ -4,8 +4,10 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QTimer>
+#include <QDir>
 #include <cstdio>
 #include "stand.h"
+#include "session_logger.h"
 #include "types.h"
 
 static void emit_json(const QJsonObject &obj)
@@ -30,12 +32,27 @@ int main(int argc, char *argv[])
     parser.addVersionOption();
     QCommandLineOption cyclogramOpt({"c", "cyclogram"},
                                     "Path to cyclogram.ini", "path");
+    QCommandLineOption logDirOpt({"l", "log-dir"},
+                                 "Directory for session log file (default: current dir)",
+                                 "dir",
+                                 QDir::currentPath());
     parser.addOption(cyclogramOpt);
+    parser.addOption(logDirOpt);
     parser.process(app);
 
     const QString cyclogramPath = parser.value(cyclogramOpt);
+    const QString logDir        = parser.value(logDirOpt);
 
-    Stand stand; // uses DEFAULT_PORT (platform.h) and no logger
+    // Session logger — mandatory for telemetry/aerospace stands
+    SessionLogger logger(logDir);
+    if (!logger.isOpen()) {
+        fprintf(stderr, "WARNING: could not open log file in '%s'\n",
+                logDir.toUtf8().constData());
+    }
+    emit_json({{"type", "log"}, {"level", "INFO"},
+               {"msg", QString("Log file: %1").arg(logger.filePath())}});
+
+    Stand stand(nullptr, DEFAULT_SERIAL_PORT, nullptr, &logger);
 
     QObject::connect(&stand, &Stand::logMessage,
                      [](const QString &msg, const QString &type) {

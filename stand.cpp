@@ -230,7 +230,12 @@ void Stand::sendToBoard()
         emit logMessage("COM-порт не доступен. Невозможно отправить циклограмму.", "system");
         return;
     }
-    if (!pingBcvm()) {
+
+    // Mock/test mode: portName is empty when ISerialPort was injected externally.
+    // Skip network operations (BCVM ping, UDP send) — hardware not present.
+    const bool mockMode = m_portName.isEmpty();
+
+    if (!mockMode && !pingBcvm()) {
         emit logMessage("ОШИБКА: БЦВМ недоступна. Проверьте подключение.", "system");
         return;
     }
@@ -248,28 +253,32 @@ void Stand::sendToBoard()
     }
     emit logMessage(QString("Время до старта: %1 с (%2 мс)").arg(secsToStart).arg(m_timeToStartMs), "system");
 
-    // Отправляем файл циклограммы по UDP
-    const QString path = cyclogramFilePath();
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        emit logMessage("Не удалось открыть файл для отправки", "system");
-        return;
-    }
-    QStringList lines;
-    QTextStream stream(&file);
-    while (!stream.atEnd()) {
-        QString line = stream.readLine();
-        if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive))
-            line = "START_UTC_TIME = " + startTime.toString("hh:mm:ss");
-        lines.append(line);
-    }
-    file.close();
+    if (!mockMode) {
+        // Отправляем файл циклограммы по UDP
+        const QString path = cyclogramFilePath();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            emit logMessage("Не удалось открыть файл для отправки", "system");
+            return;
+        }
+        QStringList lines;
+        QTextStream stream(&file);
+        while (!stream.atEnd()) {
+            QString line = stream.readLine();
+            if (line.trimmed().startsWith("START_UTC_TIME", Qt::CaseInsensitive))
+                line = "START_UTC_TIME = " + startTime.toString("hh:mm:ss");
+            lines.append(line);
+        }
+        file.close();
 
-    const QByteArray datagram = lines.join("\n").toUtf8();
-    QUdpSocket udp;
-    const qint64 sent = udp.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
-    if (sent == -1) { emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return; }
-    emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
+        const QByteArray datagram = lines.join("\n").toUtf8();
+        QUdpSocket udp;
+        const qint64 sent = udp.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
+        if (sent == -1) { emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return; }
+        emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
+
+        m_port->clearBuffers();
+    }
 
     m_masks.clear();
     m_syncFound   = false;
@@ -277,7 +286,6 @@ void Stand::sendToBoard()
     m_analysisDone= false;
     m_stopped     = false;
 
-    m_port->clearBuffers();
     m_running = true;
     m_worker  = std::thread(&Stand::readingThread, this, m_timeToStartMs);
     updatePhase(Phase::Countdown);

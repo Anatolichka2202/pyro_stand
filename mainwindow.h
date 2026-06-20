@@ -20,7 +20,15 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
+    // Production: creates Stand + SessionLogger internally using DEFAULT_SERIAL_PORT
     explicit MainWindow(QWidget *parent = nullptr);
+
+    // Test/demo: caller provides pre-configured Stand (cyclogram not yet loaded).
+    // cyclogramPath: path to .ini file; empty = QCoreApplication::applicationDirPath()
+    explicit MainWindow(std::unique_ptr<Stand> stand,
+                        const QString &cyclogramPath,
+                        QWidget *parent = nullptr);
+
     ~MainWindow();
 
 private slots:
@@ -32,6 +40,9 @@ private slots:
 
 private:
     void setupUI();
+    void connectStand();              // wires all Stand signals → slots/lambdas
+    void finalizeInit(const QString &cyclogramPath); // loadCyclogram + initial UI sync
+
     void setPhase(Phase newPhase);
     void updateTimer(const TimerState &state);
     void updateNextEventTimer(const NextEventInfo &info);

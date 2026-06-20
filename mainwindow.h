@@ -32,8 +32,8 @@ private slots:
 private:
     void setupUI();
     void setPhase(Phase newPhase);
-    void updateTimer(const QString &text, const QString &color);
-    void updateNextEventTimer(const QString &text);
+    void updateTimer(const TimerState &state);
+    void updateNextEventTimer(const NextEventInfo &info);
     void addLog(const QString &text, const QString &type = "system");
     void updateTable(const QVector<EventRow> &events);
     void updateTableRow(int row, const EventRow &data);

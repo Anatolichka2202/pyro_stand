@@ -34,8 +34,8 @@ MainWindow::MainWindow(QWidget *parent)
     // ставил вызов в очередь GUI-треда при эмите из рабочего потока.
 
     connect(m_stand.get(), &Stand::phaseChanged,    this, &MainWindow::setPhase);
-    connect(m_stand.get(), &Stand::timerUpdated,    this, &MainWindow::updateTimer);
-    connect(m_stand.get(), &Stand::nextEventTimer,  this, &MainWindow::updateNextEventTimer);
+    connect(m_stand.get(), &Stand::timerTick,        this, &MainWindow::updateTimer);
+    connect(m_stand.get(), &Stand::nextEventChanged, this, &MainWindow::updateNextEventTimer);
     connect(m_stand.get(), &Stand::logMessage,      this, &MainWindow::addLog);
 
     // T16: дублировать logMessage в файл сессии
@@ -367,10 +367,12 @@ void MainWindow::setPhase(Phase newPhase)
         m_timerLabel->setStyleSheet("font-size: 24px; font-weight: 600; color: #3fb950; font-family: 'JetBrains Mono'; line-height: 1.2;");
         m_nextEventLabel->setText("");
     } else if (newPhase == Phase::Stopped) {
-        updateTimer("СТОП", "#f85149");
+        m_timerLabel->setText("СТОП");
+        m_timerLabel->setStyleSheet("font-size: 44px; font-weight: 600; color: #f85149; font-family: 'JetBrains Mono';");
         m_nextEventLabel->setText("");
     } else if (newPhase != Phase::Countdown && newPhase != Phase::Running) {
-        updateTimer("--:--", "#484f58");
+        m_timerLabel->setText("--:--");
+        m_timerLabel->setStyleSheet("font-size: 44px; font-weight: 600; color: #484f58; font-family: 'JetBrains Mono';");
         m_nextEventLabel->setText("До события: --:--");
     }
 
@@ -487,15 +489,36 @@ void MainWindow::refreshNextEventHighlight()
     }
 }
 
-void MainWindow::updateTimer(const QString &text, const QString &color)
+void MainWindow::updateTimer(const TimerState &state)
 {
+    QString text, color;
+    if (state.msToStart < 0) {
+        // Countdown: remaining ms, show as MM:SS
+        const int64_t rem = -state.msToStart;
+        const int secs = static_cast<int>(rem / 1000);
+        text  = QString("%1:%2").arg(secs / 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0'));
+        color = "#e3b341";
+    } else {
+        // Running: elapsed ms, show as MM:SS.X
+        const int secs = static_cast<int>(state.msToStart / 1000);
+        const int tenth = static_cast<int>((state.msToStart % 1000) / 100);
+        text  = QString("%1:%2.%3").arg(secs / 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0')).arg(tenth);
+        color = "#3fb950";
+    }
     m_timerLabel->setText(text);
     m_timerLabel->setStyleSheet(QString("font-size: 44px; font-weight: 600; color: %1; font-family: 'JetBrains Mono';").arg(color));
 }
 
-void MainWindow::updateNextEventTimer(const QString &text)
+void MainWindow::updateNextEventTimer(const NextEventInfo &info)
 {
-    m_nextEventLabel->setText("До события: " + text);
+    if (info.eventId == -1 || info.msRemaining == INT64_MAX) {
+        m_nextEventLabel->setText("До события: --:--");
+        return;
+    }
+    const int secs = static_cast<int>(info.msRemaining / 1000);
+    const int tenth = static_cast<int>((info.msRemaining % 1000) / 100);
+    const QString time = QString("%1:%2.%3").arg(secs / 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0')).arg(tenth);
+    m_nextEventLabel->setText(QString("До события: %1 (%2)").arg(time, info.description));
 }
 
 void MainWindow::addLog(const QString &text, const QString &type)

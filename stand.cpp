@@ -333,14 +333,10 @@ void Stand::readingThread(int64_t timeToStartMs)
         // Таймер (раз в секунду)
         if (absoluteIndex % 1000 == 0) {
             if (!started && absoluteIndex < timeToStartMs) {
-                const int64_t rem = timeToStartMs - absoluteIndex;
-                const int secs = rem / 1000;
-                emit timerUpdated(QString("%1:%2").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')), "#e3b341");
+                emit timerTick(TimerState{-(timeToStartMs - absoluteIndex), m_phase});
                 updateNextEvent(absoluteIndex, timeToStartMs);
             } else if (started) {
-                const int64_t flightMs = absoluteIndex - timeToStartMs;
-                const int secs = flightMs / 1000, ms = flightMs % 1000;
-                emit timerUpdated(QString("%1:%2.%3").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')).arg(ms/100), "#3fb950");
+                emit timerTick(TimerState{absoluteIndex - timeToStartMs, m_phase});
                 updateNextEvent(absoluteIndex, timeToStartMs);
             }
         }
@@ -529,25 +525,23 @@ void Stand::stop()
 
 void Stand::updateNextEvent(int64_t absoluteIndex, int64_t timeToStartMs)
 {
-    QString result;
+    NextEventInfo info;
     {
         QMutexLocker locker(&m_eventsMutex);
         int64_t nextTime = INT64_MAX;
-        QString nextKey;
         for (const auto &ev : m_events) {
             if (ev.status != "pending" || !ev.hasChannels) continue;
             const int64_t t = timeToStartMs + ev.time_ms;
-            if (t > absoluteIndex && t < nextTime) { nextTime = t; nextKey = ev.description.isEmpty() ? ev.key : ev.description; }
+            if (t > absoluteIndex && t < nextTime) {
+                nextTime          = t;
+                info.eventId      = ev.id;
+                info.description  = ev.description.isEmpty() ? ev.key : ev.description;
+            }
         }
-        if (nextTime != INT64_MAX) {
-            const int64_t rem = nextTime - absoluteIndex;
-            const int secs = rem / 1000, ms = (rem % 1000) / 100;
-            result = QString("%1:%2.%3 (%4)").arg(secs/60, 2, 10, QChar('0')).arg(secs%60, 2, 10, QChar('0')).arg(ms).arg(nextKey);
-        } else {
-            result = "--:-- (нет событий)";
-        }
+        if (nextTime != INT64_MAX)
+            info.msRemaining = nextTime - absoluteIndex;
     }
-    emit nextEventTimer(result);
+    emit nextEventChanged(info);
 }
 
 // ─── resetForNewTest ─────────────────────────────────────────────────────────

@@ -1,8 +1,13 @@
 #include <QApplication>
 #include "mainwindow.h"
+#include "types.h"
 
 int main(int argc, char *argv[])
 {
+    // Register custom types for cross-thread queued signal/slot delivery
+    qRegisterMetaType<TimerState>();
+    qRegisterMetaType<NextEventInfo>();
+
     QApplication a(argc, argv);
 
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета

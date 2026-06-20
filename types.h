@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <QMetaType>
+#include <cstdint>
 
 enum class TimeMode { UTC, MSK };
 
@@ -35,5 +36,19 @@ struct ChannelMapping {
     uint8_t mask    = 0;
     QString channelsStr;
 };
+
+// Structured signal payloads (T21)
+struct TimerState {
+    int64_t msToStart = 0; // <0 = countdown (ms remaining); >=0 = elapsed ms since T0
+    Phase   phase     = Phase::Idle;
+};
+Q_DECLARE_METATYPE(TimerState)
+
+struct NextEventInfo {
+    int     eventId     = -1;          // -1 = no pending event
+    int64_t msRemaining = INT64_MAX;   // ms until next event
+    QString description;               // event description or key for display
+};
+Q_DECLARE_METATYPE(NextEventInfo)
 
 #endif // TYPES_H

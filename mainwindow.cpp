@@ -152,73 +152,123 @@ void MainWindow::setupUI()
     timerLayout->addWidget(m_nextEventLabel);
     topLayout->addLayout(timerLayout, 1);
 
-    // Кнопки управления
-    QVBoxLayout *ctrlLayout = new QVBoxLayout();
-    ctrlLayout->setSpacing(8);
+    // ── Панель управления (правая колонка) ───────────────────────────────────
+    // Общая структура: статусы сверху, затем две группы кнопок
+    static const auto makeGroupLabel = [](const QString &text, QWidget *parent) {
+        auto *lbl = new QLabel(text, parent);
+        lbl->setStyleSheet(
+            "font-size: 9px; letter-spacing: 0.15em; color: #8b949e;"
+            "text-transform: uppercase; margin-bottom: 2px;");
+        return lbl;
+    };
+    static const auto makeSeparator = [](QWidget *parent) {
+        auto *sep = new QFrame(parent);
+        sep->setFrameShape(QFrame::HLine);
+        sep->setStyleSheet("color: #30363d;");
+        sep->setFixedHeight(1);
+        return sep;
+    };
 
-    m_loadBtn = new QPushButton("▤  ЗАГРУЗИТЬ НА БОРТ", this);
+    // Контейнер панели со стилем карточки
+    QWidget *ctrlCard = new QWidget(this);
+    ctrlCard->setStyleSheet(
+        "QWidget {"
+        "  background: #161b22;"
+        "  border: 1px solid #30363d;"
+        "  border-radius: 6px;"
+        "}"
+        // Стиль всех кнопок внутри карточки
+        "QPushButton {"
+        "  background: #0d1117;"
+        "  border: 1px solid #30363d;"
+        "  border-radius: 4px;"
+        "  color: #e6edf3;"
+        "  padding: 7px 12px;"
+        "  font-size: 12px;"
+        "  text-align: left;"
+        "}"
+        "QPushButton:hover  { border-color: #58a6ff; background: #1c2330; }"
+        "QPushButton:disabled { opacity: 0.4; }"
+        "QPushButton#stopBtn { border-color: #30363d; color: #f85149; }"
+        "QPushButton#stopBtn:hover { border-color: #f85149; background: #2d1010; }"
+    );
+
+    QVBoxLayout *ctrlLayout = new QVBoxLayout(ctrlCard);
+    ctrlLayout->setSpacing(6);
+    ctrlLayout->setContentsMargins(12, 10, 12, 10);
+
+    // ── Статусы COM / БЦВМ (вверху, крупно) ─────────────────────────────────
+    QHBoxLayout *statusRow = new QHBoxLayout();
+    statusRow->setSpacing(12);
+
+    m_comIndicator = new QLabel("● COM7", this);
+    m_comIndicator->setStyleSheet(
+        "font-size: 12px; font-weight: 600; letter-spacing: 0.05em;"
+        "color: #8b949e; background: transparent; border: none;");
+
+    m_bcvmIndicator = new QLabel("● БЦВМ", this);
+    m_bcvmIndicator->setStyleSheet(
+        "font-size: 12px; font-weight: 600; letter-spacing: 0.05em;"
+        "color: #8b949e; background: transparent; border: none;");
+
+    statusRow->addWidget(m_comIndicator);
+    statusRow->addWidget(m_bcvmIndicator);
+    statusRow->addStretch();
+    ctrlLayout->addLayout(statusRow);
+    ctrlLayout->addWidget(makeSeparator(ctrlCard));
+
+    // ── Группа «Подготовка» ──────────────────────────────────────────────────
+    ctrlLayout->addWidget(makeGroupLabel("Подготовка", ctrlCard));
+
+    m_loadBtn = new QPushButton("▤  ЗАГРУЗИТЬ НА БОРТ", ctrlCard);
     m_loadBtn->setObjectName("loadBtn");
     connect(m_loadBtn, &QPushButton::clicked, this, &MainWindow::onLoadToBoard);
+    ctrlLayout->addWidget(m_loadBtn);
 
-    m_setTimeBtn = new QPushButton("⏱  УСТАНОВИТЬ ВРЕМЯ СТАРТА", this);
+    m_setTimeBtn = new QPushButton("⏱  УСТАНОВИТЬ ВРЕМЯ СТАРТА", ctrlCard);
     m_setTimeBtn->setObjectName("setTimeBtn");
     connect(m_setTimeBtn, &QPushButton::clicked, this, &MainWindow::onSetTime);
+    ctrlLayout->addWidget(m_setTimeBtn);
 
-    m_timeInput = new QTimeEdit(this);
+    m_timeInput = new QTimeEdit(ctrlCard);
     m_timeInput->setDisplayFormat("hh:mm:ss");
     m_timeInput->setTime(QTime(0, 0, 10));
     m_timeInput->setStyleSheet(
         "QTimeEdit {"
-        "  background: #161b22;"
-        "  color: #c9d1d9;"
-        "  border: 1px solid #30363d;"
-        "  border-radius: 4px;"
-        "  padding: 4px 8px;"
-        "  font-size: 13px;"
+        "  background: #0d1117; color: #c9d1d9;"
+        "  border: 1px solid #30363d; border-radius: 4px;"
+        "  padding: 4px 8px; font-size: 13px;"
         "}"
         "QTimeEdit::up-button, QTimeEdit::down-button {"
-        "  background: #21262d;"
-        "  border: none;"
-        "  width: 16px;"
+        "  background: #21262d; border: none; width: 16px;"
         "}"
-        "QTimeEdit::up-arrow  { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid #8b949e; }"
-        "QTimeEdit::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top:    5px solid #8b949e; }"
+        "QTimeEdit::up-arrow   { image: none; border-left: 4px solid transparent;"
+        "  border-right: 4px solid transparent; border-bottom: 5px solid #8b949e; }"
+        "QTimeEdit::down-arrow { image: none; border-left: 4px solid transparent;"
+        "  border-right: 4px solid transparent; border-top: 5px solid #8b949e; }"
     );
     m_timeInput->hide();
+    ctrlLayout->addWidget(m_timeInput);
 
-    m_stopBtn = new QPushButton("■  СТОП", this);
+    ctrlLayout->addWidget(makeSeparator(ctrlCard));
+
+    // ── Группа «Управление» ──────────────────────────────────────────────────
+    ctrlLayout->addWidget(makeGroupLabel("Управление", ctrlCard));
+
+    m_stopBtn = new QPushButton("■  СТОП", ctrlCard);
     m_stopBtn->setObjectName("stopBtn");
     m_stopBtn->setEnabled(false);
     connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::onStop);
+    ctrlLayout->addWidget(m_stopBtn);
 
-    m_resetBtn = new QPushButton("↺  СБРОС", this);
+    m_resetBtn = new QPushButton("↺  СБРОС", ctrlCard);
     m_resetBtn->setObjectName("resetBtn");
     m_resetBtn->setEnabled(false);
     connect(m_resetBtn, &QPushButton::clicked, this, &MainWindow::onReset);
-
-    ctrlLayout->addWidget(m_loadBtn);
-    ctrlLayout->addWidget(m_setTimeBtn);
-    ctrlLayout->addWidget(m_timeInput);
-    ctrlLayout->addWidget(m_stopBtn);
     ctrlLayout->addWidget(m_resetBtn);
 
-    // T11: COM + БЦВМ status indicators
-    QHBoxLayout *statusLayout = new QHBoxLayout();
-    statusLayout->setSpacing(16);
-
-    m_comIndicator = new QLabel("● COM7", this);
-    m_comIndicator->setStyleSheet("font-size: 10px; letter-spacing: 0.1em; color: #8b949e;");
-
-    m_bcvmIndicator = new QLabel("● БЦВМ", this);
-    m_bcvmIndicator->setStyleSheet("font-size: 10px; letter-spacing: 0.1em; color: #8b949e;");
-
-    statusLayout->addWidget(m_comIndicator);
-    statusLayout->addWidget(m_bcvmIndicator);
-    statusLayout->addStretch();
-
-    ctrlLayout->addLayout(statusLayout);
-
-    topLayout->addLayout(ctrlLayout);
+    ctrlLayout->addStretch();
+    topLayout->addWidget(ctrlCard);
 
     mainLayout->addLayout(topLayout);
 
@@ -314,11 +364,34 @@ void MainWindow::setupUI()
 
     mainLayout->addWidget(m_summaryStrip);
 
-    // Лог
-    m_logEdit = new QTextEdit(this);
-    m_logEdit->setReadOnly(true);
-    m_logEdit->setMaximumHeight(200);
-    mainLayout->addWidget(m_logEdit);
+    // Лог — двухколоночная таблица: время | сообщение
+    m_logTable = new QTableWidget(0, 2, this);
+    m_logTable->setHorizontalHeaderLabels({"ВРЕМЯ", "СООБЩЕНИЕ"});
+    m_logTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_logTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_logTable->horizontalHeader()->setStyleSheet(
+        "QHeaderView::section {"
+        "  background: #161b22; color: #8b949e;"
+        "  border: none; border-bottom: 1px solid #30363d;"
+        "  font-size: 9px; letter-spacing: 0.15em; padding: 4px 8px;"
+        "}"
+    );
+    m_logTable->verticalHeader()->hide();
+    m_logTable->setShowGrid(false);
+    m_logTable->setEditTriggers(QTableWidget::NoEditTriggers);
+    m_logTable->setSelectionMode(QTableWidget::NoSelection);
+    m_logTable->setFocusPolicy(Qt::NoFocus);
+    m_logTable->setMaximumHeight(180);
+    m_logTable->setStyleSheet(
+        "QTableWidget {"
+        "  background: #0d1117; border: 1px solid #30363d;"
+        "  border-radius: 4px; font-size: 12px;"
+        "}"
+        "QTableWidget::item { padding: 3px 8px; border: none; }"
+        "QScrollBar:vertical { background: #0d1117; width: 6px; }"
+        "QScrollBar::handle:vertical { background: #30363d; border-radius: 3px; }"
+    );
+    mainLayout->addWidget(m_logTable);
 }
 
 // ─── Управление фазой ─────────────────────────────────────────────────────────
@@ -482,11 +555,48 @@ void MainWindow::updateNextEventTimer(const QString &text)
 
 void MainWindow::addLog(const QString &text, const QString &type)
 {
-    QString color = "#c8d0dc";
-    if      (type == "system")     color = "#8b949e";
-    else if (type == "event")      color = "#c8d0dc";
-    else if (type == "event-post") color = "#f85149";
-    m_logEdit->append(QString("<span style=\"color:%1;\">%2</span>").arg(color, text.toHtmlEscaped()));
+    // Цвет и левая полоска-индикатор уровня
+    QString textColor  = "#c8d0dc";
+    QString stripColor = "#58a6ff"; // info = синий
+    if (type == "system") {
+        textColor  = "#8b949e";
+        stripColor = "#30363d";
+    } else if (type == "event") {
+        textColor  = "#3fb950";
+        stripColor = "#3fb950";
+    } else if (type == "event-post") {
+        textColor  = "#f85149";
+        stripColor = "#f85149";
+    }
+
+    const int row = m_logTable->rowCount();
+    m_logTable->insertRow(row);
+
+    // Колонка 0: временная метка
+    const QString ts = QDateTime::currentDateTime().toString("HH:mm:ss");
+    auto *tsItem = new QTableWidgetItem(ts);
+    tsItem->setForeground(QColor("#8b949e"));
+    tsItem->setFont(QFont("JetBrains Mono, monospace", 10));
+    m_logTable->setItem(row, 0, tsItem);
+
+    // Колонка 1: сообщение с цветовым индикатором слева
+    auto *msgItem = new QTableWidgetItem(text);
+    msgItem->setForeground(QColor(textColor));
+    m_logTable->setItem(row, 1, msgItem);
+
+    // Фон строки — лёгкий тинт для ok/fail
+    if (type == "event") {
+        QColor bg(0x3f, 0xb9, 0x50, 18);
+        tsItem->setBackground(bg);
+        msgItem->setBackground(bg);
+    } else if (type == "event-post") {
+        QColor bg(0xf8, 0x51, 0x49, 18);
+        tsItem->setBackground(bg);
+        msgItem->setBackground(bg);
+    }
+
+    m_logTable->scrollToBottom();
+    (void)stripColor; // используется только для будущего delegate
 }
 
 void MainWindow::updateTable(const QVector<EventRow> &events)

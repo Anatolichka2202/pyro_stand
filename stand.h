@@ -9,6 +9,7 @@
 #include <memory>
 #include "types.h"
 #include "serial_port.h"
+#include "platform.h"
 #include <QMutex>
 
 // Forward declaration — полный заголовок не нужен в stand.h,
@@ -100,7 +101,7 @@ private:
 
     SessionLogger *m_logger = nullptr; // не владеет — владеет MainWindow
 
-    static constexpr const char* DEFAULT_PORT   = "COM7";
+    static constexpr const char* DEFAULT_PORT   = DEFAULT_SERIAL_PORT;
     static constexpr int   BAUD_RATE            = 115200;
     static constexpr const char* CYCLOGRAM_FILE = "cyclogram.ini";
     static constexpr uint8_t SYNC_MASK          = 0x80;

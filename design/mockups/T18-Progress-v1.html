@@ -1,0 +1,666 @@
+<!-- STATUS: draft -->
+<!-- TASK: T18 — Progress block (replaces timeline) -->
+<!-- FROM: Артём (Claude Code) -->
+<!-- DATE: 2026-06-20 -->
+<!-- BASED ON: T18-Timeline-v2.dc.html layout + ORCHESTRATOR_REPLY.md (Variant B) -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pyro_stand — T18 Progress Block</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  width: 1280px;
+  height: 800px;
+}
+
+/* ── LAYOUT ─────────────────────────────────── */
+.app {
+  display: flex;
+  flex-direction: column;
+  width: 1280px;
+  height: 800px;
+  padding: 12px;
+  gap: 10px;
+}
+
+/* ── HEADER BAR ──────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px 16px;
+  height: 72px;
+  flex-shrink: 0;
+}
+
+.status-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 10px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+}
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+.status-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 6px rgba(63,185,80,0.6);
+}
+.status-dot.disconnected {
+  background: #f85149;
+  box-shadow: 0 0 6px rgba(248,81,73,0.6);
+}
+
+.header-timer {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 48px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #e3b341;
+  text-shadow: 0 0 20px rgba(227,179,65,0.35);
+  min-width: 300px;
+  text-align: center;
+}
+.header-timer.running { color: #3fb950; text-shadow: 0 0 20px rgba(63,185,80,0.35); }
+.header-timer.stopped { color: #f85149; text-shadow: none; }
+.header-timer.idle    { color: #484f58; text-shadow: none; }
+
+.phase-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.timer-caption {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: #8b949e;
+  text-transform: uppercase;
+}
+.phase-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  font-weight: 600;
+  color: #e3b341;
+}
+.phase-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #e3b341;
+  animation: blink 1s step-start infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.spacer { flex: 1; }
+
+/* ── MAIN BODY ──────────────────────────────── */
+.body {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── LEFT: CONTROL PANEL ───────────────────── */
+.ctrl-panel {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctrl-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ctrl-group-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4em;
+  color: #8b949e;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #30363d;
+  margin-bottom: 2px;
+}
+.btn {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  border-radius: 4px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+}
+.btn:hover { border-color: #58a6ff; background: #1c2330; }
+.btn.stop  { color: #f85149; border-color: #f8514940; }
+.btn.stop:hover { border-color: #f85149; background: #1f1216; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn:disabled:hover { border-color: #30363d; background: #0d1117; }
+
+.time-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #e6edf3;
+}
+.time-input-row .label { font-size: 9px; color: #8b949e; }
+.time-value { letter-spacing: 0.05em; }
+
+.separator { height: 1px; background: #30363d; margin: 2px 0; }
+
+/* ── CENTER: PROGRESS + TABLE ──────────────── */
+.center-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ── PROGRESS BLOCK (replaces timeline) ──────────────── */
+/* Qt: custom QWidget paintEvent or QFrame with QHBoxLayout */
+.progress-block {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 64px;
+  flex-shrink: 0;
+}
+
+/* Event counter: EVENT 2 / 4 with icons */
+.event-counter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.event-icons {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.ev-icon {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ev-icon.done {
+  background: rgba(63,185,80,0.18);
+  color: #3fb950;
+  border: 1.5px solid #3fb950;
+}
+.ev-icon.done::after { content: '✓'; }
+.ev-icon.pending {
+  background: transparent;
+  color: #484f58;
+  border: 1.5px solid #484f58;
+}
+.ev-icon.pending::after { content: '○'; font-size: 13px; }
+
+.event-count-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: #e6edf3;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.event-count-sub {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #8b949e;
+  margin-top: 2px;
+}
+
+.progress-divider {
+  width: 1px;
+  height: 40px;
+  background: #30363d;
+}
+
+/* Next event timer */
+.next-event-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.next-event-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #8b949e;
+}
+.next-event-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px;
+  font-weight: 700;
+  color: #58a6ff;
+}
+
+/* Channel dots */
+.channels-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: auto;
+}
+.channels-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #8b949e;
+}
+.ch-dots {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.ch-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #21262d;
+  border: 1.5px solid #30363d;
+}
+.ch-dot.fired   { background: #3fb950; border-color: #3fb950; box-shadow: 0 0 6px rgba(63,185,80,0.6); }
+.ch-dot.pending { background: #21262d; border-color: #484f58; }
+.ch-dot.active  { background: #58a6ff; border-color: #58a6ff; box-shadow: 0 0 8px rgba(88,166,255,0.7); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 5px rgba(88,166,255,0.7); } 50% { box-shadow: 0 0 12px rgba(88,166,255,0.9); } }
+
+/* ── EVENT TABLE ────────────────────────────── */
+.table-section {
+  flex: 1;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+.section-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+.event-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.event-table thead th {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #8b949e;
+  text-align: center;
+  padding: 4px 6px;
+  border-bottom: 1px solid #30363d;
+  font-weight: 600;
+}
+.event-table thead th:nth-child(2) { text-align: left; }
+.event-table thead th:nth-child(3) { text-align: left; }
+.event-table tbody tr {
+  border-bottom: 1px solid #21262d;
+  transition: background 0.1s;
+}
+.event-table tbody tr:hover { background: #1c2d3a; }
+.event-table tbody tr.active-row { background: #1c2d3a; }
+.event-table tbody tr.active-row td:first-child {
+  border-left: 2px solid #58a6ff;
+}
+.event-table td {
+  padding: 8px 6px;
+  text-align: center;
+  color: #e6edf3;
+}
+.event-table td:nth-child(2) { text-align: left; font-size: 10px; color: #c8d0dc; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-table td:nth-child(3) { text-align: left; font-size: 10px; color: #8b949e; }
+.event-table td:nth-child(4),
+.event-table td:nth-child(5),
+.event-table td:nth-child(6) { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.num-col  { color: #8b949e; font-weight: 600; }
+.ok   { color: #3fb950; }
+.warn { color: #e3b341; }
+.fail { color: #f85149; }
+.dim  { color: #484f58; }
+
+.table-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-top: 6px;
+  border-top: 1px solid #30363d;
+  flex-shrink: 0;
+}
+.footer-stat { font-size: 11px; }
+.export-btn {
+  margin-left: auto;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.export-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+
+/* ── RIGHT: LOG PANEL ─────────────────────── */
+.log-panel {
+  width: 210px;
+  flex-shrink: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.log-entry {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.log-entry.system { color: #8b949e; }
+.log-entry.event-ok {
+  color: #3fb950;
+  background: rgba(63,185,80,0.07);
+  border-left: 2px solid #3fb950;
+  padding-left: 5px;
+}
+.log-entry.event-fail {
+  color: #f85149;
+  background: rgba(248,81,73,0.07);
+  border-left: 2px solid #f85149;
+  padding-left: 5px;
+}
+.log-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: #8b949e;
+  white-space: nowrap;
+}
+.log-msg { color: inherit; word-break: break-word; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── HEADER ─────────────────────────────────── -->
+  <div class="header">
+    <div class="status-group">
+      <div class="status-item">
+        <div class="status-dot"></div>
+        <span>COM7</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot"></div>
+        <span>БЦВМ</span>
+      </div>
+    </div>
+
+    <div class="phase-col">
+      <div class="timer-caption">ОБРАТНЫЙ ОТСЧЁТ ДО СТАРТА</div>
+      <div class="phase-badge">
+        <div class="phase-dot"></div>
+        ОТСЧЁТ
+      </div>
+    </div>
+
+    <div class="header-timer">T-00:00:08</div>
+  </div>
+
+  <!-- ── BODY ────────────────────────────────────── -->
+  <div class="body">
+
+    <!-- LEFT: CONTROL PANEL -->
+    <div class="ctrl-panel">
+      <div class="ctrl-card">
+        <div class="ctrl-group-label">Подготовка</div>
+        <button class="btn">▤  ЗАГРУЗИТЬ НА БОРТ</button>
+        <button class="btn">⏱  УСТАНОВИТЬ ВРЕМЯ СТАРТА</button>
+        <div class="time-input-row">
+          <span class="label">Старт:</span>
+          <span class="time-value">10:00:30</span>
+        </div>
+      </div>
+
+      <div class="ctrl-card">
+        <div class="ctrl-group-label">Управление</div>
+        <button class="btn stop">■  СТОП</button>
+        <button class="btn" disabled>↺  СБРОС</button>
+      </div>
+    </div>
+
+    <!-- CENTER: PROGRESS BLOCK + TABLE -->
+    <div class="center-col">
+
+      <!-- PROGRESS BLOCK (replaces 52px timeline) -->
+      <!-- Qt: QWidget ~64px, QHBoxLayout. Left: custom drawn or QLabel icons.
+           Center: QLabel "До события: X.Xс". Right: 8 QLabel dots updated from Stand signals. -->
+      <div class="progress-block">
+        <div class="event-counter">
+          <div class="event-icons">
+            <div class="ev-icon done" title="IGNITE_PYRO_9_TO_12"></div>
+            <div class="ev-icon active" title="IGNITE_PYRO_1_TO_8" style="border-color:#58a6ff; color:#58a6ff; background: rgba(88,166,255,0.15);">→</div>
+            <div class="ev-icon pending"></div>
+            <div class="ev-icon pending"></div>
+          </div>
+          <div>
+            <div class="event-count-text">EVENT 1 / 4</div>
+            <div class="event-count-sub">Событий выполнено</div>
+          </div>
+        </div>
+
+        <div class="progress-divider"></div>
+
+        <div class="next-event-block">
+          <div class="next-event-label">До следующего события</div>
+          <div class="next-event-value">3.2 с</div>
+        </div>
+
+        <div class="channels-block">
+          <div class="channels-label">Каналы CH</div>
+          <div class="ch-dots">
+            <!-- CH1,CH2: IGNITE 9-12 (done) -->
+            <div class="ch-dot fired" title="CH1"></div>
+            <div class="ch-dot fired" title="CH2"></div>
+            <!-- CH3,CH4,CH5: IGNITE 1-8 (next) -->
+            <div class="ch-dot active" title="CH3"></div>
+            <div class="ch-dot active" title="CH4"></div>
+            <div class="ch-dot active" title="CH5"></div>
+            <!-- CH6,CH7: CLOSE_MAIN_VALVES (pending) -->
+            <div class="ch-dot pending" title="CH6"></div>
+            <div class="ch-dot pending" title="CH7"></div>
+            <!-- CH8: LIFT_OFF_CONTACT (pending) -->
+            <div class="ch-dot pending" title="CH8"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EVENT TABLE -->
+      <div class="table-section">
+        <div class="section-title">События циклограммы</div>
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th style="width:28px">#</th>
+              <th>СОБЫТИЕ</th>
+              <th style="width:80px">КАНАЛЫ</th>
+              <th style="width:72px">ПЛАН МС</th>
+              <th style="width:72px">ФАКТ МС</th>
+              <th style="width:72px">ОТКЛ МС</th>
+              <th style="width:70px">СТАТУС</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="num-col">1</td>
+              <td>IGNITE_PYRO_CANDLES_ENGINES_9_TO_12</td>
+              <td>1, 2</td>
+              <td>-8000</td>
+              <td>-7998</td>
+              <td class="ok">+2</td>
+              <td class="ok">✓ OK</td>
+            </tr>
+            <tr class="active-row">
+              <td class="num-col">2</td>
+              <td>IGNITE_PYRO_CANDLES_ENGINES_1_TO_8</td>
+              <td>3, 4, 5</td>
+              <td>-7980</td>
+              <td class="dim">—</td>
+              <td class="dim">—</td>
+              <td style="color:#8b949e">ожид.</td>
+            </tr>
+            <tr>
+              <td class="num-col">3</td>
+              <td>CLOSE_MAIN_VALVES_ENGINES_9_TO_12</td>
+              <td>6, 7</td>
+              <td>-7950</td>
+              <td class="dim">—</td>
+              <td class="dim">—</td>
+              <td style="color:#8b949e">ожид.</td>
+            </tr>
+            <tr>
+              <td class="num-col">4</td>
+              <td>LIFT_OFF_CONTACT</td>
+              <td>8</td>
+              <td>0</td>
+              <td class="dim">—</td>
+              <td class="dim">—</td>
+              <td style="color:#8b949e">ожид.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="table-footer">
+          <div class="footer-stat">Результат: <span class="ok">1✓</span> / <span style="color:#8b949e">3○</span></div>
+          <div class="footer-stat" style="color:#8b949e">Макс. откл: <span class="ok">2 мс</span></div>
+          <button class="export-btn">⬇ Экспорт CSV</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: LOG -->
+    <div class="log-panel">
+      <div class="section-title">Лог</div>
+      <div class="log-entries">
+        <div class="log-entry system">
+          <span class="log-time">10:00:10</span>
+          <span class="log-msg">COM7 подключён</span>
+        </div>
+        <div class="log-entry system">
+          <span class="log-time">10:00:12</span>
+          <span class="log-msg">БЦВМ подключена</span>
+        </div>
+        <div class="log-entry system">
+          <span class="log-time">10:00:22</span>
+          <span class="log-msg">Циклограмма загружена (4 события)</span>
+        </div>
+        <div class="log-entry system">
+          <span class="log-time">10:00:30</span>
+          <span class="log-msg">Время старта: 10:00:38</span>
+        </div>
+        <div class="log-entry system">
+          <span class="log-time">10:00:31</span>
+          <span class="log-msg">Загружено на борт</span>
+        </div>
+        <div class="log-entry system">
+          <span class="log-time">10:00:32</span>
+          <span class="log-msg">Отсчёт начат: T-8с</span>
+        </div>
+        <div class="log-entry event-ok">
+          <span class="log-time">10:00:38</span>
+          <span class="log-msg">IGNITE_PYRO_9_12 ✓ +2мс</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /body -->
+</div><!-- /app -->
+
+<!--
+Qt implementation notes:
+──────────────────────────────────────────────────────────────────────────────
+Progress block (replaces TimelineWidget):
+  - QWidget subclass, height=64px, fixed height
+  - QHBoxLayout: [EventCounterWidget] [QFrame vsep] [NextEventLabel] [ChDotsWidget]
+  - EventCounterWidget: 4 QLabel icons (✓ green or ○ grey) + QLabel "EVENT N / 4"
+    Updated via new Stand signal: eventCountChanged(int fired, int total)
+  - NextEventLabel: QLabel "До следующего: X.Xс", connect to Stand::nextEventTimer
+  - ChDotsWidget: 8 QLabel circles, update color via Stand::channelFired(int ch)
+
+Table: extend to 7 columns
+  m_table = new QTableWidget(0, 7, this)
+  headers: {"#","СОБЫТИЕ","КАНАЛЫ","ПЛАН МС","ФАКТ МС","ОТКЛ МС","СТАТУС"}
+  updateTableRow() needs planMs from EventRow (add field to types.h)
+  ОТКЛ МС color: ≤5→green, 6-50→yellow, >50→red
+
+Log panel: QTableWidget (2 cols: TIME | MSG), as implemented in feat/T19-ui-redesign
+──────────────────────────────────────────────────────────────────────────────
+-->
+</body>
+</html>

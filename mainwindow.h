@@ -20,8 +20,12 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
-    // Production: creates Stand + SessionLogger internally using DEFAULT_SERIAL_PORT
-    explicit MainWindow(QWidget *parent = nullptr);
+    // Production: creates Stand + SessionLogger internally.
+    // portOverride: serial device path; empty = DEFAULT_SERIAL_PORT from platform.h
+    // logDir: log file directory; empty = applicationDirPath() with home fallback
+    explicit MainWindow(const QString &portOverride = {},
+                        const QString &logDir = {},
+                        QWidget *parent = nullptr);
 
     // Test/demo: caller provides pre-configured Stand (cyclogram not yet loaded).
     // cyclogramPath: path to .ini file; empty = QCoreApplication::applicationDirPath()

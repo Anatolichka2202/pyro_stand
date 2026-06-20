@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "platform.h"
 #include <QVBoxLayout>
+#include <QStandardPaths>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMessageBox>
@@ -12,15 +14,27 @@
 
 // ─── Production constructor ───────────────────────────────────────────────────
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const QString &portOverride, const QString &logDir, QWidget *parent)
     : QMainWindow(parent)
 {
     setupUI();
 
+    // Resolve log directory: prefer explicit arg, then applicationDirPath if writable,
+    // then home dir as last resort (relevant on Linux with system installs).
+    QString resolvedLogDir = logDir;
+    if (resolvedLogDir.isEmpty()) {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        resolvedLogDir = QFileInfo(appDir).isWritable()
+                             ? appDir
+                             : QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    }
+
     // T16: logger создаётся первым, stand — вторым.
     // Деструкторы: m_stand (join worker thread) → m_logger (close file).
-    m_logger = std::make_unique<SessionLogger>(QCoreApplication::applicationDirPath());
-    m_stand  = std::make_unique<Stand>(nullptr, DEFAULT_SERIAL_PORT, nullptr, m_logger.get());
+    m_logger = std::make_unique<SessionLogger>(resolvedLogDir);
+
+    const QString port = portOverride.isEmpty() ? QString(DEFAULT_SERIAL_PORT) : portOverride;
+    m_stand  = std::make_unique<Stand>(nullptr, port, nullptr, m_logger.get());
 
     connectStand();
     finalizeInit({});

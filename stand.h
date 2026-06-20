@@ -52,8 +52,8 @@ public:
 
 signals:
     void phaseChanged(Phase newPhase);
-    void timerUpdated(const QString &text, const QString &color);
-    void nextEventTimer(const QString &text);
+    void timerTick(TimerState state);
+    void nextEventChanged(NextEventInfo info);
     void eventFired(int eventId, int absoluteTick);
     void analysisDone(const QVector<EventRow> &events);
     void logMessage(const QString &msg, const QString &type);

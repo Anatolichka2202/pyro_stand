@@ -1,0 +1,15 @@
+[Unit]
+Description=Pyro Stand Flight Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pyro_service --cyclogram /etc/pyro_stand/cyclogram.ini
+Restart=on-failure
+RestartSec=5
+User=pyro
+Group=dialout
+Environment=QT_QPA_PLATFORM=offscreen
+
+[Install]
+WantedBy=multi-user.target

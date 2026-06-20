@@ -32,6 +32,12 @@ target_link_libraries(pyro_stand
     Qt6::SerialPort
 )
 
+if(WIN32)
+    target_compile_definitions(pyro_stand PRIVATE PYRO_WINDOWS)
+elseif(UNIX)
+    target_compile_definitions(pyro_stand PRIVATE PYRO_LINUX)
+endif()
+
 # ── Тесты ────────────────────────────────────────────────────────────────────
 
 enable_testing()

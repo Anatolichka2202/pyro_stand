@@ -8,6 +8,7 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTimer>
+#include <QFrame>
 #include <QWidget>
 #include <memory>
 #include "types.h"
@@ -44,7 +45,7 @@ private:
     void updateComIndicator(bool open);
     void updateBcvmIndicator(bool reachable);
 
-    // T12: 8-channel state dots
+    // T12: 8-channel chips
     void updateChannelDot(int channel, const QString &color); // channel 1-8
     void resetChannelDots();
 
@@ -61,13 +62,22 @@ private:
     QPushButton  *m_stopBtn        = nullptr;
     QPushButton  *m_resetBtn       = nullptr;
     QTimeEdit    *m_timeInput      = nullptr;
+    QLabel       *m_startTimeLabel = nullptr;  // shows current start time inline
 
-    // T11
-    QLabel *m_comIndicator  = nullptr;
-    QLabel *m_bcvmIndicator = nullptr;
+    // T11: COM + БЦВМ as chip-style widgets
+    QFrame *m_comChip    = nullptr;
+    QLabel *m_comDot     = nullptr;
+    QLabel *m_comStatus  = nullptr;
+    QFrame *m_bcvmChip   = nullptr;
+    QLabel *m_bcvmDot    = nullptr;
+    QLabel *m_bcvmStatus = nullptr;
 
-    // T12
-    QLabel *m_channelDots[8] = {};
+    // T12: channel chip widgets (dot inside a styled card)
+    struct ChannelChip {
+        QFrame *frame = nullptr;
+        QLabel *dot   = nullptr;
+    };
+    ChannelChip m_channelChips[8];
 
     // T17
     QWidget     *m_summaryStrip = nullptr;
@@ -77,7 +87,7 @@ private:
     // T18: timeline
     TimelineWidget *m_timeline = nullptr;
 
-    // T16: m_stand уничтожается перед m_logger (порядок деструкторов = обратный порядку объявления)
+    // T16: m_stand destroyed before m_logger (reverse declaration order)
     std::unique_ptr<SessionLogger> m_logger;
     std::unique_ptr<Stand>         m_stand;
     Phase  m_phase = Phase::Idle;

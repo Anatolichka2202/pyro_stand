@@ -38,6 +38,32 @@ elseif(UNIX)
     target_compile_definitions(pyro_stand PRIVATE PYRO_LINUX)
 endif()
 
+# ── Сервис (headless, без GUI) ────────────────────────────────────────────────
+
+option(BUILD_SERVICE "Build headless pyro_service binary (no GUI, JSON stdout)" OFF)
+
+if(BUILD_SERVICE)
+    add_executable(pyro_service
+        main_service.cpp
+        stand.cpp
+        stand.h
+        platform.h
+        session_logger.cpp
+        session_logger.h
+        types.h
+    )
+    target_link_libraries(pyro_service
+        Qt6::Core
+        Qt6::Network
+        Qt6::SerialPort
+    )
+    if(WIN32)
+        target_compile_definitions(pyro_service PRIVATE PYRO_WINDOWS)
+    elseif(UNIX)
+        target_compile_definitions(pyro_service PRIVATE PYRO_LINUX)
+    endif()
+endif()
+
 # ── Тесты ────────────────────────────────────────────────────────────────────
 
 enable_testing()

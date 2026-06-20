@@ -36,12 +36,18 @@ int main(int argc, char *argv[])
                                  "Directory for session log file (default: current dir)",
                                  "dir",
                                  QDir::currentPath());
+    QCommandLineOption portOpt({"p", "port"},
+                               "Serial port device (e.g. /dev/ttyUSB0, COM7)",
+                               "port",
+                               DEFAULT_SERIAL_PORT);
     parser.addOption(cyclogramOpt);
     parser.addOption(logDirOpt);
+    parser.addOption(portOpt);
     parser.process(app);
 
     const QString cyclogramPath = parser.value(cyclogramOpt);
     const QString logDir        = parser.value(logDirOpt);
+    const QString portName      = parser.value(portOpt);
 
     // Session logger — mandatory for telemetry/aerospace stands
     SessionLogger logger(logDir);
@@ -52,7 +58,7 @@ int main(int argc, char *argv[])
     emit_json({{"type", "log"}, {"level", "INFO"},
                {"msg", QString("Log file: %1").arg(logger.filePath())}});
 
-    Stand stand(nullptr, DEFAULT_SERIAL_PORT, nullptr, &logger);
+    Stand stand(nullptr, portName, nullptr, &logger);
 
     QObject::connect(&stand, &Stand::logMessage,
                      [](const QString &msg, const QString &type) {

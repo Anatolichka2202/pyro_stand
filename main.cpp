@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QCommandLineParser>
 #include "mainwindow.h"
 #include "types.h"
 
@@ -9,6 +10,14 @@ int main(int argc, char *argv[])
     qRegisterMetaType<NextEventInfo>();
 
     QApplication a(argc, argv);
+    a.setApplicationName("pyro_stand");
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Пиростенд — мониторинг пирособытий при пуске ракеты");
+    parser.addHelpOption();
+    parser.addOption({{"p", "port"}, "COM-порт (напр. /dev/ttyUSB0, COM7)", "port"});
+    parser.addOption({{"l", "log-dir"}, "Папка для лог-файла сессии", "dir"});
+    parser.process(a);
 
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
@@ -73,10 +82,9 @@ int main(int argc, char *argv[])
             padding: 4px 8px;
             width: 100px;
         }
-        /* Стиль для индикатора фазы (кружок) – будет задаваться динамически */
     )");
 
-    MainWindow w;
+    MainWindow w(parser.value("port"), parser.value("log-dir"));
     w.show();
     return a.exec();
 }

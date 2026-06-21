@@ -276,6 +276,8 @@ void Stand::sendToBoard()
         emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
 
         m_port->clearBuffers();
+    } else {
+        m_port->clearBuffers();  // mock: сбрасывает m_tick для повторного прогона
     }
 
     m_masks.clear();

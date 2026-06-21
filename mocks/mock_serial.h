@@ -34,7 +34,8 @@ public:
     QString errorString() const override {
         return m_open ? QString() : QStringLiteral("MockSerial: port dropped");
     }
-    void clearBuffers() override {}
+    // Сбрасывает состояние для повторного прогона (reset + re-run в demo/test)
+    void clearBuffers() override { m_tick = 0; m_open = false; }
 
     int64_t currentTick() const { return m_tick; }
 

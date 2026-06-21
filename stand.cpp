@@ -30,9 +30,11 @@ Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPo
         // Пробная проверка доступности порта
         m_portAvailable = m_port->open(portName, BAUD_RATE);
         if (m_portAvailable) {
-            m_port->close(); // закроем — откроем в readingThread
+            m_port->close();
+            if (m_logger) m_logger->log("INFO", "COM-порт " + portName + " доступен");
             emit logMessage("COM-порт " + portName + " доступен", "system");
         } else {
+            if (m_logger) m_logger->log("ERROR", "Не удалось открыть COM-порт. Тест невозможен.");
             emit logMessage("Не удалось открыть COM-порт. Тест невозможен.", "system");
             emit portError("Ошибка COM-порта: " + m_port->errorString());
         }
@@ -145,8 +147,9 @@ bool Stand::loadCyclogram(const QString &filePath)
         m_startTime = startTime;
     }
 
-    // Записываем заголовок сессии в лог-файл
+    // Устанавливаем базу времени и записываем заголовок
     if (m_logger) {
+        m_logger->setTimeBase(setTime);
         m_logger->writeHeader(path,
                               setTime,  setTime.toString("hh:mm:ss"),
                               startTime, startTime.toString("hh:mm:ss"),
@@ -246,16 +249,18 @@ void Stand::sendToBoard()
     m_timeToStartMs = static_cast<int64_t>(secsToStart) * 1000;
 
     if (m_timeToStartMs < 1000) {
+        if (m_logger) m_logger->log("ERROR", "Время до старта менее 1 с. Проверьте SET/START_UTC_TIME.");
         emit logMessage("Время до старта менее 1 с. Проверьте SET/START_UTC_TIME.", "system");
         return;
     }
+    if (m_logger) m_logger->log("INFO", QString("Время до старта: %1 с (%2 мс)").arg(secsToStart).arg(m_timeToStartMs));
     emit logMessage(QString("Время до старта: %1 с (%2 мс)").arg(secsToStart).arg(m_timeToStartMs), "system");
 
     if (!mockMode) {
-        // Отправляем файл циклограммы по UDP
         const QString path = cyclogramFilePath();
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            if (m_logger) m_logger->log("ERROR", "Не удалось открыть файл для отправки");
             emit logMessage("Не удалось открыть файл для отправки", "system");
             return;
         }
@@ -272,7 +277,11 @@ void Stand::sendToBoard()
         const QByteArray datagram = lines.join("\n").toUtf8();
         QUdpSocket udp;
         const qint64 sent = udp.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
-        if (sent == -1) { emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return; }
+        if (sent == -1) {
+            if (m_logger) m_logger->log("ERROR", "Ошибка UDP: " + udp.errorString());
+            emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return;
+        }
+        if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent));
         emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
 
         m_port->clearBuffers();
@@ -281,6 +290,7 @@ void Stand::sendToBoard()
     m_masks.clear();
     m_syncFound   = false;
     m_syncIndex   = -1;
+    m_finalIndex  = 0;
     m_analysisDone= false;
     m_stopped     = false;
 
@@ -297,6 +307,7 @@ void Stand::startReadingForTest(int64_t timeToStartMs)
     m_masks.clear();
     m_syncFound    = false;
     m_syncIndex    = -1;
+    m_finalIndex   = 0;
     m_analysisDone = false;
     m_stopped      = false;
     m_running      = true;
@@ -322,7 +333,7 @@ void Stand::readingThread(int64_t timeToStartMs)
         if (!m_port->waitForReadyRead(100)) {
             if (!m_port->isOpen() || m_port->hasError()) {
                 const QString errMsg = QString("COM-порт отключён: %1").arg(m_port->errorString());
-                if (m_logger) m_logger->log("ERROR", errMsg);
+                if (m_logger) m_logger->log("ERROR", errMsg, absoluteIndex);
                 emit portError(errMsg);
                 m_running = false;
                 break;
@@ -349,7 +360,7 @@ void Stand::readingThread(int64_t timeToStartMs)
 
         if (!started && absoluteIndex >= timeToStartMs) {
             started = true;
-            if (m_logger) m_logger->log("INFO", "─── СТАРТ ───");
+            if (m_logger) m_logger->log("INFO", "─── СТАРТ ───", absoluteIndex);
             emit logMessage("─── СТАРТ ───", "system");
             updatePhase(Phase::Running);
         }
@@ -357,6 +368,7 @@ void Stand::readingThread(int64_t timeToStartMs)
         // Обработка входящих бит-масок
         uint8_t newBits = mask & ~firedBits;
         if (newBits & SYNC_MASK) {
+            if (m_logger) m_logger->log("EVENT", "Контакт подъёма (канал 8)", absoluteIndex);
             emit logMessage(QString("[%1] Контакт подъёма (канал 8)").arg(absoluteIndex), "event");
             m_syncIndex = absoluteIndex;
             m_syncFound = true;
@@ -366,6 +378,7 @@ void Stand::readingThread(int64_t timeToStartMs)
         if (newBits != 0) {
             QStringList chs;
             for (int b = 0; b < 7; ++b) if (newBits & (1 << b)) chs << QString::number(b + 1);
+            if (m_logger) m_logger->log("EVENT", "срабатывание канала(ов): " + chs.join(", "), absoluteIndex);
             emit logMessage(QString("[%1] срабатывание канала(ов): %2").arg(absoluteIndex).arg(chs.join(", ")), "event");
             firedBits |= newBits;
         }
@@ -404,19 +417,20 @@ void Stand::readingThread(int64_t timeToStartMs)
         for (const auto &p : pending) {
             if (p.fired) {
                 if (m_logger) {
-                    // actual_ms и dev_ms будут уточнены после анализа; здесь — tick-based
                     const int actualMs = p.tick;
                     const int devMs    = qAbs(actualMs - (static_cast<int>(timeToStartMs) + p.planMs));
                     m_logger->log("EVENT",
                         QString("id=%1 key=%2 tick=%3 plan_ms=%4 actual_ms=%5 dev_ms=%6 status=OK")
-                            .arg(p.id).arg(p.key).arg(p.tick).arg(p.planMs).arg(actualMs).arg(devMs));
+                            .arg(p.id).arg(p.key).arg(p.tick).arg(p.planMs).arg(actualMs).arg(devMs),
+                        p.tick);
                 }
                 emit eventFired(p.id, p.tick);
             } else {
                 if (m_logger) {
                     m_logger->log("EVENT",
                         QString("id=%1 key=%2 tick=-1 plan_ms=%3 actual_ms=-1 dev_ms=-1 status=FAIL")
-                            .arg(p.id).arg(p.key).arg(p.planMs));
+                            .arg(p.id).arg(p.key).arg(p.planMs),
+                        absoluteIndex);
                 }
                 emit eventFailed(p.id);
             }
@@ -431,15 +445,18 @@ void Stand::readingThread(int64_t timeToStartMs)
     }
 
     m_port->close();
+    m_finalIndex = absoluteIndex;
 
     if (m_syncFound && !m_analysisDone) {
         emit flightComplete();
     } else if (!m_syncFound && started) {
+        if (m_logger) m_logger->log("WARN", "Синхроимпульс (канал 8) не найден. Используется расчётное T0.", absoluteIndex);
         emit logMessage("ВНИМАНИЕ: синхроимпульс (канал 8) не найден. Используется расчётное T0.", "system");
         m_syncIndex = timeToStartMs;
         m_syncFound = true;
         emit flightComplete();
     } else {
+        if (m_logger) m_logger->log("WARN", "Полёт прерван до старта. Анализ невозможен.", absoluteIndex);
         emit logMessage("Полёт прерван до старта. Анализ невозможен.", "system");
         updatePhase(Phase::Stopped);
     }
@@ -453,6 +470,7 @@ void Stand::completeFlight()
     if (m_stopped) return;
 
     updatePhase(Phase::Completed);
+    if (m_logger) m_logger->log("INFO", "═══ Полётное задание завершено ═══", m_finalIndex);
     emit logMessage("═══ Полётное задание завершено ═══", "system");
 
     if (!m_syncFound) { m_syncIndex = m_timeToStartMs; m_syncFound = true; }
@@ -466,11 +484,19 @@ void Stand::completeFlight()
 
     for (const auto &ev : result) {
         if (ev.calculatedMs != -1) {
-            const QString color = (ev.deviationMs == 0) ? "#3fb950" : (ev.deviationMs <= 5) ? "#e3b341" : "#f85149";
+            if (m_logger)
+                m_logger->log("INFO",
+                    QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=%6")
+                        .arg(ev.id).arg(ev.key).arg(ev.calculatedMs)
+                        .arg(ev.time_ms).arg(ev.deviationMs).arg(ev.status),
+                    m_syncIndex + ev.calculatedMs);
             emit logMessage(QString("[%1 мс] %2 (откл. %3 мс)")
                                 .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event-post");
-            Q_UNUSED(color)
         } else {
+            if (m_logger)
+                m_logger->log("INFO",
+                    QString("АНАЛИЗ id=%1 key=%2 status=FAIL").arg(ev.id).arg(ev.key),
+                    m_finalIndex);
             emit logMessage(QString("[—] %1 НЕ СРАБОТАЛО").arg(ev.description), "event-post");
         }
     }
@@ -503,10 +529,13 @@ void Stand::stop()
 
     QUdpSocket udp;
     const char stopCmd = 99;
-    if (udp.writeDatagram(QByteArray(&stopCmd, 1), QHostAddress(BCVM_IP), UDP_PORT) == 1)
+    if (udp.writeDatagram(QByteArray(&stopCmd, 1), QHostAddress(BCVM_IP), UDP_PORT) == 1) {
+        if (m_logger) m_logger->log("INFO", "Команда STOP отправлена на БЦВМ", m_finalIndex);
         emit logMessage("Команда STOP отправлена на БЦВМ", "system");
-    else
+    } else {
+        if (m_logger) m_logger->log("ERROR", "Ошибка отправки STOP: " + udp.errorString(), m_finalIndex);
         emit logMessage("Ошибка отправки STOP: " + udp.errorString(), "system");
+    }
 
     m_running = false;
     if (m_worker.joinable()) m_worker.join();
@@ -524,6 +553,7 @@ void Stand::stop()
     emit analysisDone(snapshot);
 
     updatePhase(Phase::Stopped);
+    if (m_logger) m_logger->log("INFO", "═══ СТОП: задание прервано оператором ═══", m_finalIndex);
     emit logMessage("═══ СТОП: задание прервано оператором ═══", "system");
 }
 
@@ -555,7 +585,7 @@ void Stand::updateNextEvent(int64_t absoluteIndex, int64_t timeToStartMs)
 void Stand::resetForNewTest()
 {
     if (m_running) { m_running = false; if (m_worker.joinable()) m_worker.join(); }
-    m_syncFound = false; m_syncIndex = -1; m_analysisDone = false; m_stopped = false;
+    m_syncFound = false; m_syncIndex = -1; m_finalIndex = 0; m_analysisDone = false; m_stopped = false;
     m_masks.clear();
     {
         QMutexLocker l(&m_eventsMutex);

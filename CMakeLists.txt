@@ -116,6 +116,11 @@ add_stand_test(tst_analysis  tests/tst_analysis.cpp)
 add_stand_test(tst_cyclogram tests/tst_cyclogram.cpp)
 add_stand_test(tst_reading   tests/tst_reading.cpp)
 
+# Trace-log format tests (no GUI, no hardware)
+add_executable(tst_logformat tests/tst_logformat.cpp session_logger.cpp session_logger.h)
+target_link_libraries(tst_logformat Qt6::Core Qt6::Test)
+add_test(NAME tst_logformat COMMAND tst_logformat)
+
 # GUI simulation tests (require QApplication + Widgets)
 option(BUILD_GUI_TESTS "Build GUI simulation tests (requires display or Xvfb)" OFF)
 

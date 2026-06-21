@@ -217,7 +217,7 @@ void MainWindow::setupUI()
     QVBoxLayout *timerCol = new QVBoxLayout();
     timerCol->setSpacing(4);
 
-    QLabel *timerCaption = new QLabel("ОБРАТНЫЙ ОТСЧЁТ ДО СТАРТА", this);
+    QLabel *timerCaption = new QLabel("ДО ЗАПУСКА", this);
     timerCaption->setObjectName("timerCaption");
     timerCaption->setStyleSheet("font-size: 9px; letter-spacing: 0.2em; color: #8b949e; text-transform: uppercase;");
 
@@ -766,13 +766,12 @@ void MainWindow::addLog(const QString &text, const QString &type)
 
     const QString timeStr = QTime::currentTime().toString("HH:mm:ss");
     const QString escaped = text.toHtmlEscaped();
-    // Row: colored left bar (via border-left), then time · level · message columns
+    // ▌ (U+258C) as colored left bar — border-left не работает в QTextEdit
     m_logEdit->append(
-        QString("<span style=\"border-left: 3px solid %1; padding-left: 6px;\">"
-                "<span style=\"color:#484f58;\">%2</span>"
+        QString("<span style=\"color:%1;\">▌</span>"
+                " <span style=\"color:#484f58;\">%2</span>"
                 " <span style=\"color:%3; font-weight:600;\">%4</span>"
-                " <span style=\"color:%5;\">%6</span>"
-                "</span>")
+                "  <span style=\"color:%5;\">%6</span>")
         .arg(barColor, timeStr, levelColor, levelText, msgColor, escaped));
 }
 
@@ -783,6 +782,15 @@ void MainWindow::updateTable(const QVector<EventRow> &events)
     for (int i = 0; i < m_displayEvents.size(); ++i)
         updateTableRow(i, m_displayEvents[i]);
     refreshNextEventHighlight();
+
+    // Ограничиваем высоту таблицы под контент: нет пустых строк снизу
+    if (!m_displayEvents.isEmpty()) {
+        const int rowH = m_table->rowHeight(0);
+        const int hdrH = m_table->horizontalHeader()->height();
+        const int maxRows = 12;  // при >12 событий — скролл
+        const int visRows = std::min(m_displayEvents.size(), maxRows);
+        m_table->setMaximumHeight(hdrH + visRows * rowH + 4);
+    }
 }
 
 void MainWindow::updateTableRow(int row, const EventRow &data)

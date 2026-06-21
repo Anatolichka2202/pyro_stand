@@ -69,12 +69,6 @@ void MainWindow::connectStand()
     connect(m_stand.get(), &Stand::nextEventChanged, this, &MainWindow::updateNextEventTimer);
     connect(m_stand.get(), &Stand::logMessage,       this, &MainWindow::addLog);
 
-    connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &type) {
-        if (!m_logger) return;
-        const QString level = (type == "event" || type == "event-post") ? "EVENT" : "INFO";
-        m_logger->log(level, msg);
-    });
-
     // T11: БЦВМ indicator
     connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &) {
         if (msg.contains("БЦВМ недоступна"))

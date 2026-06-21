@@ -75,7 +75,12 @@ The application has two layers connected exclusively via Qt signals/slots:
 - `dropAfter(tick)` — simulate port disconnect.
 - `setRealtime(true)` — 1 ms/byte sleep for human-paced demo playback.
 
-**`session_logger.h/cpp`** — structured append-only log: `[ISO8601] LEVEL  message` lines. `writeHeader()` writes session metadata at start. Required by aerospace/telemetry standards.
+**`session_logger.h/cpp`** — structured append-only log. Log format: `HH:mm:ss.zzz | LEVEL | message`.
+- **Timestamps are NOT wall-clock** — derived as `SET_UTC_TIME.addMSecs(absoluteIndex)`.
+- `setTimeBase(QTime)` must be called after parsing `SET_UTC_TIME` from the cyclogram.
+- `log(level, msg, tickMs=0)` — `tickMs` is the COM stream absolute byte index.
+- Creates `logDir/session_YYYY-MM-DD_HH-MM-SS/pyro_stand.log` per session (wall clock used only for folder naming).
+- `Stand` writes to the logger directly (not via `logMessage` signal → MainWindow path) to preserve tick-accurate timestamps.
 
 **`platform.h`** — `DEFAULT_SERIAL_PORT`: `"COM7"` on Windows, `"/dev/ttyUSB0"` on Linux.
 

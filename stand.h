@@ -89,8 +89,9 @@ private:
     struct MaskRecord { int64_t absoluteIndex; uint8_t mask; };
     std::vector<MaskRecord> m_masks;
 
-    int64_t m_syncIndex = -1;
-    bool m_syncFound = false;
+    int64_t m_syncIndex   = -1;
+    int64_t m_finalIndex  = 0;   // последний absoluteIndex из readingThread
+    bool m_syncFound    = false;
     bool m_analysisDone = false;
 
     QTime m_setTime;

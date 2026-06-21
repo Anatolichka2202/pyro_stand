@@ -355,6 +355,7 @@ void MainWindow::setupUI()
     timeStopRow->addWidget(m_resetBtn);
     ctrlCardLayout->addLayout(timeStopRow);
 
+    // TODO: Remove from non-production builds once engineers resolve UTC sync with БЦВМ.
     // Set time button (secondary, appears in Idle/Loaded)
     m_setTimeBtn = new QPushButton("⏱  УСТАНОВИТЬ ВРЕМЯ СТАРТА", ctrlCard);
     m_setTimeBtn->setObjectName("setTimeBtn");
@@ -533,7 +534,7 @@ void MainWindow::setPhase(Phase newPhase)
     QLabel *caption = findChild<QLabel*>("timerCaption");
     if (caption) {
         caption->setText((newPhase == Phase::Running || newPhase == Phase::Completed)
-                             ? "ВРЕМЯ В ПОЛЁТЕ" : "ОБРАТНЫЙ ОТСЧЁТ ДО СТАРТА");
+                             ? "ВРЕМЯ В ПОЛЁТЕ" : "ДО ЗАПУСКА");
     }
 
     // Timer display for non-ticking states
@@ -564,6 +565,11 @@ void MainWindow::setPhase(Phase newPhase)
             QString("font-size: 13px; color: %1; font-family: 'JetBrains Mono';"
                     " background: transparent; border: none;").arg(timeColor));
     }
+
+    // Table col 4 header: raw ticks during flight, relative ms after
+    m_table->horizontalHeaderItem(4)->setText(
+        (newPhase == Phase::Running || newPhase == Phase::Countdown)
+            ? "ФАКТ (ТИК)" : "ФАКТ МС");
 
     // Channel chips
     if (newPhase == Phase::Running) {
@@ -681,9 +687,10 @@ void MainWindow::refreshNextEventHighlight()
 
     for (int i = 0; i < m_displayEvents.size(); ++i) {
         if (m_displayEvents[i].status == "pending" && m_displayEvents[i].hasChannels) {
+            // Row highlight: dim blue for all cols, bright blue strip on col 0
             for (int j = 0; j < m_table->columnCount(); ++j)
                 if (auto *item = m_table->item(i, j))
-                    item->setBackground(QColor(28, 45, 58));
+                    item->setBackground(j == 0 ? QColor(0x58, 0xa6, 0xff) : QColor(28, 45, 58));
             m_nextEventRow = i;
             break;
         }
@@ -692,16 +699,33 @@ void MainWindow::refreshNextEventHighlight()
 
 void MainWindow::updateTimer(const TimerState &state)
 {
+    auto fmtHMS = [](int secs) {
+        return QString("%1:%2:%3")
+            .arg(secs / 3600, 2, 10, QChar('0'))
+            .arg((secs % 3600) / 60, 2, 10, QChar('0'))
+            .arg(secs % 60, 2, 10, QChar('0'));
+    };
+    auto fmtMS = [](int secs) {
+        return QString("%1:%2")
+            .arg(secs / 60, 2, 10, QChar('0'))
+            .arg(secs % 60, 2, 10, QChar('0'));
+    };
+
     QString text, color;
     if (state.msToStart < 0) {
-        const int64_t rem = -state.msToStart;
-        const int secs = static_cast<int>(rem / 1000);
-        text  = QString("T-%1:%2").arg(secs / 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0'));
+        const int secs = static_cast<int>(-state.msToStart / 1000);
+        text  = (secs >= 3600) ? fmtHMS(secs) : fmtMS(secs);
         color = "#e3b341";
     } else {
-        const int secs = static_cast<int>(state.msToStart / 1000);
-        const int tenth = static_cast<int>((state.msToStart % 1000) / 100);
-        text  = QString("%1:%2.%3").arg(secs / 60, 2, 10, QChar('0')).arg(secs % 60, 2, 10, QChar('0')).arg(tenth);
+        const int secs   = static_cast<int>(state.msToStart / 1000);
+        const int tenth  = static_cast<int>((state.msToStart % 1000) / 100);
+        if (secs >= 3600)
+            text = fmtHMS(secs);
+        else
+            text = QString("%1:%2.%3")
+                .arg(secs / 60, 2, 10, QChar('0'))
+                .arg(secs % 60, 2, 10, QChar('0'))
+                .arg(tenth);
         color = "#3fb950";
     }
     m_timerLabel->setText(text);
@@ -725,17 +749,31 @@ void MainWindow::updateNextEventTimer(const NextEventInfo &info)
 
 void MainWindow::addLog(const QString &text, const QString &type)
 {
-    QString color  = "#c8d0dc";
-    bool    isBold = false;
-    if      (type == "system")     color = "#8b949e";
-    else if (type == "event")      color = "#3fb950";
-    else if (type == "event-post") color = "#f85149";
-    else if (type == "error")    { color = "#f85149"; isBold = true; }
+    QString barColor  = "#30363d";
+    QString levelText = "INFO";
+    QString levelColor = "#8b949e";
+    QString msgColor   = "#c8d0dc";
 
+    if (type == "system") {
+        barColor = "#30363d"; levelText = "INFO";   levelColor = "#8b949e"; msgColor = "#8b949e";
+    } else if (type == "event") {
+        barColor = "#3fb950"; levelText = "СОБЫТ."; levelColor = "#3fb950"; msgColor = "#c8d0dc";
+    } else if (type == "event-post") {
+        barColor = "#f85149"; levelText = "СОБЫТ."; levelColor = "#f85149"; msgColor = "#c8d0dc";
+    } else if (type == "error") {
+        barColor = "#f85149"; levelText = "ОШИБКА"; levelColor = "#f85149"; msgColor = "#f85149";
+    }
+
+    const QString timeStr = QTime::currentTime().toString("HH:mm:ss");
     const QString escaped = text.toHtmlEscaped();
-    m_logEdit->append(isBold
-        ? QString("<b style=\"color:%1;\">%2</b>").arg(color, escaped)
-        : QString("<span style=\"color:%1;\">%2</span>").arg(color, escaped));
+    // Row: colored left bar (via border-left), then time · level · message columns
+    m_logEdit->append(
+        QString("<span style=\"border-left: 3px solid %1; padding-left: 6px;\">"
+                "<span style=\"color:#484f58;\">%2</span>"
+                " <span style=\"color:%3; font-weight:600;\">%4</span>"
+                " <span style=\"color:%5;\">%6</span>"
+                "</span>")
+        .arg(barColor, timeStr, levelColor, levelText, msgColor, escaped));
 }
 
 void MainWindow::updateTable(const QVector<EventRow> &events)

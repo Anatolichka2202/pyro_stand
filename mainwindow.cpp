@@ -567,9 +567,9 @@ void MainWindow::setPhase(Phase newPhase)
     }
 
     // Table col 4 header: raw ticks during flight, relative ms after
-    m_table->horizontalHeaderItem(4)->setText(
-        (newPhase == Phase::Running || newPhase == Phase::Countdown)
-            ? "ФАКТ (ТИК)" : "ФАКТ МС");
+    if (auto *hdr = m_table->horizontalHeaderItem(4))
+        hdr->setText((newPhase == Phase::Running || newPhase == Phase::Countdown)
+                         ? "ФАКТ (ТИК)" : "ФАКТ МС");
 
     // Channel chips
     if (newPhase == Phase::Running) {

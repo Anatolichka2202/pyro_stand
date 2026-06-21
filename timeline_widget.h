@@ -25,8 +25,8 @@ public:
     // Сбрасывает в начальное состояние.
     void reset();
 
-    QSize sizeHint()        const override { return QSize(800, 52); }
-    QSize minimumSizeHint() const override { return QSize(200, 52); }
+    QSize sizeHint()        const override { return QSize(800, 72); }
+    QSize minimumSizeHint() const override { return QSize(200, 72); }
 
 protected:
     void paintEvent(QPaintEvent *event) override;

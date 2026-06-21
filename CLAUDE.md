@@ -163,11 +163,3 @@ Three levels:
 ## Headless Service (`pyro_service`, `BUILD_SERVICE=ON`)
 
 `main_service.cpp` — no GUI, outputs JSON lines to stdout. CLI: `--log-dir <path>`. First output line reports the log file path. Intended for integration with external monitoring systems.
-
-## Design Assets
-
-Design files live in `project/` (designer workspace) and `design/` (handoff docs):
-- `project/uploads/` — approved UI mockups (PNG)
-- `project/design/mockups/` — HTML prototypes (FullScreen-v1, Scenario-v1, etc.)
-- `design/mockups/` — orchestrator ↔ designer discussion files
-- `mainwindow.ui` — stub Qt Designer file (not used in production build; UI is built entirely in code)

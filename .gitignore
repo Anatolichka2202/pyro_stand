@@ -28,5 +28,5 @@ CMakeFiles/
 Thumbs.db
 .DS_Store
 
-# Claude Code internal state
-.claude/
+# Claude Code internal state (worktrees only; commands/ is tracked)
+.claude/worktrees/

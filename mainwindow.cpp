@@ -788,7 +788,7 @@ void MainWindow::updateTable(const QVector<EventRow> &events)
         const int rowH = m_table->rowHeight(0);
         const int hdrH = m_table->horizontalHeader()->height();
         const int maxRows = 12;  // при >12 событий — скролл
-        const int visRows = std::min(m_displayEvents.size(), maxRows);
+        const int visRows = std::min(static_cast<int>(m_displayEvents.size()), maxRows);
         m_table->setMaximumHeight(hdrH + visRows * rowH + 4);
     }
 }

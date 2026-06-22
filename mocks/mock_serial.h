@@ -34,8 +34,8 @@ public:
     QString errorString() const override {
         return m_open ? QString() : QStringLiteral("MockSerial: port dropped");
     }
-    // Сбрасывает состояние для повторного прогона (reset + re-run в demo/test)
-    void clearBuffers() override { m_tick = 0; m_open = false; }
+    // Сбрасывает счётчик байт; порт остаётся открытым (аналог PurgeComm на реальном порту)
+    void clearBuffers() override { m_tick = 0; }
 
     int64_t currentTick() const { return m_tick; }
 

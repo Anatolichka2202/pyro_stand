@@ -7,6 +7,8 @@
 
 enum class TimeMode { UTC, MSK };
 
+enum class TransferMode { UDP, TFTP };
+
 enum class Phase {
     Idle,
     Loaded,
@@ -26,7 +28,7 @@ struct EventRow {
     bool    hasChannels = false;
     int     firedTick   = -1;
     int     calculatedMs= -1;
-    QString status;         // "pending" | "ok" | "fail"
+    QString status;         // "pending" | "ok" | "fail" | "late"
     int     deviationMs = 0;
 };
 Q_DECLARE_METATYPE(QVector<EventRow>)

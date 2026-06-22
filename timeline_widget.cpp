@@ -11,8 +11,9 @@ static const QColor BG_COLOR      { 0x16, 0x1b, 0x22 };
 static const QColor AXIS_COLOR    { 0x21, 0x26, 0x2d };
 static const QColor TICK_PENDING  { 0x8b, 0x94, 0x9e };
 static const QColor TICK_OK       { 0x3f, 0xb9, 0x50 };
+static const QColor TICK_NEAR     { 0xe3, 0xb3, 0x41 };  // 1-5 мс
 static const QColor TICK_FAIL     { 0xf8, 0x51, 0x49 };
-static const QColor T0_COLOR      { 0xf8, 0x51, 0x49 };
+static const QColor T0_COLOR      { 0xe3, 0xb3, 0x41 };  // T0 сработал — оранжевый
 static const QColor PLAYHEAD_COLOR{ 0x58, 0xa6, 0xff };
 static const QColor LABEL_COLOR   { 0x8b, 0x94, 0x9e };
 static const QColor CLUSTER_BG    { 0x30, 0x36, 0x3d };
@@ -163,9 +164,13 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
     for (const auto &cn : nodes) {
         QColor dotColor;
         if (cn.hasT0) {
-            dotColor = T0_COLOR;
+            // T0: цвет по статусу — pending=красный (не выстрелил), иначе оранжевый
+            dotColor = (cn.status.isEmpty() || cn.status == "pending")
+                ? TICK_FAIL : T0_COLOR;
         } else if (cn.status == "ok") {
             dotColor = TICK_OK;
+        } else if (cn.status == "late") {
+            dotColor = TICK_NEAR;
         } else if (cn.status == "fail") {
             dotColor = TICK_FAIL;
         } else {

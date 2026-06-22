@@ -11,6 +11,8 @@
 #include <QTextStream>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QSplitter>
+#include <QScrollBar>
 
 // ─── Production constructor ───────────────────────────────────────────────────
 
@@ -64,6 +66,7 @@ void MainWindow::connectStand()
         updatePhaseLabel();
     });
 
+
     connect(m_stand.get(), &Stand::phaseChanged,    this, &MainWindow::setPhase);
     connect(m_stand.get(), &Stand::timerTick,        this, &MainWindow::updateTimer);
     connect(m_stand.get(), &Stand::nextEventChanged, this, &MainWindow::updateNextEventTimer);
@@ -89,36 +92,34 @@ void MainWindow::connectStand()
         for (int i = 0; i < m_displayEvents.size(); ++i) {
             if (m_displayEvents[i].id == eventId) {
                 m_displayEvents[i].firedTick = tick;
-                m_displayEvents[i].status    = "ok";
+                // Статус ("ok" / "late") определяется после анализа, не здесь.
+                // В таблице показываем только сырой тик до финала.
                 updateTableRow(i, m_displayEvents[i]);
                 for (const QString &part : m_displayEvents[i].channels.split(',')) {
                     bool ok = false; int c = part.trimmed().toInt(&ok);
                     if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#3fb950");
                 }
-                m_timeline->markEventFired(eventId, "ok");
-                m_timeline->setPlayheadMs(tick);
                 break;
             }
         }
     });
 
+    // eventFailed больше не эмитируется в readingThread, слот оставлен для совместимости.
     connect(m_stand.get(), &Stand::eventFailed, this, [this](int eventId) {
         for (int i = 0; i < m_displayEvents.size(); ++i) {
             if (m_displayEvents[i].id == eventId) {
                 m_displayEvents[i].status    = "fail";
                 m_displayEvents[i].firedTick = -1;
                 updateTableRow(i, m_displayEvents[i]);
-                for (const QString &part : m_displayEvents[i].channels.split(',')) {
-                    bool ok = false; int c = part.trimmed().toInt(&ok);
-                    if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#f85149");
-                }
-                m_timeline->markEventFired(eventId, "fail");
                 break;
             }
         }
     });
 
     connect(m_stand.get(), &Stand::analysisDone, this, [this](const QVector<EventRow> &events) {
+        // Сохраняем фактическое время T0 для отображения в таблице
+        m_t0ActualTime = m_stand->getSetTime().addMSecs(m_stand->getSyncIndex());
+
         m_displayEvents.clear();
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
         updateTable(m_displayEvents);
@@ -154,7 +155,7 @@ static QString chipStyle(const QString &border, const QString &bg = "#161b22")
 
 static QString dotStyle(const QString &color)
 {
-    return QString("background: %1; border-radius: 4px; border: none;").arg(color);
+    return QString("background: %1; border-radius: 5px; border: none;").arg(color);
 }
 
 // ─── Helper: build a chip widget ────────────────────────────────────────────
@@ -180,7 +181,7 @@ static QFrame *makeStatusChip(QWidget *parent, const QString &title,
     name->setStyleSheet("font-size: 12px; font-weight: 600; color: #e6edf3; background: transparent; border: none;");
 
     QLabel *status = new QLabel("нет связи", chip);
-    status->setStyleSheet("font-size: 9px; color: #8b949e; background: transparent; border: none;");
+    status->setStyleSheet("font-size: 11px; color: #8b949e; background: transparent; border: none;");
 
     textCol->addWidget(name);
     textCol->addWidget(status);
@@ -197,11 +198,18 @@ static QFrame *makeStatusChip(QWidget *parent, const QString &title,
 
 void MainWindow::setupUI()
 {
-    QWidget *central = new QWidget(this);
-    setCentralWidget(central);
-    QVBoxLayout *mainLayout = new QVBoxLayout(central);
+    auto *splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setChildrenCollapsible(false);
+    splitter->setStyleSheet(
+        "QSplitter::handle { background: #21262d; width: 3px; }");
+    setCentralWidget(splitter);
+
+    // Левая панель — весь основной контент
+    QWidget *leftPanel = new QWidget;
+    QVBoxLayout *mainLayout = new QVBoxLayout(leftPanel);
     mainLayout->setSpacing(10);
-    mainLayout->setContentsMargins(20, 14, 20, 14);
+    mainLayout->setContentsMargins(20, 14, 10, 14);
+    splitter->addWidget(leftPanel);
 
     // ── TOP ROW: timer (left, flex) + controls (right, fixed 300px) ──────────
     QHBoxLayout *topRow = new QHBoxLayout();
@@ -213,34 +221,37 @@ void MainWindow::setupUI()
 
     QLabel *timerCaption = new QLabel("ДО ЗАПУСКА", this);
     timerCaption->setObjectName("timerCaption");
-    timerCaption->setStyleSheet("font-size: 9px; letter-spacing: 0.2em; color: #8b949e; text-transform: uppercase;");
+    timerCaption->setStyleSheet("font-size: 13px; letter-spacing: 0.2em; color: #8b949e; text-transform: uppercase;");
 
     m_timerLabel = new QLabel("--:--", this);
     m_timerLabel->setObjectName("timerLabel");
+    m_timerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_timerLabel->setStyleSheet(
-        "font-size: 52px; font-weight: 600; color: #484f58; font-family: 'JetBrains Mono';");
+        "font-size: 64px; font-weight: 700; color: #30363d; font-family: 'JetBrains Mono'; letter-spacing: 0.04em;");
 
     QHBoxLayout *phaseLine = new QHBoxLayout();
     phaseLine->setSpacing(14);
     m_phaseLabel = new QLabel("● ОЖИДАНИЕ", this);
     m_phaseLabel->setObjectName("phaseLabel");
-    m_phaseLabel->setStyleSheet("font-size: 10px; letter-spacing: 0.15em; color: #8b949e;");
+    m_phaseLabel->setStyleSheet("font-size: 13px; font-weight: 600; letter-spacing: 0.15em; color: #8b949e;");
     m_nextEventLabel = new QLabel("До события: --:--", this);
     m_nextEventLabel->setObjectName("nextEventLabel");
-    m_nextEventLabel->setStyleSheet("font-size: 12px; color: #8b949e;");
+    m_nextEventLabel->setStyleSheet("font-size: 13px; color: #6e7681;");
     phaseLine->addWidget(m_phaseLabel);
     phaseLine->addWidget(m_nextEventLabel);
     phaseLine->addStretch();
 
+    timerCol->addStretch(1);           // вертикальное центрирование: отступ сверху
     timerCol->addWidget(timerCaption);
     timerCol->addWidget(m_timerLabel);
     timerCol->addLayout(phaseLine);
-    timerCol->addStretch();
+    timerCol->addStretch(1);           // отступ снизу
     topRow->addLayout(timerCol, 1);
 
-    // Right: control card (300px fixed)
+    // Right: control card — адаптивная ширина
     QWidget *ctrlCard = new QWidget(this);
-    ctrlCard->setFixedWidth(300);
+    ctrlCard->setMinimumWidth(240);
+    ctrlCard->setMaximumWidth(360);
     ctrlCard->setStyleSheet(
         "QWidget#ctrlCard { background: #161b22; border: 1px solid #30363d; border-radius: 6px; }");
     ctrlCard->setObjectName("ctrlCard");
@@ -282,6 +293,24 @@ void MainWindow::setupUI()
     connect(m_loadBtn, &QPushButton::clicked, this, &MainWindow::onLoadToBoard);
     ctrlCardLayout->addWidget(m_loadBtn);
 
+    // Выбор протокола передачи циклограммы
+    m_transferCombo = new QComboBox(ctrlCard);
+    m_transferCombo->addItem("UDP",  static_cast<int>(TransferMode::UDP));
+    m_transferCombo->addItem("TFTP", static_cast<int>(TransferMode::TFTP));
+    m_transferCombo->setStyleSheet(
+        "QComboBox {"
+        "  background: #0d1117; border: 1px solid #30363d; border-radius: 5px;"
+        "  color: #8b949e; font-size: 11px; padding: 4px 8px;"
+        "}"
+        "QComboBox::drop-down { border: none; width: 20px; }"
+        "QComboBox QAbstractItemView { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; }");
+    connect(m_transferCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx) {
+        if (m_stand)
+            m_stand->setTransferMode(static_cast<TransferMode>(m_transferCombo->itemData(idx).toInt()));
+    });
+    ctrlCardLayout->addWidget(m_transferCombo);
+
     // Time display + СТОП row
     QHBoxLayout *timeStopRow = new QHBoxLayout();
     timeStopRow->setSpacing(8);
@@ -294,7 +323,7 @@ void MainWindow::setupUI()
     timeBoxLayout->setContentsMargins(8, 7, 8, 7);
     timeBoxLayout->setSpacing(6);
     QLabel *startLabel = new QLabel("СТАРТ", timeBox);
-    startLabel->setStyleSheet("font-size: 9px; color: #6e7681; background: transparent; border: none;");
+    startLabel->setStyleSheet("font-size: 11px; color: #6e7681; background: transparent; border: none;");
     m_startTimeLabel = new QLabel("--:--:--", timeBox);
     m_startTimeLabel->setStyleSheet(
         "font-size: 13px; color: #8b949e; font-family: 'JetBrains Mono'; background: transparent; border: none;");
@@ -331,16 +360,16 @@ void MainWindow::setupUI()
     m_resetBtn->setVisible(false);
     m_resetBtn->setStyleSheet(
         "QPushButton {"
-        "  background: #1f6feb;"
-        "  border: 1px solid #1f6feb;"
-        "  color: #ffffff;"
+        "  background: transparent;"
+        "  border: 1px solid #58a6ff;"
+        "  color: #58a6ff;"
         "  border-radius: 5px;"
         "  padding: 9px 12px;"
         "  font-size: 12px;"
         "  font-weight: 600;"
         "}"
-        "QPushButton:hover { background: #388bfd; }"
-        "QPushButton:disabled { background: #21262d; border-color: #30363d; color: #484f58; }"
+        "QPushButton:hover { background: rgba(88,166,255,0.12); border-color: #79c0ff; color: #79c0ff; }"
+        "QPushButton:disabled { background: transparent; border-color: #30363d; color: #484f58; }"
     );
     connect(m_resetBtn, &QPushButton::clicked, this, &MainWindow::onReset);
 
@@ -399,7 +428,7 @@ void MainWindow::setupUI()
     chanVBox->setContentsMargins(0, 0, 0, 0);
 
     QLabel *chanCaption = new QLabel("КАНАЛЫ", this);
-    chanCaption->setStyleSheet("font-size: 9px; letter-spacing: 0.2em; color: #8b949e;");
+    chanCaption->setStyleSheet("font-size: 12px; letter-spacing: 0.2em; color: #8b949e;");
     chanVBox->addWidget(chanCaption);
 
     QHBoxLayout *chipsRow = new QHBoxLayout();
@@ -420,11 +449,11 @@ void MainWindow::setupUI()
         cl->setSpacing(6);
 
         QLabel *dot = new QLabel(chip);
-        dot->setFixedSize(8, 8);
+        dot->setFixedSize(10, 10);
         dot->setStyleSheet(dotStyle("#484f58"));
 
         QLabel *name = new QLabel(chNames[i], chip);
-        name->setStyleSheet("font-size: 11px; color: #e6edf3; background: transparent; border: none;");
+        name->setStyleSheet("font-size: 13px; color: #e6edf3; background: transparent; border: none;");
 
         cl->addWidget(dot);
         cl->addWidget(name);
@@ -451,22 +480,26 @@ void MainWindow::setupUI()
     m_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     m_table->setEditTriggers(QTableWidget::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
-    mainLayout->addWidget(m_table);
+    m_table->verticalHeader()->hide();
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setFocusPolicy(Qt::NoFocus);
+    mainLayout->addWidget(m_table, 1);  // растягивается при увеличении окна
 
     // ── SUMMARY STRIP (hidden until analysisDone) ─────────────────────────────
     m_summaryStrip = new QWidget(this);
     m_summaryStrip->setStyleSheet(
-        "QWidget { background-color: #161b22; border-top: 1px solid #30363d; }");
+        "QWidget { background-color: #161b22; border-top: 2px solid #30363d; }");
     m_summaryStrip->setVisible(false);
 
     QHBoxLayout *summaryLayout = new QHBoxLayout(m_summaryStrip);
-    summaryLayout->setContentsMargins(12, 6, 12, 6);
+    summaryLayout->setContentsMargins(14, 8, 14, 8);
     summaryLayout->setSpacing(16);
 
     m_summaryLabel = new QLabel(this);
     m_summaryLabel->setObjectName("summaryLabel");
     m_summaryLabel->setStyleSheet(
-        "font-size: 12px; color: #e6edf3; background: transparent; border: none;");
+        "font-size: 13px; font-weight: 600; color: #e6edf3; background: transparent; border: none;");
 
     m_exportCsvBtn = new QPushButton("⬇ Экспорт CSV", this);
     m_exportCsvBtn->setObjectName("exportCsvBtn");
@@ -484,19 +517,58 @@ void MainWindow::setupUI()
     // ── LOG ───────────────────────────────────────────────────────────────────
     m_logEdit = new QTextEdit(this);
     m_logEdit->setReadOnly(true);
+    m_logEdit->setMinimumHeight(80);
     m_logEdit->setMaximumHeight(160);
     m_logEdit->setStyleSheet(
         "QTextEdit {"
         "  background: #0d1117;"
-        "  border: 1px solid #30363d;"
+        "  border: 1px solid #21262d;"
         "  border-radius: 4px;"
-        "  color: #8b949e;"
+        "  color: #6e7681;"
         "  font-family: 'JetBrains Mono', monospace;"
         "  font-size: 11px;"
         "  padding: 4px;"
         "}"
     );
-    mainLayout->addWidget(m_logEdit);
+    mainLayout->addWidget(m_logEdit);  // fixed height — таблица занимает всё оставшееся место
+
+    // ── ПРАВАЯ ПАНЕЛЬ: техлог срабатываний каналов ───────────────────────────
+    QWidget *rightPanel = new QWidget;
+    rightPanel->setMinimumWidth(160);
+    auto *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(4, 14, 14, 14);
+    rightLayout->setSpacing(6);
+
+    auto *eventLogCaption = new QLabel("СРАБАТЫВАНИЯ", rightPanel);
+    eventLogCaption->setStyleSheet(
+        "font-size: 11px; font-weight: 600; letter-spacing: 0.2em; color: #8b949e;");
+    rightLayout->addWidget(eventLogCaption);
+
+    auto *eventLogSub = new QLabel("каналы · события", rightPanel);
+    eventLogSub->setStyleSheet(
+        "font-size: 10px; color: #484f58; letter-spacing: 0.05em;");
+    rightLayout->addWidget(eventLogSub);
+
+    m_eventLog = new QTextEdit(rightPanel);
+    m_eventLog->setReadOnly(true);
+    m_eventLog->setMinimumHeight(80);
+    m_eventLog->setStyleSheet(
+        "QTextEdit {"
+        "  background: #0a0c10;"
+        "  border: 1px solid #21262d;"
+        "  border-radius: 4px;"
+        "  color: #3fb950;"
+        "  font-family: 'JetBrains Mono', monospace;"
+        "  font-size: 12px;"
+        "  padding: 6px;"
+        "}"
+    );
+    rightLayout->addWidget(m_eventLog, 1);
+    splitter->addWidget(rightPanel);
+
+    splitter->setStretchFactor(0, 4);  // левая панель занимает 4/5
+    splitter->setStretchFactor(1, 1);  // правая — 1/5, можно тащить сплиттер
+    splitter->setSizes({760, 220});
 }
 
 // ─── Phase management ─────────────────────────────────────────────────────────
@@ -515,6 +587,8 @@ void MainWindow::setPhase(Phase newPhase)
 
     const bool duringFlight = (newPhase == Phase::Countdown || newPhase == Phase::Running);
     const bool afterFlight  = (newPhase == Phase::Completed || newPhase == Phase::Stopped);
+
+    if (!duringFlight) m_streamTick = 0;
 
     m_stopBtn->setEnabled(duringFlight);
     m_stopBtn->setVisible(!afterFlight);
@@ -535,17 +609,20 @@ void MainWindow::setPhase(Phase newPhase)
     if (newPhase == Phase::Completed) {
         m_timerLabel->setText("ПОЛЁТНОЕ\nЗАДАНИЕ\nОТРАБОТАНО");
         m_timerLabel->setStyleSheet(
-            "font-size: 26px; font-weight: 600; color: #3fb950; font-family: 'JetBrains Mono'; line-height: 1.2;");
+            "font-size: 28px; font-weight: 700; color: #3fb950; font-family: 'JetBrains Mono';"
+            " line-height: 1.3; letter-spacing: 0.04em;");
         m_nextEventLabel->setText("");
     } else if (newPhase == Phase::Stopped) {
         m_timerLabel->setText("СТОП");
         m_timerLabel->setStyleSheet(
-            "font-size: 52px; font-weight: 600; color: #f85149; font-family: 'JetBrains Mono';");
+            "font-size: 56px; font-weight: 700; color: #f85149; font-family: 'JetBrains Mono';"
+            " letter-spacing: 0.04em;");
         m_nextEventLabel->setText("");
     } else if (!duringFlight) {
         m_timerLabel->setText("--:--");
         m_timerLabel->setStyleSheet(
-            "font-size: 52px; font-weight: 600; color: #484f58; font-family: 'JetBrains Mono';");
+            "font-size: 56px; font-weight: 700; color: #30363d; font-family: 'JetBrains Mono';"
+            " letter-spacing: 0.04em;");
         m_nextEventLabel->setText("До события: --:--");
     }
 
@@ -608,7 +685,7 @@ void MainWindow::updatePhaseLabel()
 
     m_phaseLabel->setText(QString("● %1").arg(text));
     m_phaseLabel->setStyleSheet(
-        QString("font-size: 10px; letter-spacing: 0.15em; color: %1;")
+        QString("font-size: 13px; letter-spacing: 0.15em; color: %1;")
             .arg((blink && !m_blinkState) ? "transparent" : color));
 }
 
@@ -622,7 +699,7 @@ void MainWindow::updateComIndicator(bool open)
     m_comDot->setStyleSheet(dotStyle(dot));
     m_comStatus->setText(open ? "связь есть" : "нет связи");
     m_comStatus->setStyleSheet(
-        QString("font-size: 9px; color: %1; background: transparent; border: none;").arg(dot));
+        QString("font-size: 11px; color: %1; background: transparent; border: none;").arg(dot));
     m_comChip->setStyleSheet(chipStyle(border));
 }
 
@@ -634,7 +711,7 @@ void MainWindow::updateBcvmIndicator(bool reachable)
     m_bcvmDot->setStyleSheet(dotStyle(dot));
     m_bcvmStatus->setText(reachable ? "готова" : "не загружено");
     m_bcvmStatus->setStyleSheet(
-        QString("font-size: 9px; color: %1; background: transparent; border: none;").arg(dot));
+        QString("font-size: 11px; color: %1; background: transparent; border: none;").arg(dot));
     m_bcvmChip->setStyleSheet(chipStyle(border));
 }
 
@@ -681,10 +758,10 @@ void MainWindow::refreshNextEventHighlight()
 
     for (int i = 0; i < m_displayEvents.size(); ++i) {
         if (m_displayEvents[i].status == "pending" && m_displayEvents[i].hasChannels) {
-            // Row highlight: dim blue for all cols, bright blue strip on col 0
+            // Row highlight: left accent strip (dim blue) + full-row tint
             for (int j = 0; j < m_table->columnCount(); ++j)
                 if (auto *item = m_table->item(i, j))
-                    item->setBackground(j == 0 ? QColor(0x58, 0xa6, 0xff) : QColor(28, 45, 58));
+                    item->setBackground(j == 0 ? QColor(31, 111, 235, 180) : QColor(20, 40, 60));
             m_nextEventRow = i;
             break;
         }
@@ -693,6 +770,19 @@ void MainWindow::refreshNextEventHighlight()
 
 void MainWindow::updateTimer(const TimerState &state)
 {
+    // Right log: byte reception heartbeat every 1000 bytes (= each timerTick)
+    if (m_eventLog && (state.phase == Phase::Countdown || state.phase == Phase::Running)) {
+        const int64_t byteIdx = static_cast<int64_t>(m_streamTick) * 1000;
+        const QString ts = QTime::currentTime().toString("HH:mm:ss");
+        m_eventLog->append(
+            QString("<span style=\"color:#484f58;\">%1</span>"
+                    " <span style=\"color:#6e7681;\">▸ поток [%2 мс]</span>")
+                .arg(ts).arg(byteIdx));
+        m_eventLog->verticalScrollBar()->setValue(
+            m_eventLog->verticalScrollBar()->maximum());
+        ++m_streamTick;
+    }
+
     auto fmtHMS = [](int secs) {
         return QString("%1:%2:%3")
             .arg(secs / 3600, 2, 10, QChar('0'))
@@ -724,7 +814,11 @@ void MainWindow::updateTimer(const TimerState &state)
     }
     m_timerLabel->setText(text);
     m_timerLabel->setStyleSheet(
-        QString("font-size: 52px; font-weight: 600; color: %1; font-family: 'JetBrains Mono';").arg(color));
+        QString("font-size: 56px; font-weight: 700; color: %1; font-family: 'JetBrains Mono';"
+                " letter-spacing: 0.04em;").arg(color));
+
+    // Плейхед таймлайна: msToStart уже относительно фактического T0 после КП
+    m_timeline->setPlayheadMs(state.msToStart);
 }
 
 void MainWindow::updateNextEventTimer(const NextEventInfo &info)
@@ -767,6 +861,17 @@ void MainWindow::addLog(const QString &text, const QString &type)
                 " <span style=\"color:%3; font-weight:600;\">%4</span>"
                 "  <span style=\"color:%5;\">%6</span>")
         .arg(barColor, timeStr, levelColor, levelText, msgColor, escaped));
+
+    // Техлог справа — только сырые срабатывания каналов, без системных сообщений
+    if (m_eventLog && (type == "event" || type == "event-post")) {
+        const QString evColor = (type == "event") ? "#3fb950" : "#f85149";
+        m_eventLog->append(
+            QString("<span style=\"color:#484f58;\">%1</span>"
+                    " <span style=\"color:%2;\">%3</span>")
+                .arg(timeStr, evColor, escaped));
+        m_eventLog->verticalScrollBar()->setValue(
+            m_eventLog->verticalScrollBar()->maximum());
+    }
 }
 
 void MainWindow::updateTable(const QVector<EventRow> &events)
@@ -809,45 +914,72 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
 
     const bool final = (m_phase == Phase::Completed || m_phase == Phase::Stopped);
 
-    // Col 4: ФАКТ МС — running: абс. тик; final: calculated ms or NA
-    if (final) {
+    if (!final) {
+        // ── Режим полёта: сырой тик + статус СРАБОТАН ────────────────────
+        if (data.firedTick != -1) {
+            setItem(4, QString::number(data.firedTick), Qt::AlignRight, QColor("#e6edf3"));
+            setItem(6, "СРАБОТАН", Qt::AlignCenter, QColor("#3fb950"));
+        } else {
+            setItem(4, "—", Qt::AlignCenter, QColor("#484f58"));
+            setItem(6, "—", Qt::AlignCenter, QColor("#484f58"));
+        }
+        setItem(5, "—", Qt::AlignCenter, QColor("#484f58"));
+    } else {
+        // ── Финальный режим: анализ относительно фактического T0 ────────────
+        const bool isT0 = (data.key == QLatin1String("LIFT_OFF_CONTACT"));
+
+        // Col 4: ФАКТ МС — calculatedMs (относительно T0)
         if (data.calculatedMs != -1) {
             setItem(4, QString::number(data.calculatedMs), Qt::AlignRight, QColor("#e6edf3"));
         } else {
-            // Scenario design: failed channels show "NA" in red
-            setItem(4, "NA", Qt::AlignCenter, QColor("#f85149"));
+            setItem(4, "—", Qt::AlignCenter, QColor("#484f58"));
         }
-    } else if (data.firedTick != -1) {
-        setItem(4, QString::number(data.firedTick), Qt::AlignRight, QColor("#e6edf3"));
-    } else {
-        setItem(4, "—", Qt::AlignCenter, QColor("#484f58"));
-    }
 
-    // Determine status
-    QString statusText;
-    QColor  statusColor("#8b949e");
-    if (final) {
-        if (data.status == "ok") {
-            if (data.deviationMs <= 0)     { statusText = "✓ ОК";                                         statusColor = QColor("#3fb950"); }
-            else if (data.deviationMs <= 5){ statusText = QString("✓ ОК (±%1 мс)").arg(data.deviationMs); statusColor = QColor("#e3b341"); }
-            else                           { statusText = QString("✗ НЕ ОК (±%1 мс)").arg(data.deviationMs); statusColor = QColor("#f85149"); }
-        } else if (data.status == "fail")  { statusText = "✗ НЕ СРАБОТАЛО"; statusColor = QColor("#f85149"); }
-        else                               { statusText = "—"; }
-    } else {
-        if      (data.status == "ok")   { statusText = "✓ сработало";    statusColor = QColor("#3fb950"); }
-        else if (data.status == "fail") { statusText = "✗ не сработало"; statusColor = QColor("#f85149"); }
-        else                            { statusText = "—"; }
+        if (data.status == "fail") {
+            // Не сработало совсем
+            setItem(5, "—", Qt::AlignCenter, QColor("#484f58"));
+            setItem(6, "✗ НЕ СРАБОТАЛО", Qt::AlignCenter, QColor("#f85149"));
+            // Подсветка строки красным
+            for (int c = 0; c < m_table->columnCount(); ++c)
+                if (auto *it = m_table->item(row, c)) it->setBackground(QColor(0x3d, 0x15, 0x15));
+        } else if (isT0) {
+            // T0: зелёный фон (сработал), цвет текста = зелёный если точно / оранжевый если есть откл.
+            const QColor t0TextColor = (data.deviationMs == 0) ? QColor("#3fb950") : QColor("#e3b341");
+            if (data.deviationMs == 0) {
+                setItem(5, "—", Qt::AlignCenter, QColor("#484f58"));
+            } else {
+                setItem(5, QString("+%1 мс").arg(data.deviationMs), Qt::AlignRight, t0TextColor);
+            }
+            const QString timeStr = m_t0ActualTime.isValid()
+                ? m_t0ActualTime.toString("HH:mm:ss.zzz")
+                : "T0";
+            setItem(6, timeStr, Qt::AlignCenter, t0TextColor);
+            for (int c = 0; c < m_table->columnCount(); ++c)
+                if (auto *it = m_table->item(row, c)) it->setBackground(QColor(0x0f, 0x2d, 0x1a));
+        } else {
+            // Обычное событие: цвет по отклонению относительно T0
+            QColor devColor;
+            QString statusText;
+            if (data.deviationMs == 0) {
+                devColor   = QColor("#3fb950");
+                statusText = "= ОК";
+            } else {
+                // Сработало с отклонением — жёлтый, НЕ красный (красный = только fail)
+                devColor   = QColor("#e3b341");
+                statusText = QString("≈ +%1 мс").arg(data.deviationMs);
+            }
+            setItem(5, data.deviationMs == 0
+                ? QString("—")
+                : QString("+%1 мс").arg(data.deviationMs),
+                Qt::AlignRight, devColor);
+            setItem(6, statusText, Qt::AlignCenter, devColor);
+            const QColor rowBg = (data.deviationMs == 0)
+                ? QColor(0x0f, 0x2d, 0x1a)
+                : QColor(0x2a, 0x22, 0x0a);
+            for (int c = 0; c < m_table->columnCount(); ++c)
+                if (auto *it = m_table->item(row, c)) it->setBackground(rowBg);
+        }
     }
-
-    // Col 5: ОТКЛ МС
-    if (final && data.status == "ok") {
-        setItem(5, QString("+%1 мс").arg(data.deviationMs), Qt::AlignRight, statusColor);
-    } else {
-        setItem(5, "—", Qt::AlignCenter, QColor("#484f58"));
-    }
-
-    // Col 6: СТАТУС
-    setItem(6, statusText, Qt::AlignCenter, statusColor);
 
     refreshNextEventHighlight();
 }
@@ -887,17 +1019,24 @@ void MainWindow::onReset()
 void MainWindow::updateSummaryStrip(const QVector<EventRow> &events)
 {
     if (!m_summaryLabel) return;
-    int okCount = 0, failCount = 0, maxDev = 0;
+    // ✓ зелёный: откл. 0 мс   ≈ жёлтый: любое ненулевое откл.   ✗ красный: не сработало
+    int exact = 0, nearCount = 0, badCount = 0, maxDev = 0;
     for (const auto &e : events) {
-        if (e.status == "ok") { ++okCount; if (e.deviationMs > maxDev) maxDev = e.deviationMs; }
-        else if (e.status == "fail") ++failCount;
+        if (e.status == "fail") {
+            ++badCount;
+        } else if (e.status == "ok" || e.status == "late") {
+            if (e.deviationMs > maxDev) maxDev = e.deviationMs;
+            if (e.deviationMs == 0) ++exact;
+            else                    ++nearCount;
+        }
     }
-    m_summaryLabel->setText(
-        QString("<span style=\"color:#e6edf3;\">Результат: "
-                "<span style=\"color:#3fb950;\">%1 ✓</span> / "
-                "<span style=\"color:#f85149;\">%2 ✗</span>"
-                " &nbsp;·&nbsp; Макс. откл.: %3 мс</span>")
-            .arg(okCount).arg(failCount).arg(maxDev));
+    QString summary = QString("<span style=\"color:#e6edf3;\">Результат: "
+        "<span style=\"color:#3fb950;\">%1 ✓</span>"
+        " / <span style=\"color:#e3b341;\">%2 ≈</span>"
+        " / <span style=\"color:#f85149;\">%3 ✗</span>"
+        " &nbsp;·&nbsp; Макс. откл.: %4 мс</span>")
+        .arg(exact).arg(nearCount).arg(badCount).arg(maxDev);
+    m_summaryLabel->setText(summary);
 }
 
 void MainWindow::onExportCsv()
@@ -926,7 +1065,7 @@ void MainWindow::onExportCsv()
     for (int i = 0; i < m_displayEvents.size(); ++i) {
         const EventRow &e = m_displayEvents[i];
         const QString factStr = (e.calculatedMs != -1) ? QString::number(e.calculatedMs) : "NA";
-        const QString devStr  = (e.deviationMs  != -1 && e.status == "ok")
+        const QString devStr  = (e.deviationMs != -1 && (e.status == "ok" || e.status == "late"))
                                     ? QString::number(e.deviationMs) : "";
         out << (i + 1) << ","
             << csvField(e.key) << ","

@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QLabel>
 #include <QPushButton>
+#include <QComboBox>
 #include <QTimeEdit>
 #include <QTableWidget>
 #include <QTextEdit>
@@ -72,10 +73,12 @@ private:
     QLabel       *m_nextEventLabel = nullptr;
     QTableWidget *m_table          = nullptr;
     QTextEdit    *m_logEdit        = nullptr;
+    QTextEdit    *m_eventLog       = nullptr;  // техлог срабатываний (правая панель)
     QPushButton  *m_loadBtn        = nullptr;
     QPushButton  *m_setTimeBtn     = nullptr;
     QPushButton  *m_stopBtn        = nullptr;
     QPushButton  *m_resetBtn       = nullptr;
+    QComboBox    *m_transferCombo  = nullptr;
     QTimeEdit    *m_timeInput      = nullptr;
     QLabel       *m_startTimeLabel = nullptr;  // shows current start time inline
 
@@ -108,9 +111,12 @@ private:
     Phase  m_phase = Phase::Idle;
     QVector<EventRow> m_displayEvents;
 
-    QTimer *m_blinkTimer = nullptr;
-    bool    m_blinkState = false;
+    QTimer *m_blinkTimer   = nullptr;
+    bool    m_blinkState   = false;
     int     m_nextEventRow = -1;
+
+    int     m_streamTick   = 0;  // counts timerTick calls; used for right-log byte reception display
+    QTime   m_t0ActualTime;      // фактическое время T0 (SET_UTC_TIME + syncIndex), доступно после analysisDone
 };
 
 #endif // MAINWINDOW_H

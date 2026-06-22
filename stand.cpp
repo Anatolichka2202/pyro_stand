@@ -9,6 +9,8 @@
 #include <QThread>
 #include <QProcess>
 #include <QDateTime>
+#include <QDataStream>
+#include <QtEndian>
 
 Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPort> port,
              SessionLogger *logger)
@@ -201,6 +203,121 @@ bool Stand::writeStartTimeToFile(const QTime &time, const QString &filePath)
     return true;
 }
 
+// ─── sendCyclogramTftp ───────────────────────────────────────────────────────
+// Trivial File Transfer Protocol (RFC 1350): UDP, порт 69, без аутентификации.
+// Протокол: WRQ → ACK(0) → DATA(1) → ACK(1) → … → DATA(N<512) → ACK(N)
+
+bool Stand::sendCyclogramTftp(const QByteArray &data)
+{
+    constexpr int    BLOCK_SIZE  = 512;
+    constexpr int    TIMEOUT_MS  = 2000;
+    constexpr quint16 OP_WRQ    = 2;
+    constexpr quint16 OP_DATA   = 3;
+    constexpr quint16 OP_ACK    = 4;
+    constexpr quint16 OP_ERROR  = 5;
+
+    QUdpSocket sock;
+    const QHostAddress host(BCVM_IP);
+
+    // Bind к эфемерному порту — обязательно, иначе readDatagram вернёт 0 байт
+    if (!sock.bind(QHostAddress::AnyIPv4, 0)) {
+        const QString err = "TFTP: не удалось привязать сокет: " + sock.errorString();
+        if (m_logger) m_logger->log("ERROR", err);
+        emit logMessage(err, "system");
+        return false;
+    }
+
+    // --- 1. WRQ (Write Request) ---
+    QByteArray wrq;
+    {
+        QDataStream ds(&wrq, QIODevice::WriteOnly);
+        ds.setByteOrder(QDataStream::BigEndian);
+        ds << OP_WRQ;
+    }
+    wrq.append(TFTP_PATH);   // имя файла (null-terminated)
+    wrq.append('\0');
+    wrq.append("octet");     // режим передачи
+    wrq.append('\0');
+
+    sock.writeDatagram(wrq, host, TFTP_PORT);
+
+    // --- 2. Ждём ACK(0) от сервера (сервер отвечает со своего TID-порта) ---
+    if (!sock.waitForReadyRead(TIMEOUT_MS)) {
+        const QString err = "TFTP: таймаут ожидания ACK от сервера";
+        if (m_logger) m_logger->log("ERROR", err);
+        emit logMessage(err, "system");
+        return false;
+    }
+
+    char ackBuf[516] = {};   // max TFTP packet: 4 header + 512 data
+    quint16 serverTid = 0;
+    QHostAddress serverAddr;
+    const qint64 n0 = sock.readDatagram(ackBuf, sizeof(ackBuf), &serverAddr, &serverTid);
+    if (n0 < 4) {
+        const QString err = QString("TFTP: пустой пакет от сервера (%1 байт)").arg(n0);
+        if (m_logger) m_logger->log("ERROR", err);
+        emit logMessage(err, "system");
+        return false;
+    }
+
+    const quint16 opAck   = qFromBigEndian<quint16>(ackBuf);
+    const quint16 blkAck0 = qFromBigEndian<quint16>(ackBuf + 2);
+    if (opAck == OP_ERROR) {
+        const QString errMsg = QString::fromUtf8(ackBuf + 4, static_cast<int>(n0) - 4);
+        const QString err = QString("TFTP: ошибка сервера (код %1): %2").arg(blkAck0).arg(errMsg);
+        if (m_logger) m_logger->log("ERROR", err);
+        emit logMessage(err, "system");
+        return false;
+    }
+    if (opAck != OP_ACK || blkAck0 != 0) {
+        const QString err = QString("TFTP: неожиданный пакет op=%1 block=%2").arg(opAck).arg(blkAck0);
+        if (m_logger) m_logger->log("ERROR", err);
+        emit logMessage(err, "system");
+        return false;
+    }
+
+    // --- 3. Отправляем блоки данных ---
+    int offset = 0;
+    quint16 blockNum = 1;
+    do {
+        const QByteArray chunk = data.mid(offset, BLOCK_SIZE);
+        offset += BLOCK_SIZE;
+
+        QByteArray pkt;
+        {
+            QDataStream ds(&pkt, QIODevice::WriteOnly);
+            ds.setByteOrder(QDataStream::BigEndian);
+            ds << OP_DATA << blockNum;
+        }
+        pkt.append(chunk);
+        sock.writeDatagram(pkt, serverAddr, serverTid);
+
+        // Ждём ACK(blockNum)
+        if (!sock.waitForReadyRead(TIMEOUT_MS)) {
+            const QString err = QString("TFTP: таймаут ACK блока %1").arg(blockNum);
+            if (m_logger) m_logger->log("ERROR", err);
+            emit logMessage(err, "system");
+            return false;
+        }
+
+        char ackN[4] = {};
+        sock.readDatagram(ackN, sizeof(ackN), nullptr, nullptr);
+        const quint16 ackBlock = qFromBigEndian<quint16>(ackN + 2);
+        if (ackBlock != blockNum) {
+            const QString err = QString("TFTP: ACK %1 ≠ ожидаемый %2").arg(ackBlock).arg(blockNum);
+            if (m_logger) m_logger->log("ERROR", err);
+            emit logMessage(err, "system");
+            return false;
+        }
+
+        ++blockNum;
+    } while (offset - BLOCK_SIZE < data.size()); // последний блок < 512 байт завершает передачу
+
+    if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ по TFTP (%1 байт)").arg(data.size()));
+    emit logMessage(QString("Циклограмма отправлена на БЦВМ по TFTP (%1 байт)").arg(data.size()), "system");
+    return true;
+}
+
 // ─── pingBcvm ────────────────────────────────────────────────────────────────
 
 bool Stand::pingBcvm() const
@@ -274,17 +391,20 @@ void Stand::sendToBoard()
         }
         file.close();
 
-        const QByteArray datagram = lines.join("\n").toUtf8();
-        QUdpSocket udp;
-        const qint64 sent = udp.writeDatagram(datagram, QHostAddress(BCVM_IP), UDP_PORT);
-        if (sent == -1) {
-            if (m_logger) m_logger->log("ERROR", "Ошибка UDP: " + udp.errorString());
-            emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return;
-        }
-        if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent));
-        emit logMessage(QString("Циклограмма отправлена на БЦВМ (%1 байт)").arg(sent), "system");
+        const QByteArray payload = lines.join("\n").toUtf8();
 
-        m_port->clearBuffers();
+        if (m_transferMode == TransferMode::UDP) {
+            QUdpSocket udp;
+            const qint64 sent = udp.writeDatagram(payload, QHostAddress(BCVM_IP), UDP_PORT);
+            if (sent == -1) {
+                if (m_logger) m_logger->log("ERROR", "Ошибка UDP: " + udp.errorString());
+                emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return;
+            }
+            if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ по UDP (%1 байт)").arg(sent));
+            emit logMessage(QString("Циклограмма отправлена на БЦВМ по UDP (%1 байт)").arg(sent), "system");
+        } else {
+            if (!sendCyclogramTftp(payload)) return; // ошибка уже залогирована внутри
+        }
     } else {
         m_port->clearBuffers();  // mock: сбрасывает m_tick для повторного прогона
     }
@@ -327,7 +447,45 @@ void Stand::readingThread(int64_t timeToStartMs)
         return;
     }
 
+
+    if (m_logger) m_logger->log("INFO", QString("Поток чтения запущен, порт открыт: %1").arg(m_portName));
+    emit logMessage(QString("Поток чтения: %1 открыт").arg(m_portName), "system");
+
+    // СБРОС БУФЕРА COM-ПОРТА — две цели:
+    //
+    // 1. Мусор инициализации RS-232: при открытии порта линии могут быть в
+    //    произвольном состоянии. Первые байты содержат ложные биты каналов.
+    //
+    // 2. Сброс накопленного времени (КЛЮЧЕВОЕ): датчик срабатывания непрерывно
+    //    шлёт 1 байт/мс с момента включения. Пока оператор готовился, в буфере
+    //    накопилось N байт = N мс «прошедшего» времени. Без drain absoluteIndex=0
+    //    соответствовал бы не «сейчас», а «N мс назад» — все времена съехали бы.
+    //    Drain обнуляет часы: absoluteIndex=0 = момент после подтверждения приёма
+    //    циклограммы бортом (для TFTP — после последнего ACK; для UDP — после
+    //    отправки, без гарантии приёма).
+    //
+    // Не делаем для mock-режима (portName пустой) — MockSerial чистый с тика 0.
+    if (!m_portName.isEmpty()) {
+        int64_t totalDrained = 0;
+        char tmp[4096];
+        // Один waitForReadyRead — даём порту "проснуться" и буферу стать доступным.
+        // Затем читаем БЕЗ повторного ожидания: датчик шлёт 1 байт/мс, поэтому
+        // повторный waitForReadyRead(50) всегда вернул бы true — цикл стал бы бесконечным.
+        // read() без ожидания возвращает 0 когда буфер моментально пуст — это и есть выход.
+        if (m_port->waitForReadyRead(50)) {
+            qint64 n;
+            do {
+                n = m_port->read(tmp, sizeof(tmp));
+                if (n > 0) totalDrained += n;
+            } while (n > 0);
+        }
+        if (m_logger && totalDrained > 0)
+            m_logger->log("INFO", QString("Сброшено %1 байт(а) из буфера COM-порта (обнуление часов)").arg(totalDrained), 0);
+    }
+
     int64_t absoluteIndex = 0;
+    int64_t noDataCount = 0;   // диагностика: сколько раз waitForReadyRead вернул false
+    int64_t spuriousCount = 0; // диагностика: read()=0 при waitForReadyRead=true
     uint8_t firedBits = 0;
     bool started = false;
 
@@ -340,111 +498,169 @@ void Stand::readingThread(int64_t timeToStartMs)
                 m_running = false;
                 break;
             }
+            ++noDataCount;
+            // Диагностика: логируем каждые 3 секунды пока нет данных
+            if (noDataCount % 30 == 0) {
+                const QString msg = QString("ДИАГН: данных нет %1 с (байт получено: %2)")
+                    .arg(noDataCount / 10).arg(absoluteIndex);
+                if (m_logger) m_logger->log("WARN", msg, absoluteIndex);
+                emit logMessage(msg, "system");
+            }
             continue;
         }
+        noDataCount = 0;
 
-        char byte = 0;
-        if (m_port->read(&byte, 1) != 1) continue;
-
-        const uint8_t mask = static_cast<uint8_t>(byte);
-        m_masks.push_back({absoluteIndex, mask});
-
-        // Таймер (раз в секунду)
-        if (absoluteIndex % 1000 == 0) {
-            if (!started && absoluteIndex < timeToStartMs) {
-                emit timerTick(TimerState{-(timeToStartMs - absoluteIndex), m_phase});
-                updateNextEvent(absoluteIndex, timeToStartMs);
-            } else if (started) {
-                emit timerTick(TimerState{absoluteIndex - timeToStartMs, m_phase});
-                updateNextEvent(absoluteIndex, timeToStartMs);
+        // Читаем все доступные байты за один вызов.
+        // RealSerial: возвращает всё, что накопилось в буфере OS.
+        // MockSerial: всегда возвращает ровно 1 байт.
+        char buf[4096] = {};
+        const qint64 nRead = m_port->read(buf, sizeof(buf));
+        if (nRead <= 0) {
+            // Spurious wakeup — waitForReadyRead вернул true, но данных нет.
+            ++spuriousCount;
+            if (m_logger && spuriousCount <= 5) {
+                m_logger->log("WARN",
+                    QString("ДИАГН spurious#%1 read()=%2 at idx=%3 err=%4")
+                        .arg(spuriousCount).arg(nRead).arg(absoluteIndex)
+                        .arg(m_port->errorString()),
+                    absoluteIndex);
             }
+            continue;
         }
+        spuriousCount = 0;
 
-        if (!started && absoluteIndex >= timeToStartMs) {
-            started = true;
-            if (m_logger) m_logger->log("INFO", "─── СТАРТ ───", absoluteIndex);
-            emit logMessage("─── СТАРТ ───", "system");
-            updatePhase(Phase::Running);
-        }
+        for (qint64 bi = 0; bi < nRead && m_running; ++bi) {
+            const uint8_t mask = static_cast<uint8_t>(buf[bi]);
+            m_masks.push_back({absoluteIndex, mask});
 
-        // Обработка входящих бит-масок
-        uint8_t newBits = mask & ~firedBits;
-        if (newBits & SYNC_MASK) {
-            if (m_logger) m_logger->log("EVENT", "Контакт подъёма (канал 8)", absoluteIndex);
-            emit logMessage(QString("[%1] Контакт подъёма (канал 8)").arg(absoluteIndex), "event");
-            m_syncIndex = absoluteIndex;
-            m_syncFound = true;
-            newBits    &= ~SYNC_MASK;
-            firedBits  |= SYNC_MASK;
-        }
-        if (newBits != 0) {
-            QStringList chs;
-            for (int b = 0; b < 7; ++b) if (newBits & (1 << b)) chs << QString::number(b + 1);
-            if (m_logger) m_logger->log("EVENT", "срабатывание канала(ов): " + chs.join(", "), absoluteIndex);
-            emit logMessage(QString("[%1] срабатывание канала(ов): %2").arg(absoluteIndex).arg(chs.join(", ")), "event");
-            firedBits |= newBits;
-        }
-
-        // Проверка событий циклограммы
-        // Сначала собираем результаты под мьютексом, потом эмитим — вне мьютекса
-        struct PendingSignal { bool fired; int id; int tick; QString key; int planMs; };
-        QVector<PendingSignal> pending;
-        {
-            QMutexLocker locker(&m_eventsMutex);
-            for (auto &ev : m_events) {
-                if (!ev.hasChannels || ev.status != "pending") continue;
-                const int64_t expectedIdx = timeToStartMs + ev.time_ms;
-                if (absoluteIndex < expectedIdx) continue;
-
-                uint8_t neededMask = 0;
-                for (const auto &m : m_mappings) { if (m.key == ev.key) { neededMask = m.mask; break; } }
-                if (neededMask == 0) continue;
-
-                if ((firedBits & neededMask) == neededMask) {
-                    ev.status   = "ok";
-                    ev.firedTick= static_cast<int>(absoluteIndex);
-                    pending.push_back({true, ev.id, ev.firedTick, ev.key, ev.time_ms});
-                    emit logMessage(QString("[%1] '%2' выполнено (каналы %3)")
-                                        .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event");
-                } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
-                    ev.status   = "fail";
-                    ev.firedTick= -1;
-                    pending.push_back({false, ev.id, -1, ev.key, ev.time_ms});
-                    emit logMessage(QString("[%1] '%2' НЕ СРАБОТАЛО (каналы %3)")
-                                        .arg(absoluteIndex).arg(ev.key).arg(ev.channels), "event-post");
+            // Таймер (раз в секунду)
+            if (absoluteIndex % 1000 == 0) {
+                if (m_logger) m_logger->log("INFO",
+                    QString("ДИАГН tick[%1] mask=0x%2").arg(absoluteIndex).arg(mask, 2, 16, QChar('0')),
+                    absoluteIndex);
+                if (m_syncFound) {
+                    // После фактического КП — время в полёте относительно реального T0
+                    emit timerTick(TimerState{absoluteIndex - m_syncIndex, m_phase});
+                    updateNextEvent(absoluteIndex, m_syncIndex);
+                } else if (!started) {
+                    // Обратный отсчёт до планового T0
+                    emit timerTick(TimerState{-(timeToStartMs - absoluteIndex), m_phase});
+                    updateNextEvent(absoluteIndex, timeToStartMs);
+                } else {
+                    // Плановый T0 прошёл, КП ещё не было.
+                    // Отправляем отрицательное значение (жёлтый цвет = "ждём старт")
+                    // |msToStart| = перерасход планового T0 в мс.
+                    emit timerTick(TimerState{timeToStartMs - absoluteIndex, m_phase});
+                    updateNextEvent(absoluteIndex, timeToStartMs);
                 }
             }
-        }
-        // Эмитим вне мьютекса — исключаем deadlock и гарантируем доставку в GUI-тред
-        for (const auto &p : pending) {
-            if (p.fired) {
+
+            if (!started && absoluteIndex >= timeToStartMs) {
+                started = true;
+                if (m_logger) m_logger->log("INFO", "─── T0 по плану ───", absoluteIndex);
+                emit logMessage("─── T0 по плану ───", "system");
+                // Фаза Running запускается только по фактическому КП (канал 8),
+                // не по плановому времени — ждём аппаратного сигнала.
+            }
+
+            // Обработка входящих бит-масок
+            uint8_t newBits = mask & ~firedBits;
+            if (newBits & SYNC_MASK) {
+                const int64_t t0Delay = static_cast<int64_t>(absoluteIndex) - timeToStartMs;
+                QString kpMsg;
+                if (t0Delay == 0) {
+                    kpMsg = QString("[%1] Контакт подъёма (КП, канал 8) — T0 ТОЧНО").arg(absoluteIndex);
+                } else if (t0Delay > 0) {
+                    kpMsg = QString("[%1] Контакт подъёма (КП, канал 8) — опоздание на %2 мс (ожидалось на %2 мс раньше)")
+                        .arg(absoluteIndex).arg(t0Delay);
+                } else {
+                    kpMsg = QString("[%1] Контакт подъёма (КП, канал 8) — опережение на %2 мс (ожидалось на %2 мс позже)")
+                        .arg(absoluteIndex).arg(-t0Delay);
+                }
+                if (m_logger) m_logger->log("EVENT", kpMsg.mid(kpMsg.indexOf(']') + 2), absoluteIndex);
+                emit logMessage(kpMsg, "event");
+
+                if (!started) started = true;  // ранний старт (до планового T0)
+                m_syncIndex = absoluteIndex;
+                m_syncFound = true;
+                newBits    &= ~SYNC_MASK;
+                firedBits  |= SYNC_MASK;
+
+                // В полёте — только после фактического КП
+                updatePhase(Phase::Running);
+            }
+            if (newBits != 0) {
+                QStringList chs;
+                for (int b = 0; b < 7; ++b) if (newBits & (1 << b)) chs << QString::number(b + 1);
+                if (m_logger) m_logger->log("EVENT", "срабатывание канала(ов): " + chs.join(", "), absoluteIndex);
+                emit logMessage(QString("[%1] срабатывание канала(ов): %2").arg(absoluteIndex).arg(chs.join(", ")), "event");
+                firedBits |= newBits;
+            }
+
+            // Проверка событий циклограммы
+            struct PendingSignal { int id; int tick; QString key; int planMs; };
+            QVector<PendingSignal> pending;
+            {
+                QMutexLocker locker(&m_eventsMutex);
+                for (auto &ev : m_events) {
+                    if (!ev.hasChannels) continue;
+
+                    if (ev.status == "pending") {
+                        const int64_t expectedIdx = timeToStartMs + ev.time_ms;
+                        if (absoluteIndex < expectedIdx) continue;
+
+                        uint8_t neededMask = 0;
+                        for (const auto &m : m_mappings) { if (m.key == ev.key) { neededMask = m.mask; break; } }
+                        if (neededMask == 0) continue;
+
+                        if ((firedBits & neededMask) == neededMask) {
+                            ev.status   = "ok";
+                            ev.firedTick= static_cast<int>(absoluteIndex);
+                            pending.push_back({ev.id, ev.firedTick, ev.key, ev.time_ms});
+                        } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
+                            // Плановое окно истекло — помечаем fail внутренне.
+                            // Оценка "НЕ СРАБОТАЛО" выводится только в анализе после полёта,
+                            // не засоряя лог в реальном времени. Канал может сработать позже
+                            // (late-detection ниже зафиксирует firedTick).
+                            ev.status   = "fail";
+                            ev.firedTick= -1;
+                        }
+                    } else if (ev.status == "fail" && ev.firedTick == -1) {
+                        // Каналы сработали позже планового окна — фиксируем тик.
+                        // analyzeEvents вычислит статус "late" относительно фактического T0.
+                        uint8_t neededMask = 0;
+                        for (const auto &m : m_mappings) { if (m.key == ev.key) { neededMask = m.mask; break; } }
+                        if (neededMask != 0 && (firedBits & neededMask) == neededMask) {
+                            ev.firedTick = static_cast<int>(absoluteIndex);
+                            // Уведомляем UI о срабатывании (таблица покажет тик, статус — после анализа)
+                            pending.push_back({ev.id, ev.firedTick, ev.key, ev.time_ms});
+                        }
+                    }
+                }
+            }
+            for (const auto &p : pending) {
                 if (m_logger) {
-                    const int actualMs = p.tick;
-                    const int devMs    = qAbs(actualMs - (static_cast<int>(timeToStartMs) + p.planMs));
                     m_logger->log("EVENT",
-                        QString("id=%1 key=%2 tick=%3 plan_ms=%4 actual_ms=%5 dev_ms=%6 status=OK")
-                            .arg(p.id).arg(p.key).arg(p.tick).arg(p.planMs).arg(actualMs).arg(devMs),
+                        QString("id=%1 key=%2 tick=%3 plan_ms=%4 status=OK")
+                            .arg(p.id).arg(p.key).arg(p.tick).arg(p.planMs),
                         p.tick);
                 }
                 emit eventFired(p.id, p.tick);
-            } else {
-                if (m_logger) {
-                    m_logger->log("EVENT",
-                        QString("id=%1 key=%2 tick=-1 plan_ms=%3 actual_ms=-1 dev_ms=-1 status=FAIL")
-                            .arg(p.id).arg(p.key).arg(p.planMs),
-                        absoluteIndex);
-                }
-                emit eventFailed(p.id);
             }
-        }
 
-        ++absoluteIndex;
+            ++absoluteIndex;
 
-        if (started && (absoluteIndex - timeToStartMs) > m_flightDurationMs + 100) {
-            m_running = false;
-            break;
-        }
-    }
+            // Выходим когда все события прошли:
+            // после КП — считаем от реального T0 (учитываем опоздание старта);
+            // если КП не было — от планового T0 (защита от зависания).
+            {
+                const int64_t t0Ref = m_syncFound ? m_syncIndex : timeToStartMs;
+                if (started && absoluteIndex > t0Ref + m_flightDurationMs + 100) {
+                    m_running = false;
+                }
+            }
+        } // for bi
+    } // while m_running
 
     m_port->close();
     m_finalIndex = absoluteIndex;
@@ -480,19 +696,35 @@ void Stand::completeFlight()
     QVector<EventRow> snapshot;
     { QMutexLocker l(&m_eventsMutex); snapshot = m_events; }
 
-    const QVector<EventRow> result = analyzeEvents(snapshot, m_syncIndex);
+    const QVector<EventRow> result = analyzeEvents(snapshot, m_syncIndex, m_timeToStartMs);
 
     { QMutexLocker l(&m_eventsMutex); m_events = result; }
 
+    // Если фактический T0 отличается от планового — сообщаем об опоздании старта
+    const int64_t t0Delay = m_syncIndex - m_timeToStartMs;
+    if (t0Delay != 0) {
+        const QString dir = t0Delay > 0 ? "ОПОЗДАЛ" : "ОПЕРЕДИЛ";
+        const QString msg = QString("─── Фактический T0 %1 на %2 мс ───").arg(dir).arg(qAbs(t0Delay));
+        if (m_logger) m_logger->log("INFO", msg, m_syncIndex);
+        emit logMessage(msg, "system");
+    }
+
     for (const auto &ev : result) {
-        if (ev.calculatedMs != -1) {
+        if (ev.status == "ok") {
             if (m_logger)
                 m_logger->log("INFO",
-                    QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=%6")
-                        .arg(ev.id).arg(ev.key).arg(ev.calculatedMs)
-                        .arg(ev.time_ms).arg(ev.deviationMs).arg(ev.status),
+                    QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=OK")
+                        .arg(ev.id).arg(ev.key).arg(ev.calculatedMs).arg(ev.time_ms).arg(ev.deviationMs),
                     m_syncIndex + ev.calculatedMs);
             emit logMessage(QString("[%1 мс] %2 (откл. %3 мс)")
+                                .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event");
+        } else if (ev.status == "late") {
+            if (m_logger)
+                m_logger->log("INFO",
+                    QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=LATE")
+                        .arg(ev.id).arg(ev.key).arg(ev.calculatedMs).arg(ev.time_ms).arg(ev.deviationMs),
+                    m_syncIndex + ev.calculatedMs);
+            emit logMessage(QString("[%1 мс] %2 (ОПОЗДАНИЕ СТАРТА, откл. %3 мс от T0)")
                                 .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event-post");
         } else {
             if (m_logger)
@@ -508,11 +740,36 @@ void Stand::completeFlight()
 
 // ─── analyzeEvents (static, pure) ────────────────────────────────────────────
 
-QVector<EventRow> Stand::analyzeEvents(const QVector<EventRow> &events, int64_t syncIndex)
+QVector<EventRow> Stand::analyzeEvents(const QVector<EventRow> &events,
+                                        int64_t syncIndex,
+                                        int64_t timeToStartMs)
 {
     QVector<EventRow> result = events;
     for (auto &ev : result) {
+        // LIFT_OFF_CONTACT — сам является T0, поэтому (firedTick - syncIndex) всегда 0.
+        // Его реальное отклонение = опоздание/опережение старта = firedTick - timeToStartMs.
+        if (ev.key == QLatin1String("LIFT_OFF_CONTACT") && timeToStartMs >= 0) {
+            if (ev.firedTick != -1) {
+                ev.calculatedMs = 0;
+                ev.deviationMs  = static_cast<int>(qAbs(static_cast<int64_t>(ev.firedTick) - timeToStartMs));
+                // readingThread ставит "fail", когда плановое окно истекло без срабатывания,
+                // и потом пишет firedTick когда канал 8 всё-таки сработал.
+                // Здесь конвертируем "fail+firedTick" → "late".
+                if (ev.status == "fail") ev.status = "late";
+            } else {
+                ev.calculatedMs = -1;
+                ev.deviationMs  = -1;
+            }
+            continue;
+        }
+
         if (ev.status == "ok") {
+            ev.calculatedMs = static_cast<int>(ev.firedTick - syncIndex);
+            ev.deviationMs  = qAbs(ev.calculatedMs - ev.time_ms);
+        } else if (ev.status == "fail" && ev.firedTick != -1) {
+            // Каналы сработали, но позже планового окна — опоздание старта или запаздывание события.
+            // Пересчитываем относительно фактического T0.
+            ev.status       = "late";
             ev.calculatedMs = static_cast<int>(ev.firedTick - syncIndex);
             ev.deviationMs  = qAbs(ev.calculatedMs - ev.time_ms);
         } else {

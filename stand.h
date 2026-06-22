@@ -37,15 +37,23 @@ public:
     bool pingBcvm() const;
 
     void sendToBoard();
+    void setTransferMode(TransferMode mode) { m_transferMode = mode; }
+    TransferMode transferMode() const { return m_transferMode; }
     void stop();
     void resetForNewTest();
 
     // Чистая функция анализа — без side-эффектов, тестируема без железа
-    static QVector<EventRow> analyzeEvents(const QVector<EventRow> &events, int64_t syncIndex);
+    // timeToStartMs: плановый тик T0 (для расчёта опоздания LIFT_OFF_CONTACT).
+    // По умолчанию -1 — обратная совместимость с тестами, не проверяющими канал 8.
+    static QVector<EventRow> analyzeEvents(const QVector<EventRow> &events,
+                                           int64_t syncIndex,
+                                           int64_t timeToStartMs = -1);
 
     QVector<EventRow> getEvents() const { QMutexLocker l(&m_eventsMutex); return m_events; }
     Phase getPhase() const { return m_phase; }
     QTime getStartTime() const { return m_startTime; }
+    QTime getSetTime() const { return m_setTime; }
+    int64_t getSyncIndex() const { return m_syncIndex; }
 
     // Только для тестов: запустить reading loop напрямую без UDP/ping
     void startReadingForTest(int64_t timeToStartMs = 0);
@@ -102,13 +110,19 @@ private:
 
     SessionLogger *m_logger = nullptr; // не владеет — владеет MainWindow
 
+    TransferMode m_transferMode = TransferMode::UDP;
+
+    bool sendCyclogramTftp(const QByteArray &data);
+
     static constexpr const char* DEFAULT_PORT   = DEFAULT_SERIAL_PORT;
     static constexpr int   BAUD_RATE            = 115200;
     static constexpr const char* CYCLOGRAM_FILE = "cyclogram.ini";
     static constexpr uint8_t SYNC_MASK          = 0x80;
     static constexpr quint16 UDP_PORT           = 4000;
+    static constexpr quint16 TFTP_PORT          = 69;
     static constexpr const char* BCVM_IP        = "192.168.17.246";
-    static constexpr int FLIGHT_SAFETY_MS       = 1000;
+    static constexpr const char* TFTP_PATH      = "/cyclogram.ini";
+    static constexpr int FLIGHT_SAFETY_MS       = 5000;
     static constexpr int FAIL_MARGIN_MS         = 5;
     static constexpr int SERIAL_RETRIES         = 3;
 };

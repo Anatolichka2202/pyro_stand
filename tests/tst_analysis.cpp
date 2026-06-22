@@ -91,6 +91,50 @@ private slots:
         QVERIFY(result.isEmpty());
     }
 
+    // ── LIFT_OFF_CONTACT (канал 8) ────────────────────────────────────────────
+
+    void liftOffContactOnTime()
+    {
+        // Старт точно по плану: syncIndex == timeToStartMs → опоздание 0
+        QVector<EventRow> events = {makeEvent(1, 0, "LIFT_OFF_CONTACT", "ok", 30000)};
+        const auto result = Stand::analyzeEvents(events, 30000, 30000);
+        QCOMPARE(result[0].calculatedMs, 0);
+        QCOMPARE(result[0].deviationMs,  0);
+        QCOMPARE(result[0].status, QString("ok"));
+    }
+
+    void liftOffContactLate()
+    {
+        // Старт опоздал на 1000 мс: syncIndex=31000, timeToStartMs=30000
+        QVector<EventRow> events = {makeEvent(1, 0, "LIFT_OFF_CONTACT", "late", 31000)};
+        const auto result = Stand::analyzeEvents(events, 31000, 30000);
+        QCOMPARE(result[0].calculatedMs, 0);      // T0 относительно самого себя = 0
+        QCOMPARE(result[0].deviationMs,  1000);   // опоздание старта
+        QCOMPARE(result[0].status, QString("late"));
+    }
+
+    void liftOffContactNotFired()
+    {
+        // Канал 8 не сработал вообще
+        QVector<EventRow> events = {makeEvent(1, 0, "LIFT_OFF_CONTACT", "fail")};
+        const auto result = Stand::analyzeEvents(events, 30000, 30000);
+        QCOMPARE(result[0].calculatedMs, -1);
+        QCOMPARE(result[0].deviationMs,  -1);
+        QCOMPARE(result[0].status, QString("fail"));
+    }
+
+    void liftOffContactLateFromFail()
+    {
+        // readingThread-сценарий: статус "fail" выставлен по плановому окну,
+        // затем firedTick обновлён когда канал 8 наконец сработал.
+        // analyzeEvents должен конвертировать "fail" → "late".
+        QVector<EventRow> events = {makeEvent(1, 0, "LIFT_OFF_CONTACT", "fail", 39962)};
+        const auto result = Stand::analyzeEvents(events, 39962, 30000);
+        QCOMPARE(result[0].status, QString("late"));
+        QCOMPARE(result[0].calculatedMs, 0);
+        QCOMPARE(result[0].deviationMs,  9962);
+    }
+
     void syncIndexZero()
     {
         // syncIndex=0, firedTick=500, time_ms=500 → dev=0

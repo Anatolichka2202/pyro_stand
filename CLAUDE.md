@@ -48,7 +48,7 @@ The application has two layers connected exclusively via Qt signals/slots:
   - `port` non-null → injected mock (tests/demo); null → creates `RealSerialPort` lazily in `readingThread`.
   - `logger` non-null → writes structured log to file; null → silent (demo/tests).
 - `loadCyclogram(filePath)` parses `cyclogram.ini`; empty `filePath` → searches in `applicationDirPath()`.
-- `sendToBoard()` pings БЦВМ via ICMP, sends cyclogram as UTF-8 UDP datagram to port 4000, then spawns `readingThread`. In mock mode (empty portName), skips ping + UDP.
+- `sendToBoard()` pings БЦВМ via ICMP, sends cyclogram (UDP datagram to port 4000, or TFTP to port 69 — see `TransferMode`), then spawns `readingThread`. In mock mode (empty portName), skips ping + network transfer.
 - `readingThread` is the hot path: reads 1 byte/ms, interprets each byte as bitmask of 8 channels, emits timer/event signals every 1000 bytes (≈1 s), drives `Phase` state machine: Idle → Loaded → Countdown → Running → Completed/Stopped.
 - Channel 8 (`0x80`, "Контакт подъёма") is the sync signal. Its absolute byte-index becomes the time base for post-flight deviation analysis in `performAnalysis`.
 - `stop()` transitions to Phase::Stopped and sends `0x63` via UDP to БЦВМ.
@@ -85,6 +85,57 @@ The application has two layers connected exclusively via Qt signals/slots:
 **`platform.h`** — `DEFAULT_SERIAL_PORT`: `"COM7"` on Windows, `"/dev/ttyUSB0"` on Linux.
 
 **`timeline_widget.h/cpp`** — horizontal timeline: event dots, playhead, T0 marker. Methods: `setEvents()`, `markEventFired(id, status)`, `setPlayheadMs()`, `reset()`.
+
+## Timing Model & Hardware Architecture
+
+**БЦВМ не шлёт данные в PC через COM-порт.** Это критически важно понимать.
+
+Система состоит из двух независимых аппаратных частей:
+
+### Датчик срабатывания (COM-порт)
+
+Отдельное устройство, физически измеряющее ток в пиротехнических линиях. Оно генерирует **ровно 1 байт каждую 1 мс** — бесконечный поток, независимый от БЦВМ и от PC. Каждый байт — бинарная маска активных каналов в данный момент.
+
+Следствие: `absoluteIndex` (счётчик байт в `readingThread`) — это **аппаратный миллисекундомер**, а не системное время. Точность определяется железом датчика, а не ОС.
+
+### БЦВМ (сеть — UDP/TFTP)
+
+Бортовой компьютер получает циклограмму от PC и выполняет полётное задание, управляя пиротехникой. Никакого потока данных обратно в PC через COM он не шлёт.
+
+### Синхронизация: почему drain — это обнуление часов
+
+Датчик работает непрерывно. Пока оператор готовил стенд, в COM-буфере накопилось N байт = N мс «прошедшего» времени. Без drain `absoluteIndex=0` соответствовал бы прошлому, и все времена съехали бы на N.
+
+**Правило:** drain выполняется в `readingThread` сразу после открытия порта — то есть уже после того, как `sendToBoard()` завершила отправку циклограммы. `absoluteIndex=0` таким образом привязан к моменту «БЦВМ получила задание».
+
+Точность привязки зависит от протокола:
+- **TFTP**: drain происходит после получения финального ACK → подтверждённая доставка.
+- **UDP**: drain происходит после отправки → нет гарантии, что борт успел принять.
+
+### T0 и самовычитание погрешности
+
+Настоящая точка отсчёта — **канал 8** (`0x80`, "Контакт подъёма"). Это аппаратный сигнал T0 от самого датчика. Его `absoluteIndex` сохраняется как `m_syncIndex`.
+
+Все отклонения считаются как `firedTick - m_syncIndex`. Любая погрешность drain одинаково смещает и `m_syncIndex`, и `firedTick` каждого события → **в разности исчезает**. Программа не живёт в реальном времени намеренно: абсолютную метку реального времени фиксирует плата датчика.
+
+### Итоговая цепочка
+
+```
+sendToBoard()
+  └─ ping БЦВМ
+  └─ отправка циклограммы (UDP или TFTP)
+       └─ [TFTP: ждём финальный ACK — борт подтвердил получение]
+  └─ spawn readingThread
+
+readingThread
+  └─ open COM port
+  └─ drain buffer (сброс накопленного времени — обнуление часов)
+  └─ absoluteIndex = 0  ← "сейчас"
+  └─ байты текут 1/мс
+  └─ канал 8 сработал → m_syncIndex = N  (T0)
+  └─ канал X сработал → firedTick = M
+  └─ отклонение = (M − N) − плановое_время_X
+```
 
 ## Cyclogram Format (`cyclogram.ini`)
 

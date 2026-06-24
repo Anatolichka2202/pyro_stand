@@ -72,6 +72,37 @@ void MainWindow::connectStand()
     connect(m_stand.get(), &Stand::nextEventChanged, this, &MainWindow::updateNextEventTimer);
     connect(m_stand.get(), &Stand::logMessage,       this, &MainWindow::addLog);
 
+    // Статус загрузки циклограммы
+    m_transferStatusTimer = new QTimer(this);
+    m_transferStatusTimer->setSingleShot(true);
+    connect(m_transferStatusTimer, &QTimer::timeout, this, [this]() {
+        m_transferStatusLabel->setVisible(false);
+    });
+    connect(m_stand.get(), &Stand::transferProgress, this, [this](const QString &stage) {
+        m_transferStatusLabel->setVisible(true);
+        if (stage == "checking") {
+            m_transferStatusLabel->setStyleSheet(
+                "font-size: 11px; padding: 3px 0; color: #8b949e; background: transparent;");
+            m_transferStatusLabel->setText("Проверка БЦВМ...");
+            m_transferStatusTimer->stop();
+        } else if (stage == "sending") {
+            m_transferStatusLabel->setStyleSheet(
+                "font-size: 11px; padding: 3px 0; color: #e3b341; background: transparent;");
+            m_transferStatusLabel->setText("Загрузка циклограммы...");
+            m_transferStatusTimer->stop();
+        } else if (stage == "done") {
+            m_transferStatusLabel->setStyleSheet(
+                "font-size: 11px; padding: 3px 0; color: #3fb950; background: transparent;");
+            m_transferStatusLabel->setText("Циклограмма загружена ✓");
+            m_transferStatusTimer->start(5000);
+        } else if (stage == "error") {
+            m_transferStatusLabel->setStyleSheet(
+                "font-size: 11px; padding: 3px 0; color: #f85149; background: transparent;");
+            m_transferStatusLabel->setText("Ошибка загрузки");
+            m_transferStatusTimer->start(8000);
+        }
+    });
+
     // T11: БЦВМ indicator
     connect(m_stand.get(), &Stand::logMessage, this, [this](const QString &msg, const QString &) {
         if (msg.contains("БЦВМ недоступна"))
@@ -282,6 +313,14 @@ void MainWindow::setupUI()
     );
     connect(m_loadBtn, &QPushButton::clicked, this, &MainWindow::onLoadToBoard);
     ctrlCardLayout->addWidget(m_loadBtn);
+
+    m_transferStatusLabel = new QLabel("", ctrlCard);
+    m_transferStatusLabel->setObjectName("transferStatusLabel");
+    m_transferStatusLabel->setAlignment(Qt::AlignCenter);
+    m_transferStatusLabel->setStyleSheet(
+        "font-size: 11px; padding: 3px 0; color: #8b949e; background: transparent;");
+    m_transferStatusLabel->setVisible(false);
+    ctrlCardLayout->addWidget(m_transferStatusLabel);
 
     // Выбор протокола передачи циклограммы
     m_transferCombo = new QComboBox(ctrlCard);

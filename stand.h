@@ -67,6 +67,7 @@ signals:
     void logMessage(const QString &msg, const QString &type);
     void portError(const QString &msg);
     void flightComplete();
+    void transferProgress(const QString &stage); // "checking"|"sending"|"done"|"error"
 
 private slots:
     void completeFlight();

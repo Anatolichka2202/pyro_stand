@@ -357,9 +357,13 @@ void Stand::sendToBoard()
     // Skip network operations (BCVM ping, UDP send) — hardware not present.
     const bool mockMode = m_portName.isEmpty();
 
-    if (!mockMode && !pingBcvm()) {
-        emit logMessage("ОШИБКА: БЦВМ недоступна. Проверьте подключение.", "system");
-        return;
+    if (!mockMode) {
+        emit transferProgress("checking");
+        if (!pingBcvm()) {
+            emit logMessage("ОШИБКА: БЦВМ недоступна. Проверьте подключение.", "system");
+            emit transferProgress("error");
+            return;
+        }
     }
 
     QTime setTime, startTime;
@@ -397,20 +401,25 @@ void Stand::sendToBoard()
 
         const QByteArray payload = lines.join("\n").toUtf8();
 
+        emit transferProgress("sending");
         if (m_transferMode == TransferMode::UDP) {
             QUdpSocket udp;
             const qint64 sent = udp.writeDatagram(payload, QHostAddress(BCVM_IP), UDP_PORT);
             if (sent == -1) {
                 if (m_logger) m_logger->log("ERROR", "Ошибка UDP: " + udp.errorString());
-                emit logMessage("Ошибка UDP: " + udp.errorString(), "system"); return;
+                emit logMessage("Ошибка UDP: " + udp.errorString(), "system");
+                emit transferProgress("error");
+                return;
             }
             if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ по UDP (%1 байт)").arg(sent));
             emit logMessage(QString("Циклограмма отправлена на БЦВМ по UDP (%1 байт)").arg(sent), "system");
         } else {
-            if (!sendCyclogramTftp(payload)) return; // ошибка уже залогирована внутри
+            if (!sendCyclogramTftp(payload)) { emit transferProgress("error"); return; }
         }
+        emit transferProgress("done");
     } else {
         m_port->clearBuffers();  // mock: сбрасывает m_tick для повторного прогона
+        emit transferProgress("done");
     }
 
     m_masks.clear();

@@ -112,6 +112,9 @@ private:
     Phase  m_phase = Phase::Idle;
     QVector<EventRow> m_displayEvents;
 
+    QLabel *m_transferStatusLabel = nullptr;
+    QTimer *m_transferStatusTimer = nullptr;
+
     QTimer *m_blinkTimer   = nullptr;
     bool    m_blinkState   = false;
     int     m_nextEventRow = -1;

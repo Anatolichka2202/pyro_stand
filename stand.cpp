@@ -18,7 +18,7 @@ Stand::Stand(QObject *parent, const QString &portName, std::unique_ptr<ISerialPo
 {
     m_mappings = {
         {"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12", 0x03, "1, 2"},
-        {"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8",  0x1C, "3, 4, 5"},
+        {"FIRE_STARTING_CHAMBER_ENGINES_9_TO_12", 0x1C, "3, 4, 5"},
         {"CLOSE_MAIN_VALVES_ENGINES_9_TO_12",   0x60, "6, 7"},
         {"LIFT_OFF_CONTACT",                    0x80, "8"}
     };
@@ -277,11 +277,15 @@ bool Stand::sendCyclogramTftp(const QByteArray &data)
     }
 
     // --- 3. Отправляем блоки данных ---
+    // RFC 1350: последний блок < 512 байт завершает передачу.
+    // Если размер кратен 512 — финальный пустой блок всё равно нужен.
     int offset = 0;
     quint16 blockNum = 1;
+    bool lastBlock = false;
     do {
         const QByteArray chunk = data.mid(offset, BLOCK_SIZE);
-        offset += BLOCK_SIZE;
+        lastBlock = (chunk.size() < BLOCK_SIZE);  // короткий или пустой = конец
+        offset += chunk.size();
 
         QByteArray pkt;
         {
@@ -311,7 +315,7 @@ bool Stand::sendCyclogramTftp(const QByteArray &data)
         }
 
         ++blockNum;
-    } while (offset - BLOCK_SIZE < data.size()); // последний блок < 512 байт завершает передачу
+    } while (!lastBlock);
 
     if (m_logger) m_logger->log("INFO", QString("Циклограмма отправлена на БЦВМ по TFTP (%1 байт)").arg(data.size()));
     emit logMessage(QString("Циклограмма отправлена на БЦВМ по TFTP (%1 байт)").arg(data.size()), "system");
@@ -489,6 +493,20 @@ void Stand::readingThread(int64_t timeToStartMs)
     uint8_t firedBits = 0;
     bool started = false;
 
+    // Тик первого появления каждого бита (0-7) в потоке.
+    // Используется для firedTick = реальный аппаратный момент,
+    // а не момент детектирования в цикле событий.
+    int64_t bitFirstSeen[8];
+    std::fill(std::begin(bitFirstSeen), std::end(bitFirstSeen), int64_t(-1));
+    // Возвращает тик, когда сработал последний из нужных каналов маски.
+    auto firedAtFor = [&](uint8_t mask) -> int64_t {
+        int64_t t = 0;
+        for (int b = 0; b < 8; ++b)
+            if ((mask & (1 << b)) && bitFirstSeen[b] > t)
+                t = bitFirstSeen[b];
+        return t > 0 ? t : absoluteIndex;  // fallback: не должно случиться
+    };
+
     while (m_running) {
         if (!m_port->waitForReadyRead(100)) {
             if (!m_port->isOpen() || m_port->hasError()) {
@@ -581,6 +599,7 @@ void Stand::readingThread(int64_t timeToStartMs)
                 emit logMessage(kpMsg, "event");
 
                 if (!started) started = true;  // ранний старт (до планового T0)
+                bitFirstSeen[7] = absoluteIndex; // фиксируем реальный тик КП
                 m_syncIndex = absoluteIndex;
                 m_syncFound = true;
                 newBits    &= ~SYNC_MASK;
@@ -590,6 +609,10 @@ void Stand::readingThread(int64_t timeToStartMs)
                 updatePhase(Phase::Running);
             }
             if (newBits != 0) {
+                // Фиксируем реальный аппаратный тик первого появления каждого бита
+                for (int b = 0; b < 8; ++b)
+                    if ((newBits & (1 << b)) && bitFirstSeen[b] == -1)
+                        bitFirstSeen[b] = absoluteIndex;
                 QStringList chs;
                 for (int b = 0; b < 7; ++b) if (newBits & (1 << b)) chs << QString::number(b + 1);
                 if (m_logger) m_logger->log("EVENT", "срабатывание канала(ов): " + chs.join(", "), absoluteIndex);
@@ -615,7 +638,19 @@ void Stand::readingThread(int64_t timeToStartMs)
 
                         if ((firedBits & neededMask) == neededMask) {
                             ev.status   = "ok";
-                            ev.firedTick= static_cast<int>(absoluteIndex);
+                            ev.firedTick= static_cast<int>(firedAtFor(neededMask));
+                            // Индивидуальные тики и разброс по каналам группы
+                            {
+                                int64_t minT = INT64_MAX, maxT = -1;
+                                for (int b = 0; b < 8; ++b) {
+                                    if ((neededMask & (1 << b)) && bitFirstSeen[b] >= 0) {
+                                        ev.channelTicks[b + 1] = static_cast<int>(bitFirstSeen[b]);
+                                        minT = std::min(minT, bitFirstSeen[b]);
+                                        maxT = std::max(maxT, bitFirstSeen[b]);
+                                    }
+                                }
+                                ev.channelSpreadMs = (maxT > minT) ? static_cast<int>(maxT - minT) : 0;
+                            }
                             pending.push_back({ev.id, ev.firedTick, ev.key, ev.time_ms});
                         } else if (absoluteIndex >= expectedIdx + FAIL_MARGIN_MS) {
                             // Плановое окно истекло — помечаем fail внутренне.
@@ -631,7 +666,7 @@ void Stand::readingThread(int64_t timeToStartMs)
                         uint8_t neededMask = 0;
                         for (const auto &m : m_mappings) { if (m.key == ev.key) { neededMask = m.mask; break; } }
                         if (neededMask != 0 && (firedBits & neededMask) == neededMask) {
-                            ev.firedTick = static_cast<int>(absoluteIndex);
+                            ev.firedTick = static_cast<int>(firedAtFor(neededMask));
                             // Уведомляем UI о срабатывании (таблица покажет тик, статус — после анализа)
                             pending.push_back({ev.id, ev.firedTick, ev.key, ev.time_ms});
                         }
@@ -710,28 +745,35 @@ void Stand::completeFlight()
     }
 
     for (const auto &ev : result) {
+        // Не отслеживаемые события (нет маппинга каналов) — пишем только в файловый лог,
+        // в UI-лог не выводим (нет смысла пугать оператора красным "НЕ СРАБОТАЛО").
+        const bool showInUi = ev.hasChannels;
+
         if (ev.status == "ok") {
             if (m_logger)
                 m_logger->log("INFO",
                     QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=OK")
                         .arg(ev.id).arg(ev.key).arg(ev.calculatedMs).arg(ev.time_ms).arg(ev.deviationMs),
                     m_syncIndex + ev.calculatedMs);
-            emit logMessage(QString("[%1 мс] %2 (откл. %3 мс)")
-                                .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event");
+            if (showInUi)
+                emit logMessage(QString("[%1 мс] %2 (откл. %3 мс)")
+                                    .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event");
         } else if (ev.status == "late") {
             if (m_logger)
                 m_logger->log("INFO",
                     QString("АНАЛИЗ id=%1 key=%2 calculated_ms=%3 plan_ms=%4 dev_ms=%5 status=LATE")
                         .arg(ev.id).arg(ev.key).arg(ev.calculatedMs).arg(ev.time_ms).arg(ev.deviationMs),
                     m_syncIndex + ev.calculatedMs);
-            emit logMessage(QString("[%1 мс] %2 (ОПОЗДАНИЕ СТАРТА, откл. %3 мс от T0)")
-                                .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event-post");
+            if (showInUi)
+                emit logMessage(QString("[%1 мс] %2 (ОПОЗДАНИЕ СТАРТА, откл. %3 мс от T0)")
+                                    .arg(ev.calculatedMs).arg(ev.description).arg(ev.deviationMs), "event-post");
         } else {
             if (m_logger)
                 m_logger->log("INFO",
                     QString("АНАЛИЗ id=%1 key=%2 status=FAIL").arg(ev.id).arg(ev.key),
                     m_finalIndex);
-            emit logMessage(QString("[—] %1 НЕ СРАБОТАЛО").arg(ev.description), "event-post");
+            if (showInUi)
+                emit logMessage(QString("[—] %1 НЕ СРАБОТАЛО").arg(ev.description), "event-post");
         }
     }
     emit analysisDone(result);
@@ -766,12 +808,16 @@ QVector<EventRow> Stand::analyzeEvents(const QVector<EventRow> &events,
         if (ev.status == "ok") {
             ev.calculatedMs = static_cast<int>(ev.firedTick - syncIndex);
             ev.deviationMs  = qAbs(ev.calculatedMs - ev.time_ms);
+            for (auto it = ev.channelTicks.constBegin(); it != ev.channelTicks.constEnd(); ++it)
+                ev.channelCalcMs[it.key()] = static_cast<int>(it.value() - syncIndex);
         } else if (ev.status == "fail" && ev.firedTick != -1) {
             // Каналы сработали, но позже планового окна — опоздание старта или запаздывание события.
             // Пересчитываем относительно фактического T0.
             ev.status       = "late";
             ev.calculatedMs = static_cast<int>(ev.firedTick - syncIndex);
             ev.deviationMs  = qAbs(ev.calculatedMs - ev.time_ms);
+            for (auto it = ev.channelTicks.constBegin(); it != ev.channelTicks.constEnd(); ++it)
+                ev.channelCalcMs[it.key()] = static_cast<int>(it.value() - syncIndex);
         } else {
             ev.calculatedMs = -1;
             ev.deviationMs  = -1;
@@ -787,8 +833,7 @@ void Stand::stop()
     m_stopped = true;
 
     QUdpSocket udp;
-    const char stopCmd = 99;
-    if (udp.writeDatagram(QByteArray(&stopCmd, 1), QHostAddress(BCVM_IP), UDP_PORT) == 1) {
+    if (udp.writeDatagram(QByteArray("STOP"), QHostAddress(BCVM_IP), UDP_PORT) == 4) {
         if (m_logger) m_logger->log("INFO", "Команда STOP отправлена на БЦВМ", m_finalIndex);
         emit logMessage("Команда STOP отправлена на БЦВМ", "system");
     } else {

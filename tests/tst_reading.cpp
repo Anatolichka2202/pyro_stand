@@ -195,6 +195,81 @@ private slots:
         }
         QFile::remove(path);
     }
+
+    // КП срабатывает с опозданием (после планового T0).
+    // Ожидаем: firedTick == реальный тик, syncIndex == реальный тик (не плановый).
+    void delayedT0_syncIndexIsActualTick()
+    {
+        static constexpr int64_t LATE_LIFTOFF = LIFTOFF_TICK + 1000; // T0 + 1 с
+        static constexpr int64_t LATE_VALVE   = LATE_LIFTOFF + 20000;
+
+        auto *mock = new MockSerial;
+        mock->fireAt(LATE_LIFTOFF, 0x80);
+        mock->fireAt(LATE_VALVE,   0x60);
+        mock->dropAfter(LATE_VALVE + 2000);
+
+        const QString path = writeCyclogram();
+        Stand s(nullptr, "", std::unique_ptr<ISerialPort>(mock));
+        s.loadCyclogram(path);
+
+        QSignalSpy done(&s, &Stand::analysisDone);
+        s.startReadingForTest(TIME_TO_START);
+        QVERIFY(done.wait(60000));
+
+        // syncIndex должен отражать реальный тик КП, а не плановый
+        QCOMPARE(s.getSyncIndex(), LATE_LIFTOFF);
+
+        const auto events = qvariant_cast<QVector<EventRow>>(done.last().at(0));
+        for (const auto &e : events) {
+            if (e.key == "LIFT_OFF_CONTACT") {
+                QVERIFY(e.firedTick != -1);
+                QCOMPARE(e.firedTick, static_cast<int>(LATE_LIFTOFF));
+            }
+        }
+        QFile::remove(path);
+    }
+
+    // КП опаздывает → статус "late", deviationMs > 0, VALVE всё равно ОК (относительно реального T0).
+    void delayedT0_analysisStatusIsLate()
+    {
+        static constexpr int64_t LATE_LIFTOFF = LIFTOFF_TICK + 1000;
+        static constexpr int64_t LATE_VALVE   = LATE_LIFTOFF + 20000;
+
+        auto *mock = new MockSerial;
+        mock->fireAt(LATE_LIFTOFF, 0x80);
+        mock->fireAt(LATE_VALVE,   0x60);
+        mock->dropAfter(LATE_VALVE + 2000);
+
+        const QString path = writeCyclogram();
+        Stand s(nullptr, "", std::unique_ptr<ISerialPort>(mock));
+        s.loadCyclogram(path);
+
+        QSignalSpy done(&s, &Stand::analysisDone);
+        s.startReadingForTest(TIME_TO_START);
+        QVERIFY(done.wait(60000));
+
+        const auto events = qvariant_cast<QVector<EventRow>>(done.last().at(0));
+        bool kpChecked = false, valveChecked = false;
+        for (const auto &e : events) {
+            if (e.key == "LIFT_OFF_CONTACT") {
+                // КП опоздало — статус late, отклонение ≈ 1000 мс
+                QCOMPARE(e.status, QString("late"));
+                QVERIFY(e.deviationMs >= 1000);
+                kpChecked = true;
+            }
+            if (e.key == "CLOSE_MAIN_VALVES_ENGINES_9_TO_12") {
+                // VALVE сработал: статус ok или late (зависит от окна детектирования),
+                // но отклонение от реального T0 должно быть ≈ 0
+                QVERIFY(e.firedTick != -1);
+                QVERIFY(qAbs(e.calculatedMs - 20000) < 10);
+                QCOMPARE(e.deviationMs, 0);
+                valveChecked = true;
+            }
+        }
+        QVERIFY(kpChecked);
+        QVERIFY(valveChecked);
+        QFile::remove(path);
+    }
 };
 
 QTEST_GUILESS_MAIN(TstReading)

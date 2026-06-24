@@ -146,9 +146,10 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
             auto &last = nodes.last();
             last.count++;
             if (te.isT0) last.hasT0 = true;
-            // Кластер "fail" если хоть одно событие fail, иначе "ok" если все ok
+            // fail > late > ok
             if (te.status == "fail") last.status = "fail";
-            else if (last.status != "fail" && te.status == "ok") last.status = "ok";
+            else if (last.status != "fail" && te.status == "late") last.status = "late";
+            else if (last.status != "fail" && last.status != "late" && te.status == "ok") last.status = "ok";
         } else {
             ClusterNode cn;
             cn.x          = x;

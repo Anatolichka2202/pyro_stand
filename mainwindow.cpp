@@ -94,7 +94,7 @@ void MainWindow::connectStand()
                 m_displayEvents[i].firedTick = tick;
                 // Статус ("ok" / "late") определяется после анализа, не здесь.
                 // В таблице показываем только сырой тик до финала.
-                updateTableRow(i, m_displayEvents[i]);
+                updateTableRow((i < m_eventToRow.size()) ? m_eventToRow[i] : i, m_displayEvents[i]);
                 for (const QString &part : m_displayEvents[i].channels.split(',')) {
                     bool ok = false; int c = part.trimmed().toInt(&ok);
                     if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#3fb950");
@@ -104,21 +104,11 @@ void MainWindow::connectStand()
         }
     });
 
-    // eventFailed больше не эмитируется в readingThread, слот оставлен для совместимости.
-    connect(m_stand.get(), &Stand::eventFailed, this, [this](int eventId) {
-        for (int i = 0; i < m_displayEvents.size(); ++i) {
-            if (m_displayEvents[i].id == eventId) {
-                m_displayEvents[i].status    = "fail";
-                m_displayEvents[i].firedTick = -1;
-                updateTableRow(i, m_displayEvents[i]);
-                break;
-            }
-        }
-    });
-
     connect(m_stand.get(), &Stand::analysisDone, this, [this](const QVector<EventRow> &events) {
-        // Сохраняем фактическое время T0 для отображения в таблице
-        m_t0ActualTime = m_stand->getSetTime().addMSecs(m_stand->getSyncIndex());
+        // Фактическое время T0 = SET_UTC_TIME + syncIndex (аппаратный тик КП)
+        m_t0ActualTime  = m_stand->getSetTime().addMSecs(m_stand->getSyncIndex());
+        // Плановое время T0 = START_UTC_TIME из циклограммы
+        m_plannedT0Time = m_stand->getStartTime();
 
         m_displayEvents.clear();
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
@@ -758,11 +748,11 @@ void MainWindow::refreshNextEventHighlight()
 
     for (int i = 0; i < m_displayEvents.size(); ++i) {
         if (m_displayEvents[i].status == "pending" && m_displayEvents[i].hasChannels) {
-            // Row highlight: left accent strip (dim blue) + full-row tint
+            const int tableRow = (i < m_eventToRow.size()) ? m_eventToRow[i] : i;
             for (int j = 0; j < m_table->columnCount(); ++j)
-                if (auto *item = m_table->item(i, j))
+                if (auto *item = m_table->item(tableRow, j))
                     item->setBackground(j == 0 ? QColor(31, 111, 235, 180) : QColor(20, 40, 60));
-            m_nextEventRow = i;
+            m_nextEventRow = tableRow;
             break;
         }
     }
@@ -877,19 +867,76 @@ void MainWindow::addLog(const QString &text, const QString &type)
 void MainWindow::updateTable(const QVector<EventRow> &events)
 {
     m_displayEvents = events;
-    m_table->setRowCount(m_displayEvents.size());
-    for (int i = 0; i < m_displayEvents.size(); ++i)
-        updateTableRow(i, m_displayEvents[i]);
+
+    // Подсчитываем итоговые строки: основная + подстроки для многоканальных событий
+    int totalRows = 0;
+    m_eventToRow.resize(m_displayEvents.size());
+    for (int i = 0; i < m_displayEvents.size(); ++i) {
+        m_eventToRow[i] = totalRows;
+        ++totalRows;
+        if (m_displayEvents[i].channelCalcMs.size() >= 2)
+            totalRows += m_displayEvents[i].channelCalcMs.size();
+    }
+
+    m_table->setRowCount(totalRows);
+
+    for (int i = 0; i < m_displayEvents.size(); ++i) {
+        const int mainRow = m_eventToRow[i];
+        updateTableRow(mainRow, m_displayEvents[i]);
+
+        const auto &ev = m_displayEvents[i];
+        if (ev.channelCalcMs.size() >= 2) {
+            // Определяем канал, сработавший последним (у него максимальный calcMs)
+            int lastCh = -1, maxMs = INT_MIN;
+            for (auto it = ev.channelCalcMs.constBegin(); it != ev.channelCalcMs.constEnd(); ++it)
+                if (it.value() > maxMs) { maxMs = it.value(); lastCh = it.key(); }
+            const bool hasSpread = (ev.channelSpreadMs > 0);
+
+            int subRow = mainRow + 1;
+            for (auto it = ev.channelCalcMs.constBegin(); it != ev.channelCalcMs.constEnd(); ++it, ++subRow)
+                setSubRow(subRow, it.key(), it.value(), it.key() == lastCh && hasSpread, hasSpread);
+        }
+    }
+
     refreshNextEventHighlight();
 
-    // Ограничиваем высоту таблицы под контент: нет пустых строк снизу
     if (!m_displayEvents.isEmpty()) {
         const int rowH = m_table->rowHeight(0);
         const int hdrH = m_table->horizontalHeader()->height();
-        const int maxRows = 12;  // при >12 событий — скролл
-        const int visRows = std::min(static_cast<int>(m_displayEvents.size()), maxRows);
+        const int maxRows = 14;
+        const int visRows = std::min(totalRows, maxRows);
         m_table->setMaximumHeight(hdrH + visRows * rowH + 4);
     }
+}
+
+void MainWindow::setSubRow(int row, int channel, int calcMs, bool isLast, bool /*hasSpread*/)
+{
+    if (row < 0 || row >= m_table->rowCount()) return;
+
+    const QColor bg(0x08, 0x0c, 0x12);
+    const QColor fg(0x6e, 0x76, 0x81);
+
+    auto cell = [this, row, &bg, &fg](int col, const QString &text,
+                                      Qt::AlignmentFlag align,
+                                      const QColor &color = QColor()) {
+        auto *item = new QTableWidgetItem(text);
+        item->setTextAlignment(align | Qt::AlignVCenter);
+        item->setBackground(bg);
+        item->setForeground(color.isValid() ? color : fg);
+        m_table->setItem(row, col, item);
+    };
+
+    const QString msStr = QString::number(calcMs);
+    const QString lastMark = isLast ? " ← послед." : "";
+
+    cell(0, "",                                   Qt::AlignCenter);
+    cell(1, QString("    ↳  Канал %1").arg(channel), Qt::AlignLeft);
+    cell(2, QString::number(channel),             Qt::AlignCenter);
+    cell(3, "—",                                  Qt::AlignCenter);
+    cell(4, msStr,                                Qt::AlignRight, QColor("#8b949e"));
+    cell(5, "—",                                  Qt::AlignCenter);
+    cell(6, isLast ? lastMark.trimmed() : "—",    Qt::AlignLeft,
+         isLast ? QColor("#e3b341") : fg);
 }
 
 void MainWindow::updateTableRow(int row, const EventRow &data)
@@ -907,7 +954,11 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
 
     setItem(0, QString::number(data.id), Qt::AlignCenter, QColor("#8b949e"));
     setItem(1, data.description.isEmpty() ? data.key : data.description);
-    setItem(2, data.channels, Qt::AlignCenter, QColor("#8b949e"));
+    // Каналы: для группы — показываем разброс между первым и последним срабатыванием
+    const QString chText = (data.channelSpreadMs > 0)
+        ? QString("%1  (Δ%2мс)").arg(data.channels).arg(data.channelSpreadMs)
+        : data.channels;
+    setItem(2, chText, Qt::AlignCenter, QColor("#8b949e"));
 
     // Col 3: ПЛАН МС — always visible, always grey
     setItem(3, QString::number(data.time_ms), Qt::AlignRight, QColor("#8b949e"));
@@ -943,17 +994,15 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
             for (int c = 0; c < m_table->columnCount(); ++c)
                 if (auto *it = m_table->item(row, c)) it->setBackground(QColor(0x3d, 0x15, 0x15));
         } else if (isT0) {
-            // T0: зелёный фон (сработал), цвет текста = зелёный если точно / оранжевый если есть откл.
-            const QColor t0TextColor = (data.deviationMs == 0) ? QColor("#3fb950") : QColor("#e3b341");
-            if (data.deviationMs == 0) {
+            // КП штатно = отклонение < 1 с. Откл. не показываем — не важно для оператора.
+            // Оранжевый только при грубом расхождении ≥ 1 с (проблема синхронизации).
+            if (data.deviationMs < 1000) {
                 setItem(5, "—", Qt::AlignCenter, QColor("#484f58"));
+                setItem(6, "КП ШТАТНО", Qt::AlignCenter, QColor("#3fb950"));
             } else {
-                setItem(5, QString("+%1 мс").arg(data.deviationMs), Qt::AlignRight, t0TextColor);
+                setItem(5, QString("+%1 мс").arg(data.deviationMs), Qt::AlignRight, QColor("#e3b341"));
+                setItem(6, "КП ОТКЛ", Qt::AlignCenter, QColor("#e3b341"));
             }
-            const QString timeStr = m_t0ActualTime.isValid()
-                ? m_t0ActualTime.toString("HH:mm:ss.zzz")
-                : "T0";
-            setItem(6, timeStr, Qt::AlignCenter, t0TextColor);
             for (int c = 0; c < m_table->columnCount(); ++c)
                 if (auto *it = m_table->item(row, c)) it->setBackground(QColor(0x0f, 0x2d, 0x1a));
         } else {
@@ -962,11 +1011,15 @@ void MainWindow::updateTableRow(int row, const EventRow &data)
             QString statusText;
             if (data.deviationMs == 0) {
                 devColor   = QColor("#3fb950");
-                statusText = "= ОК";
+                statusText = "ОК";
+            } else if (data.deviationMs < 5) {
+                // Аппаратный джиттер (1-4 мс) — в пределах допуска, зелёный
+                devColor   = QColor("#3fb950");
+                statusText = QString("ОК  (%1мс)").arg(data.deviationMs);
             } else {
-                // Сработало с отклонением — жёлтый, НЕ красный (красный = только fail)
+                // Заметное отклонение — жёлтый (красный = только fail)
                 devColor   = QColor("#e3b341");
-                statusText = QString("≈ +%1 мс").arg(data.deviationMs);
+                statusText = QString("+%1 мс").arg(data.deviationMs);
             }
             setItem(5, data.deviationMs == 0
                 ? QString("—")

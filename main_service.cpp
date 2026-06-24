@@ -89,11 +89,6 @@ int main(int argc, char *argv[])
         emit_json({{"type", "event_fired"}, {"event_id", id}, {"tick", tick}});
     });
 
-    QObject::connect(&stand, &Stand::eventFailed,
-                     [](int id) {
-        emit_json({{"type", "event_failed"}, {"event_id", id}});
-    });
-
     QObject::connect(&stand, &Stand::analysisDone,
                      [&app](const QVector<EventRow> &events) {
         QJsonArray arr;

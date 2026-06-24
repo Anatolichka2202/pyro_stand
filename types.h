@@ -2,6 +2,7 @@
 #define TYPES_H
 
 #include <QString>
+#include <QMap>
 #include <QMetaType>
 #include <cstdint>
 
@@ -29,7 +30,10 @@ struct EventRow {
     int     firedTick   = -1;
     int     calculatedMs= -1;
     QString status;         // "pending" | "ok" | "fail" | "late"
-    int     deviationMs = 0;
+    int     deviationMs    = 0;
+    int     channelSpreadMs= 0;             // мс между первым и последним каналом группы
+    QMap<int,int> channelTicks;             // канал(1-8) → абсолютный тик (readingThread)
+    QMap<int,int> channelCalcMs;            // канал(1-8) → мс от T0 (analyzeEvents)
 };
 Q_DECLARE_METATYPE(QVector<EventRow>)
 

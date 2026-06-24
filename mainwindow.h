@@ -54,6 +54,7 @@ private:
     void addLog(const QString &text, const QString &type = "system");
     void updateTable(const QVector<EventRow> &events);
     void updateTableRow(int row, const EventRow &data);
+    void setSubRow(int row, int channel, int calcMs, bool isLast, bool hasSpread);
     void updatePhaseLabel();
     void refreshNextEventHighlight();
 
@@ -116,7 +117,9 @@ private:
     int     m_nextEventRow = -1;
 
     int     m_streamTick   = 0;  // counts timerTick calls; used for right-log byte reception display
-    QTime   m_t0ActualTime;      // фактическое время T0 (SET_UTC_TIME + syncIndex), доступно после analysisDone
+    QTime        m_t0ActualTime;   // фактическое время T0 (SET_UTC_TIME + syncIndex)
+    QTime        m_plannedT0Time;  // плановое время T0 (START_UTC_TIME из циклограммы)
+    QVector<int> m_eventToRow;     // m_displayEvents[i] → номер строки таблицы (с учётом подстрок)
 };
 
 #endif // MAINWINDOW_H

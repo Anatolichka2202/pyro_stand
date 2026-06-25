@@ -110,7 +110,7 @@ private:
 
     SessionLogger *m_logger = nullptr; // не владеет — владеет MainWindow
 
-    TransferMode m_transferMode = TransferMode::UDP;
+    TransferMode m_transferMode = TransferMode::TFTP;
 
     bool sendCyclogramTftp(const QByteArray &data);
 

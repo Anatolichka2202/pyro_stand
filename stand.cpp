@@ -730,6 +730,9 @@ void Stand::completeFlight()
 {
     // Если оператор нажал СТОП — игнорируем завершение
     if (m_stopped) return;
+    // Если после завершения треда был вызван resetForNewTest()+loadCyclogram() —
+    // этот слот устарел (пришёл из очереди), не затираем свежее состояние.
+    if (m_phase == Phase::Idle || m_phase == Phase::Loaded) return;
 
     updatePhase(Phase::Completed);
     if (m_logger) m_logger->log("INFO", "═══ Полётное задание завершено ═══", m_finalIndex);
@@ -903,7 +906,13 @@ void Stand::resetForNewTest()
     {
         QMutexLocker l(&m_eventsMutex);
         for (auto &ev : m_events) {
-            ev.status = "pending"; ev.firedTick = -1; ev.calculatedMs = -1; ev.deviationMs = 0;
+            ev.status        = "pending";
+            ev.firedTick     = -1;
+            ev.calculatedMs  = -1;
+            ev.deviationMs   = 0;
+            ev.channelSpreadMs = 0;
+            ev.channelTicks.clear();
+            ev.channelCalcMs.clear();
         }
     }
 }

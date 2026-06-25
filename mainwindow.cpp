@@ -324,8 +324,8 @@ void MainWindow::setupUI()
 
     // Выбор протокола передачи циклограммы
     m_transferCombo = new QComboBox(ctrlCard);
-    m_transferCombo->addItem("UDP",  static_cast<int>(TransferMode::UDP));
     m_transferCombo->addItem("TFTP", static_cast<int>(TransferMode::TFTP));
+    m_transferCombo->addItem("UDP",  static_cast<int>(TransferMode::UDP));
     m_transferCombo->setStyleSheet(
         "QComboBox {"
         "  background: #0d1117; border: 1px solid #30363d; border-radius: 5px;"
@@ -1099,11 +1099,15 @@ void MainWindow::onStop() { m_stand->stop(); }
 
 void MainWindow::onReset()
 {
+    m_nextEventRow = -1;            // сбрасываем до перестройки таблицы
+    m_blinkTimer->stop();
     m_stand->resetForNewTest();
-    m_stand->loadCyclogram();
+    m_stand->loadCyclogram();       // синхронно: analysisDone → updateTable, updatePhase(Loaded)
     m_timeline->reset();
     m_timeline->setEvents(m_stand->getEvents());
-    setPhase(Phase::Loaded);
+    resetChannelDots();
+    m_transferStatusLabel->setVisible(false);
+    m_transferStatusTimer->stop();
 }
 
 // ─── T17: Summary strip + CSV export ─────────────────────────────────────────

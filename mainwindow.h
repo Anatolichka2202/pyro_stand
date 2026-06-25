@@ -54,7 +54,7 @@ private:
     void addLog(const QString &text, const QString &type = "system");
     void updateTable(const QVector<EventRow> &events);
     void updateTableRow(int row, const EventRow &data);
-    void setSubRow(int row, int channel, int calcMs, bool isLast, bool hasSpread);
+    void setSubRow(int row, int channel, int calcMs, int planMs, bool isLast, bool hasSpread);
     void updatePhaseLabel();
     void refreshNextEventHighlight();
 

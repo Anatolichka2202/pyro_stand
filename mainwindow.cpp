@@ -136,15 +136,21 @@ void MainWindow::connectStand()
     });
 
     connect(m_stand.get(), &Stand::analysisDone, this, [this](const QVector<EventRow> &events) {
-        // Фактическое время T0 = SET_UTC_TIME + syncIndex (аппаратный тик КП)
         m_t0ActualTime  = m_stand->getSetTime().addMSecs(m_stand->getSyncIndex());
-        // Плановое время T0 = START_UTC_TIME из циклограммы
         m_plannedT0Time = m_stand->getStartTime();
 
         m_displayEvents.clear();
         for (const auto &e : events) { if (e.hasChannels) m_displayEvents.append(e); }
         updateTable(m_displayEvents);
         resetChannelDots();
+        for (const auto &e : m_displayEvents) {
+            if (!e.hasChannels) continue;
+            const QString color = (e.status == "fail") ? "#f85149" : "#3fb950";
+            for (const QString &part : e.channels.split(',')) {
+                bool ok = false; int c = part.trimmed().toInt(&ok);
+                if (ok && c >= 1 && c <= 8) updateChannelDot(c, color);
+            }
+        }
         updateSummaryStrip(m_displayEvents);
         m_summaryStrip->setVisible(true);
         m_timeline->setEvents(events);
@@ -675,11 +681,12 @@ void MainWindow::setPhase(Phase newPhase)
     if (newPhase == Phase::Running) {
         resetChannelDots();
         for (const auto &e : m_displayEvents) {
-            if (e.hasChannels && (e.status.isEmpty() || e.status == "pending")) {
-                for (const QString &part : e.channels.split(',')) {
-                    bool ok = false; int c = part.trimmed().toInt(&ok);
-                    if (ok && c >= 1 && c <= 8) updateChannelDot(c, "#e3b341");
-                }
+            if (!e.hasChannels) continue;
+            // firedTick != -1 means already fired before T0 (pre-launch events)
+            const QString color = (e.firedTick != -1) ? "#3fb950" : "#e3b341";
+            for (const QString &part : e.channels.split(',')) {
+                bool ok = false; int c = part.trimmed().toInt(&ok);
+                if (ok && c >= 1 && c <= 8) updateChannelDot(c, color);
             }
         }
     } else if (newPhase == Phase::Idle || newPhase == Phase::Loaded) {
@@ -933,7 +940,7 @@ void MainWindow::updateTable(const QVector<EventRow> &events)
 
             int subRow = mainRow + 1;
             for (auto it = ev.channelCalcMs.constBegin(); it != ev.channelCalcMs.constEnd(); ++it, ++subRow)
-                setSubRow(subRow, it.key(), it.value(), it.key() == lastCh && hasSpread, hasSpread);
+                setSubRow(subRow, it.key(), it.value(), ev.time_ms, it.key() == lastCh && hasSpread, hasSpread);
         }
     }
 
@@ -948,34 +955,48 @@ void MainWindow::updateTable(const QVector<EventRow> &events)
     }
 }
 
-void MainWindow::setSubRow(int row, int channel, int calcMs, bool isLast, bool /*hasSpread*/)
+void MainWindow::setSubRow(int row, int channel, int calcMs, int planMs, bool isLast, bool hasSpread)
 {
     if (row < 0 || row >= m_table->rowCount()) return;
 
     const QColor bg(0x08, 0x0c, 0x12);
-    const QColor fg(0x6e, 0x76, 0x81);
+    const QColor dimFg(0x6e, 0x76, 0x81);
 
-    auto cell = [this, row, &bg, &fg](int col, const QString &text,
-                                      Qt::AlignmentFlag align,
-                                      const QColor &color = QColor()) {
+    auto cell = [this, row, &bg](int col, const QString &text,
+                                  Qt::AlignmentFlag align, const QColor &fg) {
         auto *item = new QTableWidgetItem(text);
         item->setTextAlignment(align | Qt::AlignVCenter);
         item->setBackground(bg);
-        item->setForeground(color.isValid() ? color : fg);
+        item->setForeground(fg);
         m_table->setItem(row, col, item);
     };
 
-    const QString msStr = QString::number(calcMs);
-    const QString lastMark = isLast ? " ← послед." : "";
+    const int dev = calcMs - planMs;
 
-    cell(0, "",                                   Qt::AlignCenter);
-    cell(1, QString("    ↳  Канал %1").arg(channel), Qt::AlignLeft);
-    cell(2, QString::number(channel),             Qt::AlignCenter);
-    cell(3, "—",                                  Qt::AlignCenter);
-    cell(4, msStr,                                Qt::AlignRight, QColor("#8b949e"));
-    cell(5, "—",                                  Qt::AlignCenter);
-    cell(6, isLast ? lastMark.trimmed() : "—",    Qt::AlignLeft,
-         isLast ? QColor("#e3b341") : fg);
+    QColor statusColor;
+    QString statusText;
+    if (dev == 0) {
+        statusColor = QColor("#3fb950");
+        statusText  = "ОК";
+    } else if (qAbs(dev) < 5) {
+        statusColor = QColor("#3fb950");
+        statusText  = QString("ОК (%1мс)").arg(qAbs(dev));
+    } else {
+        statusColor = QColor("#e3b341");
+        statusText  = dev > 0 ? QString("+%1 мс").arg(dev) : QString("%1 мс").arg(dev);
+    }
+    if (isLast && hasSpread) statusText += " · послед.";
+
+    const QString devStr = (dev == 0) ? "—"
+        : (dev > 0 ? QString("+%1 мс").arg(dev) : QString("%1 мс").arg(dev));
+
+    cell(0, "",                                      Qt::AlignCenter, dimFg);
+    cell(1, QString("    ↳  Канал %1").arg(channel), Qt::AlignLeft,   dimFg);
+    cell(2, QString::number(channel),                Qt::AlignCenter, dimFg);
+    cell(3, QString::number(planMs),                 Qt::AlignRight,  dimFg);
+    cell(4, QString::number(calcMs),                 Qt::AlignRight,  QColor("#8b949e"));
+    cell(5, devStr,                                  Qt::AlignRight,  dev == 0 ? dimFg : statusColor);
+    cell(6, statusText,                              Qt::AlignLeft,   statusColor);
 }
 
 void MainWindow::updateTableRow(int row, const EventRow &data)
@@ -1115,15 +1136,18 @@ void MainWindow::onReset()
 void MainWindow::updateSummaryStrip(const QVector<EventRow> &events)
 {
     if (!m_summaryLabel) return;
-    // ✓ зелёный: откл. 0 мс   ≈ жёлтый: любое ненулевое откл.   ✗ красный: не сработало
     int exact = 0, nearCount = 0, badCount = 0, maxDev = 0;
     for (const auto &e : events) {
+        // КП (LIFT_OFF_CONTACT) is the T0 reference itself — its deviationMs is
+        // |firedTick - plannedT0|, not a pyrotechnic accuracy metric.
+        // Exclude it from maxDev; count it as "exact" since by definition it fires at T0=0.
+        const bool isT0 = (e.key == QLatin1String("LIFT_OFF_CONTACT"));
         if (e.status == "fail") {
             ++badCount;
         } else if (e.status == "ok" || e.status == "late") {
-            if (e.deviationMs > maxDev) maxDev = e.deviationMs;
-            if (e.deviationMs == 0) ++exact;
-            else                    ++nearCount;
+            if (!isT0 && e.deviationMs > maxDev) maxDev = e.deviationMs;
+            if (isT0 || e.deviationMs == 0) ++exact;
+            else                             ++nearCount;
         }
     }
     QString summary = QString("<span style=\"color:#e6edf3;\">Результат: "

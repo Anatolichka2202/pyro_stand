@@ -115,6 +115,10 @@ private:
     QLabel *m_transferStatusLabel = nullptr;
     QTimer *m_transferStatusTimer = nullptr;
 
+    QWidget *m_channelPanel  = nullptr;  // hidden; keep for future use
+    QFrame  *m_progressArea  = nullptr;  // upload progress (occupies channels/timeline space)
+    QLabel  *m_progressLabel = nullptr;
+
     QTimer *m_blinkTimer   = nullptr;
     bool    m_blinkState   = false;
     int     m_nextEventRow = -1;

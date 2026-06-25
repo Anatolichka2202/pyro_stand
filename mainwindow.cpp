@@ -13,6 +13,8 @@
 #include <QCoreApplication>
 #include <QSplitter>
 #include <QScrollBar>
+#include <QPropertyAnimation>
+#include <QGraphicsOpacityEffect>
 
 // ─── Production constructor ───────────────────────────────────────────────────
 
@@ -78,28 +80,63 @@ void MainWindow::connectStand()
     connect(m_transferStatusTimer, &QTimer::timeout, this, [this]() {
         m_transferStatusLabel->setVisible(false);
     });
-    connect(m_stand.get(), &Stand::transferProgress, this, [this](const QString &stage) {
+    auto showProgress = [this](const QString &text, const QString &color) {
+        m_progressArea->setVisible(true);
+        m_progressLabel->setText(text);
+        m_progressLabel->setStyleSheet(
+            QString("font-size: 15px; font-family: 'JetBrains Mono';"
+                    " color: %1; background: transparent; border: none;").arg(color));
+    };
+
+    connect(m_stand.get(), &Stand::transferProgress, this, [this, showProgress](const QString &stage) {
         m_transferStatusLabel->setVisible(true);
         if (stage == "checking") {
+            showProgress("Проверка связи с БЦВМ...", "#8b949e");
             m_transferStatusLabel->setStyleSheet(
                 "font-size: 11px; padding: 3px 0; color: #8b949e; background: transparent;");
             m_transferStatusLabel->setText("Проверка БЦВМ...");
             m_transferStatusTimer->stop();
+
         } else if (stage == "sending") {
+            showProgress("Загрузка циклограммы...", "#e3b341");
             m_transferStatusLabel->setStyleSheet(
                 "font-size: 11px; padding: 3px 0; color: #e3b341; background: transparent;");
             m_transferStatusLabel->setText("Загрузка циклограммы...");
             m_transferStatusTimer->stop();
+
         } else if (stage == "done") {
+            showProgress("Циклограмма на борту  ✓", "#3fb950");
             m_transferStatusLabel->setStyleSheet(
                 "font-size: 11px; padding: 3px 0; color: #3fb950; background: transparent;");
             m_transferStatusLabel->setText("Циклограмма загружена ✓");
             m_transferStatusTimer->start(5000);
+            // After 1400ms: hide progress area and fade in timeline
+            QTimer::singleShot(1400, this, [this]() {
+                m_progressArea->setVisible(false);
+                m_timeline->setVisible(true);
+                // Clear any previous effect before creating a new one
+                if (m_timeline->graphicsEffect())
+                    m_timeline->setGraphicsEffect(nullptr);
+                auto *effect = new QGraphicsOpacityEffect(m_timeline);
+                m_timeline->setGraphicsEffect(effect);
+                effect->setOpacity(0.0);
+                auto *anim = new QPropertyAnimation(effect, "opacity", this);
+                anim->setDuration(700);
+                anim->setStartValue(0.0);
+                anim->setEndValue(1.0);
+                anim->setEasingCurve(QEasingCurve::OutCubic);
+                anim->start(QAbstractAnimation::DeleteWhenStopped);
+            });
+
         } else if (stage == "error") {
+            showProgress("Ошибка: БЦВМ не отвечает", "#f85149");
             m_transferStatusLabel->setStyleSheet(
                 "font-size: 11px; padding: 3px 0; color: #f85149; background: transparent;");
             m_transferStatusLabel->setText("Ошибка загрузки");
             m_transferStatusTimer->start(8000);
+            QTimer::singleShot(6000, this, [this]() {
+                m_progressArea->setVisible(false);
+            });
         }
     });
 
@@ -456,6 +493,27 @@ void MainWindow::setupUI()
     topRow->addWidget(ctrlCard);
     mainLayout->addLayout(topRow);
 
+    // ── TRANSFER PROGRESS AREA ────────────────────────────────────────────────
+    // Occupies channels/timeline space during cyclogram upload.
+    // Hidden at startup; shown when sendToBoard fires, hidden when timeline fades in.
+    m_progressArea = new QFrame(this);
+    m_progressArea->setObjectName("progressArea");
+    m_progressArea->setFixedHeight(72);
+    m_progressArea->setStyleSheet(
+        "QFrame#progressArea { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; }");
+    m_progressArea->setVisible(false);
+    m_progressLabel = new QLabel("", m_progressArea);
+    m_progressLabel->setAlignment(Qt::AlignCenter);
+    m_progressLabel->setStyleSheet(
+        "font-size: 15px; font-family: 'JetBrains Mono';"
+        " color: #8b949e; background: transparent; border: none;");
+    {
+        auto *pl = new QVBoxLayout(m_progressArea);
+        pl->setContentsMargins(0, 0, 0, 0);
+        pl->addWidget(m_progressLabel);
+    }
+    mainLayout->addWidget(m_progressArea);
+
     // ── CHANNEL CHIPS ROW ─────────────────────────────────────────────────────
     QWidget *channelPanel = new QWidget(this);
     QVBoxLayout *chanVBox = new QVBoxLayout(channelPanel);
@@ -497,10 +555,13 @@ void MainWindow::setupUI()
         chipsRow->addWidget(chip);
     }
     chanVBox->addLayout(chipsRow);
+    m_channelPanel = channelPanel;
+    channelPanel->hide();  // hidden for now; keep widget alive for future use
     mainLayout->addWidget(channelPanel);
 
     // ── TIMELINE ──────────────────────────────────────────────────────────────
     m_timeline = new TimelineWidget(this);
+    m_timeline->hide();  // hidden until cyclogram is confirmed on board
     mainLayout->addWidget(m_timeline);
 
     // ── EVENT TABLE ───────────────────────────────────────────────────────────
@@ -704,7 +765,7 @@ void MainWindow::updatePhaseLabel()
 
     struct { Phase p; const char* text; const char* color; bool blink; } cfg[] = {
         {Phase::Idle,      "ОЖИДАНИЕ",    "#8b949e", false},
-        {Phase::Loaded,    "ЗАГРУЖЕНО",   "#58a6ff", false},
+        {Phase::Loaded,    "ОЖИДАНИЕ КОМАНДЫ", "#58a6ff", false},
         {Phase::Countdown, "ОТСЧЁТ",      "#e3b341", true},
         {Phase::Running,   "ВЫПОЛНЕНИЕ",  "#3fb950", true},
         {Phase::Completed, "ЗАВЕРШЕНО",   "#3fb950", false},
@@ -745,7 +806,7 @@ void MainWindow::updateBcvmIndicator(bool reachable)
     const QString dot    = reachable ? "#3fb950" : "#484f58";
     const QString border = reachable ? "#3fb950" : "#30363d";
     m_bcvmDot->setStyleSheet(dotStyle(dot));
-    m_bcvmStatus->setText(reachable ? "готова" : "не загружено");
+    m_bcvmStatus->setText(reachable ? "в сети" : "нет в сети");
     m_bcvmStatus->setStyleSheet(
         QString("font-size: 11px; color: %1; background: transparent; border: none;").arg(dot));
     m_bcvmChip->setStyleSheet(chipStyle(border));
@@ -837,15 +898,9 @@ void MainWindow::updateTimer(const TimerState &state)
         text  = (secs >= 3600) ? fmtHMS(secs) : fmtMS(secs);
         color = "#e3b341";
     } else {
-        const int secs   = static_cast<int>(state.msToStart / 1000);
-        const int tenth  = static_cast<int>((state.msToStart % 1000) / 100);
-        if (secs >= 3600)
-            text = fmtHMS(secs);
-        else
-            text = QString("%1:%2.%3")
-                .arg(secs / 60, 2, 10, QChar('0'))
-                .arg(secs % 60, 2, 10, QChar('0'))
-                .arg(tenth);
+        // Countdown: seconds only — ms accuracy is not guaranteed for T0 alignment
+        const int secs = static_cast<int>(state.msToStart / 1000);
+        text  = (secs >= 3600) ? fmtHMS(secs) : fmtMS(secs);
         color = "#3fb950";
     }
     m_timerLabel->setText(text);
@@ -1120,15 +1175,20 @@ void MainWindow::onStop() { m_stand->stop(); }
 
 void MainWindow::onReset()
 {
-    m_nextEventRow = -1;            // сбрасываем до перестройки таблицы
+    m_nextEventRow = -1;
     m_blinkTimer->stop();
     m_stand->resetForNewTest();
-    m_stand->loadCyclogram();       // синхронно: analysisDone → updateTable, updatePhase(Loaded)
+    m_stand->loadCyclogram();
     m_timeline->reset();
     m_timeline->setEvents(m_stand->getEvents());
     resetChannelDots();
     m_transferStatusLabel->setVisible(false);
     m_transferStatusTimer->stop();
+    // Hide timeline and progress area for the next upload cycle
+    m_timeline->setVisible(false);
+    if (m_timeline->graphicsEffect())
+        m_timeline->setGraphicsEffect(nullptr);
+    m_progressArea->setVisible(false);
 }
 
 // ─── T17: Summary strip + CSV export ─────────────────────────────────────────

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>План Б — подстроки каналов</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; padding: 20px; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        table { width: 100%; border-collapse: collapse; background: #0d1117; border: 1px solid #21262d; }
+        thead { background: #161b22; border-bottom: 1px solid #30363d; }
+        th { padding: 6px 10px; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #8b949e; text-transform: uppercase; border-right: 1px solid #21262d; }
+        tbody tr { border-bottom: 1px solid #21262d; }
+        tbody tr.main-row { background: #0d1117; }
+        tbody tr.main-row.lift-off { background: #0f2d1a; }
+        tbody tr.sub-row { background: #080c12; border-left: 3px solid #21262d; }
+        td { padding: 5px 10px; border-right: 1px solid #21262d; color: #e6edf3; }
+        td:last-child { border-right: none; }
+        .num { color: #8b949e; font-family: Consolas, monospace; text-align: center; }
+        .mono { font-family: Consolas, monospace; text-align: right; color: #8b949e; }
+        .ch { text-align: center; color: #8b949e; }
+        .dash { color: #484f58; }
+        .ok { color: #3fb950; font-weight: 500; }
+        .warn { color: #e3b341; font-size: 11px; }
+        .muted { color: #484f58; font-size: 12px; }
+        .sub-label { color: #6e7681; font-size: 12px; }
+        .arrow { color: #30363d; margin-right: 6px; }
+        .last { color: #e3b341; font-size: 11px; }
+        .summary { margin-top: 14px; padding: 10px 14px; background: #161b22; border: 1px solid #21262d; border-radius: 4px; font-size: 13px; }
+    </style>
+</head>
+<body>
+<div class="container">
+<table>
+  <thead>
+    <tr>
+      <th style="width:36px">#</th>
+      <th>СОБЫТИЕ</th>
+      <th style="width:100px;text-align:center">КАНАЛЫ</th>
+      <th style="width:80px;text-align:right">ПЛАН МС</th>
+      <th style="width:80px;text-align:right">ФАКТ МС</th>
+      <th style="width:72px;text-align:right">ОТКЛ МС</th>
+      <th style="width:120px">СТАТУС</th>
+    </tr>
+  </thead>
+  <tbody>
+    <!-- Event 3 -->
+    <tr class="main-row">
+      <td class="num">3</td>
+      <td>Зажигание пиросвечей НК-3А №9–12</td>
+      <td class="ch">1, 2</td>
+      <td class="mono">−8000</td>
+      <td class="mono" style="color:#3fb950">−8000</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td><span class="ok">ОК</span></td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">3.1</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 1</td>
+      <td class="ch muted">1</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">−8001</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">3.2</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 2 <span class="last">← послед.</span></td>
+      <td class="ch muted">2</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">−8000</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+
+    <!-- Event 4 -->
+    <tr class="main-row">
+      <td class="num">4</td>
+      <td>Срабатывание пиропатронов НК-3А №9–12</td>
+      <td class="ch">3, 4, 5 <span class="warn">(Δ1мс)</span></td>
+      <td class="mono">−7950</td>
+      <td class="mono" style="color:#3fb950">−7949</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td><span class="ok">ОК  (1мс)</span></td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">4.1</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 3</td>
+      <td class="ch muted">3</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">−7950</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">4.2</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 4</td>
+      <td class="ch muted">4</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">−7949</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="last">← послед.</td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">4.3</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 5</td>
+      <td class="ch muted">5</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">−7950</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+
+    <!-- Event 7 — T0 -->
+    <tr class="main-row lift-off">
+      <td class="num">7</td>
+      <td>Контакт подъёма, начало движения</td>
+      <td class="ch">8</td>
+      <td class="mono">0</td>
+      <td class="mono" style="color:#3fb950">0</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td><span class="ok">КП ШТАТНО</span></td>
+    </tr>
+
+    <!-- Event 9 -->
+    <tr class="main-row">
+      <td class="num">9</td>
+      <td>Закрытие главных клапанов О и Г двигателей 9–12</td>
+      <td class="ch">6, 7</td>
+      <td class="mono">20000</td>
+      <td class="mono" style="color:#3fb950">19999</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td><span class="ok">ОК  (1мс)</span></td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">9.1</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 6</td>
+      <td class="ch muted">6</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">19999</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+    <tr class="sub-row">
+      <td class="num muted">9.2</td>
+      <td class="sub-label"><span class="arrow">↳</span>Канал 7 <span class="last">← послед.</span></td>
+      <td class="ch muted">7</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="mono">19999</td>
+      <td class="mono"><span class="dash">—</span></td>
+      <td class="muted">—</td>
+    </tr>
+  </tbody>
+</table>
+<div class="summary">
+  Результат: <span class="ok">4 ✓ / 0 ✗</span>&nbsp;&nbsp;·&nbsp;&nbsp;Макс. откл.: <span class="ok">1 мс</span>
+</div>
+</div>
+</body>
+</html>

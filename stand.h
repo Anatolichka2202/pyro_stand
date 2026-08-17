@@ -122,7 +122,7 @@ private:
     static constexpr quint16 TFTP_PORT          = 69;
     static constexpr const char* BCVM_IP        = "192.168.17.246";
     static constexpr const char* TFTP_PATH      = "/cyclogram.ini";
-    static constexpr int FLIGHT_SAFETY_MS       = 5000;
+    static constexpr int FLIGHT_SAFETY_MS       = 3000;
     static constexpr int FAIL_MARGIN_MS         = 5;
     static constexpr int SERIAL_RETRIES         = 3;
 };

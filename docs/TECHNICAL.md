@@ -1,5 +1,7 @@
 # pyro_stand — Technical Reference
 
+**Archive:** this describes the former local-file and eight-channel serial implementation. The current application is documented in [README](../README.md).
+
 This document covers the internal design of pyro_stand: timing model, threading, protocol flow, state machine, event pipeline, and test architecture. It is written for developers maintaining or extending the codebase.
 
 ---

@@ -1,8 +1,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QScreen>
-#include "mainwindow.h"
-#include "types.h"
+#include "integration_window.h"
 
 int main(int argc, char *argv[])
 {
@@ -10,19 +9,35 @@ int main(int argc, char *argv[])
     QApplication::setHighDpiScaleFactorRoundingPolicy(
         Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 
-    // Register custom types for cross-thread queued signal/slot delivery
-    qRegisterMetaType<TimerState>();
-    qRegisterMetaType<NextEventInfo>();
-
     QApplication a(argc, argv);
     a.setApplicationName("pyro_stand");
 
     QCommandLineParser parser;
-    parser.setApplicationDescription("Пиростенд — мониторинг пирособытий при пуске ракеты");
+    parser.setApplicationDescription("Пиростенд — план КАСУ ПП и измерения платы пиротестера");
     parser.addHelpOption();
-    parser.addOption({{"p", "port"}, "COM-порт (напр. /dev/ttyUSB0, COM7)", "port"});
-    parser.addOption({{"l", "log-dir"}, "Папка для лог-файла сессии", "dir"});
+    parser.addOption({"debug-socket", "Имя локального сокета Debug КАСУ ПП", "name",
+                      "kasupp-debug-events-v1"});
+    parser.addOption({"board-ip", "IP платы пиротестера", "ip", "192.168.17.144"});
+    parser.addOption({"bind-ip", "Локальный IP приёма UDP", "ip", "0.0.0.0"});
+    parser.addOption({"board-port", "UDP-порт телеметрии платы", "port", "5000"});
+    parser.addOption({"board-serial", "COM-порт платы вместо UDP", "port"});
+    parser.addOption({"mapping", "Утверждённая карта каналов JSON", "path"});
     parser.process(a);
+
+    IntegrationSession::Options options;
+    options.debugSocket = parser.value("debug-socket");
+    options.boardIp = QHostAddress(parser.value("board-ip"));
+    options.bindIp = QHostAddress(parser.value("bind-ip"));
+    bool portOk = false;
+    const uint port = parser.value("board-port").toUInt(&portOk);
+    if (options.boardIp.isNull() || options.bindIp.isNull() || !portOk || port == 0 || port > 65535)
+        parser.showHelp(2);
+    options.telemetryPort = quint16(port);
+    if (parser.isSet("board-serial")) {
+        options.boardTransport = IntegrationSession::BoardTransport::Serial;
+        options.serialPort = parser.value("board-serial");
+        if (options.serialPort.isEmpty()) parser.showHelp(2);
+    }
 
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
@@ -96,7 +111,7 @@ int main(int argc, char *argv[])
         }
     )");
 
-    MainWindow w(parser.value("port"), parser.value("log-dir"));
+    IntegrationWindow w(options, parser.value("mapping"));
     w.show();
     return a.exec();
 }

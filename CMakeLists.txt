@@ -13,16 +13,10 @@ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network SerialPort)
 
 add_executable(pyro_stand
     main.cpp
-    mainwindow.cpp
-    mainwindow.h
-    stand.cpp
-    stand.h
-    platform.h
-    session_logger.cpp
-    session_logger.h
-    types.h
-    timeline_widget.cpp
-    timeline_widget.h
+    integration.cpp
+    integration.h
+    integration_window.cpp
+    integration_window.h
 )
 
 target_link_libraries(pyro_stand
@@ -36,64 +30,6 @@ if(WIN32)
     target_compile_definitions(pyro_stand PRIVATE PYRO_WINDOWS)
 elseif(UNIX)
     target_compile_definitions(pyro_stand PRIVATE PYRO_LINUX)
-endif()
-
-# ── Демо-режим (GUI + MockSerial, без реального железа) ──────────────────────
-
-option(BUILD_DEMO "Build pyro_demo — GUI application with mock hardware" OFF)
-
-if(BUILD_DEMO)
-    add_executable(pyro_demo
-        main_demo.cpp
-        mainwindow.cpp
-        mainwindow.h
-        stand.cpp
-        stand.h
-        platform.h
-        session_logger.cpp
-        session_logger.h
-        types.h
-        timeline_widget.cpp
-        timeline_widget.h
-    )
-    target_include_directories(pyro_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(pyro_demo
-        Qt6::Core
-        Qt6::Widgets
-        Qt6::Network
-        Qt6::SerialPort
-    )
-    if(WIN32)
-        target_compile_definitions(pyro_demo PRIVATE PYRO_WINDOWS)
-    elseif(UNIX)
-        target_compile_definitions(pyro_demo PRIVATE PYRO_LINUX)
-    endif()
-endif()
-
-# ── Сервис (headless, без GUI) ────────────────────────────────────────────────
-
-option(BUILD_SERVICE "Build pyro_service — headless binary with JSON stdout" OFF)
-
-if(BUILD_SERVICE)
-    add_executable(pyro_service
-        main_service.cpp
-        stand.cpp
-        stand.h
-        platform.h
-        session_logger.cpp
-        session_logger.h
-        types.h
-    )
-    target_link_libraries(pyro_service
-        Qt6::Core
-        Qt6::Network
-        Qt6::SerialPort
-    )
-    if(WIN32)
-        target_compile_definitions(pyro_service PRIVATE PYRO_WINDOWS)
-    elseif(UNIX)
-        target_compile_definitions(pyro_service PRIVATE PYRO_LINUX)
-    endif()
 endif()
 
 # ── Тесты ────────────────────────────────────────────────────────────────────
@@ -115,6 +51,11 @@ endfunction()
 add_stand_test(tst_analysis  tests/tst_analysis.cpp)
 add_stand_test(tst_cyclogram tests/tst_cyclogram.cpp)
 add_stand_test(tst_reading   tests/tst_reading.cpp)
+
+add_executable(tst_integration tests/tst_integration.cpp integration.cpp integration.h)
+target_include_directories(tst_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(tst_integration Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort)
+add_test(NAME tst_integration COMMAND tst_integration)
 
 # Trace-log format tests (no GUI, no hardware)
 add_executable(tst_logformat tests/tst_logformat.cpp session_logger.cpp session_logger.h)

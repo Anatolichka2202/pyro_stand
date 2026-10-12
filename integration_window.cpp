@@ -4,6 +4,13 @@
 #include <QAbstractItemView>
 #include <QColor>
 #include <QDateTime>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QSerialPortInfo>
+#include <QSettings>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHeaderView>
@@ -32,16 +39,25 @@ QString signedMs(double value) {
            QString::number(value, 'f', 3);
 }
 
-QString inputName(const InputRef &input) {
+QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = false) {
+    static const QStringList labels = {
+        QStringLiteral("Пиросвеча камеры"), QStringLiteral("Пиросвеча газогенератора"),
+        QStringLiteral("Пиропатрон пусковой камеры"), QStringLiteral("Пусковой клапан Г"),
+        QStringLiteral("Пусковой клапан О"), QStringLiteral("Отсечной клапан Г"),
+        QStringLiteral("Отсечной клапан О"), QStringLiteral("КП")};
+    if (legacy)
+        return QStringLiteral("%1 / %2 · %3")
+            .arg(input.index >= 8 || secondOnly ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"))
+            .arg(input.index % 8 + 1).arg(labels.at(input.index % 8));
     return QStringLiteral("ЯПС %1 / %2 %3")
         .arg(input.index / 8 + 1)
         .arg(input.index % 8 + 1)
         .arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
 }
 
-QString inputNames(const ActionMapping &mapping) {
+QString inputNames(const ActionMapping &mapping, bool legacy = false, bool secondOnly = false) {
     QStringList names;
-    for (const auto &input : mapping.inputs) names << inputName(input);
+    for (const auto &input : mapping.inputs) names << inputName(input, legacy, secondOnly);
     return names.join(QStringLiteral(", "));
 }
 
@@ -104,7 +120,7 @@ struct DisplayAction {
 } // namespace
 
 IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
-                                     const QString &mappingPath, QWidget *parent)
+                                     QWidget *parent)
     : QMainWindow(parent), m_session(std::move(options), this) {
     setupUi();
     m_refreshTimer.setSingleShot(true);
@@ -118,7 +134,6 @@ IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
     connect(&m_clockTimer, &QTimer::timeout, this, &IntegrationWindow::updatePlannedClock);
     m_clockTimer.start();
 
-    if (!mappingPath.isEmpty()) m_session.loadMapping(mappingPath);
     m_session.start();
     refresh();
 }
@@ -201,6 +216,7 @@ void IntegrationWindow::setupUi() {
 
     // КАСУ ПП loads the plan and controls the vehicle. Never offer those controls here.
     auto *reset = new QPushButton(QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"), controls);
+    m_resetButton = reset;
     reset->setObjectName(QStringLiteral("resetBtn"));
     reset->setStyleSheet(QStringLiteral(
         "QPushButton { background:#1f6feb; color:white; border:1px solid #1f6feb;"
@@ -208,7 +224,8 @@ void IntegrationWindow::setupUi() {
         "QPushButton:hover { background:#388bfd; }"));
     ctrl->addWidget(reset);
 
-    auto *map = new QPushButton(QStringLiteral("КАРТА СООТВЕТСТВИЯ СОБЫТИЙ"), controls);
+    auto *map = new QPushButton(QStringLiteral("ПОДКЛЮЧЕНИЕ ПИРОТЕСТЕРА"), controls);
+    map->setObjectName(QStringLiteral("testerConfigurationBtn"));
     auto *save = new QPushButton(QStringLiteral("СОХРАНИТЬ ОТЧЁТ"), controls);
     for (auto *button : {map, save}) {
         button->setStyleSheet(QStringLiteral(
@@ -223,16 +240,14 @@ void IntegrationWindow::setupUi() {
     connect(reset, &QPushButton::clicked, this, [this] {
         const auto answer = QMessageBox::question(
             this, QStringLiteral("Сброс измерений"),
-            QStringLiteral("Отправить аппаратную команду сброса пиротестеру? "
+            m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial
+                ? QStringLiteral("Начать новый сбор старого пиротестера? Буфер COM и накопленные отметки будут очищены. Все входы должны быть неактивны.")
+                : QStringLiteral("Отправить аппаратную команду сброса пиротестеру? "
                            "Полученные отметки платы будут сброшены. "
                            "Для нового прогона потребуется пустой кадр после сброса."));
         if (answer == QMessageBox::Yes) m_session.resetBoard();
     });
-    connect(map, &QPushButton::clicked, this, [this] {
-        const QString path = QFileDialog::getOpenFileName(
-            this, QStringLiteral("Карта соответствия событий"), {}, QStringLiteral("JSON (*.json)"));
-        if (!path.isEmpty()) m_session.loadMapping(path);
-    });
+    connect(map, &QPushButton::clicked, this, &IntegrationWindow::configureTester);
     connect(save, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(
             this, QStringLiteral("Отчёт испытания"),
@@ -350,6 +365,22 @@ void IntegrationWindow::appendMessage(const QString &message) {
 }
 
 void IntegrationWindow::updatePlannedClock() {
+    const auto measured = m_session.measuredPositionMs();
+    if (measured) {
+        const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
+        m_clockCaption->setText(legacy ? QStringLiteral("ПОСЛЕ КП · СЧЁТЧИК COM")
+                                      : QStringLiteral("ПОСЛЕДНЯЯ ОТМЕТКА ПЛАТЫ · КП"));
+        m_timerLabel->setText(QStringLiteral("+%1.%2")
+            .arg(qint64(*measured) / 1000).arg(qint64(*measured) % 1000, 3, 10, QChar('0')));
+        m_timerLabel->setStyleSheet(QStringLiteral(
+            "font-size:64px; font-weight:700; font-family:'JetBrains Mono'; color:#3fb950;"));
+        m_timerLabel->setToolTip(legacy
+            ? QStringLiteral("Индекс последнего принятого байта минус индекс КП8 того же COM; один байт = 1 мс")
+            : QStringLiteral("Последняя известная отметка сопоставленного входа относительно КП. Между событиями часы ПК её не продвигают."));
+        m_timeline->setPlayheadMs(qint64(*measured));
+        return;
+    }
+    m_timeline->setPlayheadMs(INT64_MIN);
     if (!m_session.hasPlan() || !m_session.plan().t0Utc.isValid()) {
         m_timerLabel->setText(QStringLiteral("--:--"));
         return;
@@ -377,7 +408,110 @@ void IntegrationWindow::updatePlannedClock() {
         "Не является временем исполнения, полученным от платы."));
 }
 
+void IntegrationWindow::configureTester() {
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
+    auto *layout = new QFormLayout(&dialog);
+    auto options = m_session.options();
+    auto *transport = new QComboBox(&dialog);
+    transport->addItem(QStringLiteral("Новый — Ethernet"), int(IntegrationSession::BoardTransport::Udp));
+    transport->addItem(QStringLiteral("Новый — RS-485"), int(IntegrationSession::BoardTransport::Serial));
+    transport->addItem(QStringLiteral("Старый — COM, 1 байт = 1 мс"), int(IntegrationSession::BoardTransport::LegacySerial));
+    transport->setCurrentIndex(transport->findData(int(options.boardTransport)));
+    auto *port = new QComboBox(&dialog);
+    port->setEditable(true);
+    for (const auto &info : QSerialPortInfo::availablePorts()) port->addItem(info.portName());
+    port->setCurrentText(options.serialPort);
+    auto *secondPort = new QComboBox(&dialog);
+    secondPort->setEditable(true);
+    secondPort->addItem(QStringLiteral(""));
+    for (const auto &info : QSerialPortInfo::availablePorts()) secondPort->addItem(info.portName());
+    secondPort->setCurrentText(options.secondLegacySerialPort);
+    auto *address = new QLineEdit(options.boardIp.toString(), &dialog);
+    auto *first = new QComboBox(&dialog);
+    auto *second = new QComboBox(&dialog);
+    auto *kp = new QComboBox(&dialog);
+    for (auto *box : {first, second, kp}) {
+        box->addItem(QStringLiteral("Не назначен"), 0);
+        for (int yps = 1; yps <= 12; ++yps)
+            box->addItem(QStringLiteral("ЯПС %1").arg(yps), yps);
+    }
+    first->setCurrentIndex(first->findData(options.firstStageYps));
+    second->setCurrentIndex(second->findData(options.secondStageYps));
+    kp->setCurrentIndex(kp->findData(options.kpYps));
+    auto *block = new QComboBox(&dialog);
+    block->addItem(QStringLiteral("БКД-А-1 (первая ступень)"), false);
+    block->addItem(QStringLiteral("БКД-Б (вторая ступень)"), true);
+    block->setCurrentIndex(options.legacySecondStage ? 1 : 0);
+    layout->addRow(QStringLiteral("Пиротестер"), transport);
+    layout->addRow(QStringLiteral("COM · 115200, 8N1"), port);
+    layout->addRow(QStringLiteral("IP новой платы"), address);
+    layout->addRow(QStringLiteral("БКД-А-1 · пункты 3, 5, 16"), first);
+    layout->addRow(QStringLiteral("БКД-Б · пункты 20, 21, 22"), second);
+    layout->addRow(QStringLiteral("КП · вход 8"), kp);
+    layout->addRow(QStringLiteral("БКД на старой плате"), block);
+    layout->addRow(QStringLiteral("Второй COM · БКД-Б (необязательно)"), secondPort);
+    auto *note = new QLabel(QStringLiteral(
+        "1–2: пиросвечи; 3–5: пусковая группа; 6–7: отсечные клапаны.\n"
+        "Назначьте ЯПС по фактическому подключению. Времена берутся из циклограммы КАСУ ПП.\n"
+        "Два старых COM: первый — А-1, второй — Б; КП8 нужен в обоих потоках.\n"
+        "После изменения подключения начните новый сбор измерений."), &dialog);
+    note->setWordWrap(true);
+    layout->addRow(note);
+    const auto update = [=] {
+        const auto value = IntegrationSession::BoardTransport(transport->currentData().toInt());
+        const bool legacy = value == IntegrationSession::BoardTransport::LegacySerial;
+        port->setEnabled(value != IntegrationSession::BoardTransport::Udp);
+        address->setEnabled(!legacy);
+        first->setEnabled(!legacy); second->setEnabled(!legacy); kp->setEnabled(!legacy);
+        block->setEnabled(legacy);
+        secondPort->setEnabled(legacy);
+    };
+    connect(transport, &QComboBox::currentIndexChanged, &dialog, update);
+    update();
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        options.boardTransport = IntegrationSession::BoardTransport(transport->currentData().toInt());
+        options.serialPort = port->currentText().trimmed();
+        options.secondLegacySerialPort = secondPort->currentText().trimmed();
+        options.firstStageYps = first->currentData().toInt();
+        options.secondStageYps = second->currentData().toInt();
+        options.kpYps = kp->currentData().toInt();
+        options.legacySecondStage = block->currentData().toBool();
+        const bool legacy = options.boardTransport == IntegrationSession::BoardTransport::LegacySerial;
+        if ((options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) ||
+            (!legacy && !options.boardIp.setAddress(address->text().trimmed())) ||
+            (!legacy && options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) ||
+            (legacy && !options.secondLegacySerialPort.isEmpty() && options.serialPort.compare(options.secondLegacySerialPort, Qt::CaseInsensitive) == 0)) {
+            QMessageBox::warning(&dialog, QStringLiteral("Подключение"),
+                QStringLiteral("Укажите COM/IP. Два БКД должны иметь разные группы ЯПС."));
+            return;
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted) return;
+    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    settings.setValue(QStringLiteral("tester/transport"), int(options.boardTransport));
+    settings.setValue(QStringLiteral("tester/serial"), options.serialPort);
+    settings.setValue(QStringLiteral("tester/secondSerial"), options.secondLegacySerialPort);
+    settings.setValue(QStringLiteral("tester/ip"), options.boardIp.toString());
+    settings.setValue(QStringLiteral("tester/firstYps"), options.firstStageYps);
+    settings.setValue(QStringLiteral("tester/secondYps"), options.secondStageYps);
+    settings.setValue(QStringLiteral("tester/kpYps"), options.kpYps);
+    settings.setValue(QStringLiteral("tester/legacySecondStage"), options.legacySecondStage);
+    m_loggedStates.clear();
+    m_timelineSignature.clear();
+    m_eventLog->clear();
+    m_session.configureBoard(options);
+}
+
 void IntegrationWindow::refresh() {
+    const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
+    const bool secondOnly = legacy && m_session.options().secondLegacySerialPort.isEmpty() && m_session.options().legacySecondStage;
+    m_resetButton->setText(legacy ? QStringLiteral("↺  НАЧАТЬ НОВЫЙ СБОР")
+                                  : QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"));
     const bool hasPlan = m_session.hasPlan();
     const bool eligible = m_session.measurementEligible();
     const bool kpKnown = eligible && m_session.kpTimeUs().has_value();
@@ -386,7 +520,8 @@ void IntegrationWindow::refresh() {
     setChip(m_debugDot, m_debugStatus, m_session.debugConnected(),
             m_session.debugConnected() ? QStringLiteral("подключён") : QStringLiteral("нет связи"));
     setChip(m_boardDot, m_boardStatus, m_session.boardReceiving(),
-            m_session.boardReceiving() ? QStringLiteral("кадры идут") : QStringLiteral("нет кадров"));
+            m_session.boardReceiving() ? (legacy ? QStringLiteral("маски идут · 1 байт/мс") : QStringLiteral("кадры идут"))
+                                       : (legacy ? QStringLiteral("нет COM-данных") : QStringLiteral("нет кадров")));
     setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(),
             m_session.executionEnabled() ? QStringLiteral("разрешено")
                                          : QStringLiteral("не разрешено"));
@@ -424,9 +559,12 @@ void IntegrationWindow::refresh() {
         ? QStringLiteral("КП · зафиксирован на счётчике платы: %1 мкс; относительный ноль = 0 мс")
               .arg(*m_session.kpTimeUs())
         : QStringLiteral("КП · нет подтверждённой опорной отметки; относительные факты не вычисляются"));
-    m_mappingStatus->setText(QStringLiteral("КАРТА СОБЫТИЙ · %1")
+    m_mappingStatus->setText(QStringLiteral("ПОДКЛЮЧЕНИЕ БКД · %1")
         .arg(m_session.mapping().version.isEmpty()
             ? QStringLiteral("не загружена") : m_session.mapping().version));
+    if (!m_session.mapping().warnings.isEmpty())
+        m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · НЕСООТВЕТСТВИЕ ПУНКТОВ"));
+    m_mappingStatus->setToolTip(m_session.mapping().warnings.join('\n'));
     m_clockStatus->setText(QStringLiteral(
         "UTC БЦВМ при загрузке: %1 · синхронизация с платой не подтверждена")
         .arg(m_session.bcvmUtc().isEmpty()
@@ -480,7 +618,7 @@ void IntegrationWindow::refresh() {
         .arg(rows.size()));
     if (rows.isEmpty()) {
         m_nextEventLabel->setText(hasPlan
-            ? QStringLiteral("Нет назначенных событий · нужна карта соответствия")
+            ? QStringLiteral("Нет назначенных событий · проверьте подключение БКД и пункты циклограммы")
             : QStringLiteral("Ожидание циклограммы от КАСУ ПП"));
     }
 
@@ -520,6 +658,11 @@ void IntegrationWindow::refresh() {
             m_timeline->markEventFired(action.ordinal, kpKnown ? QStringLiteral("ok") : QString());
         } else {
             evaluation = m_session.measureAction(action);
+            if (evaluation.channels.isEmpty()) {
+                const auto mapped = m_session.mapping().actions.value(action.key);
+                for (const auto &input : mapped.inputs)
+                    evaluation.channels.append({input, std::nullopt, std::nullopt});
+            }
             tooltip = evaluation.reason;
             using State = ActionMeasurement::State;
             if (evaluation.state == State::Measured) {
@@ -596,8 +739,8 @@ void IntegrationWindow::refresh() {
              row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : action.key,
              kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 2,
-             row.physicalKp ? inputName(m_session.mapping().kp)
-                 : inputNames(m_session.mapping().actions.value(action.key)),
+             row.physicalKp ? inputName(m_session.mapping().kp, legacy, secondOnly)
+                 : inputNames(m_session.mapping().actions.value(action.key), legacy, secondOnly),
              kDim, bg, Qt::AlignLeft | Qt::AlignVCenter);
         cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
              kDim, bg, Qt::AlignRight | Qt::AlignVCenter);
@@ -622,9 +765,9 @@ void IntegrationWindow::refresh() {
                     subStatus = good ? QStringLiteral("В ДОПУСКЕ") : QStringLiteral("ОТКЛОНЕНИЕ");
                 }
                 cell(m_eventTable, tableRow, 0, QString(), kDim, subBg);
-                cell(m_eventTable, tableRow, 1, QStringLiteral("    ↳ ") + inputName(sample.input),
+                cell(m_eventTable, tableRow, 1, QStringLiteral("    ↳ ") + inputName(sample.input, legacy, secondOnly),
                      kDim, subBg);
-                cell(m_eventTable, tableRow, 2, inputName(sample.input), kDim, subBg);
+                cell(m_eventTable, tableRow, 2, inputName(sample.input, legacy, secondOnly), kDim, subBg);
                 cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
                      kDim, subBg, Qt::AlignRight | Qt::AlignVCenter);
                 cell(m_eventTable, tableRow, 4,

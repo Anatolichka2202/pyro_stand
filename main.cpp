@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QScreen>
+#include <QSettings>
+#include <QFileInfo>
+#include <utility>
 #include "integration_window.h"
 
 int main(int argc, char *argv[])
@@ -11,6 +14,12 @@ int main(int argc, char *argv[])
 
     QApplication a(argc, argv);
     a.setApplicationName("pyro_stand");
+    // Portable distributions keep their preferences next to the executable.
+    if (QFileInfo::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/portable.mode"))) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                          QCoreApplication::applicationDirPath() + QStringLiteral("/settings"));
+    }
 
     QCommandLineParser parser;
     parser.setApplicationDescription("Пиростенд — план КАСУ ПП и измерения платы пиротестера");
@@ -21,12 +30,36 @@ int main(int argc, char *argv[])
     parser.addOption({"bind-ip", "Локальный IP приёма UDP", "ip", "0.0.0.0"});
     parser.addOption({"board-port", "UDP-порт телеметрии платы", "port", "5000"});
     parser.addOption({"board-serial", "COM-порт платы вместо UDP", "port"});
-    parser.addOption({"mapping", "Утверждённая карта каналов JSON", "path"});
+    parser.addOption({"tester", "Тип пиротестера: udp, rs485, legacy", "type"});
+    parser.addOption({"legacy-serial", "Старый пиротестер: 8-битная маска, 1 байт/мс", "port"});
+    parser.addOption({"legacy-second-serial", "Второй старый пиротестер БКД-Б (первый COM — А-1)", "port"});
+    parser.addOption({"legacy-block", "БКД при одном старом COM: A1 или B", "block"});
+    parser.addOption({"first-stage-yps", "ЯПС новой платы, подключённый к БКД-А-1 (1..12)", "number"});
+    parser.addOption({"second-stage-yps", "ЯПС новой платы, подключённый к БКД-Б (1..12)", "number"});
+    parser.addOption({"kp-yps", "ЯПС новой платы с КП на входе 8 (1..12)", "number"});
     parser.process(a);
 
     IntegrationSession::Options options;
+    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    const int savedTransport = settings.value(QStringLiteral("tester/transport"), 0).toInt();
+    if (savedTransport >= 0 && savedTransport <= 2)
+        options.boardTransport = IntegrationSession::BoardTransport(savedTransport);
+    options.serialPort = settings.value(QStringLiteral("tester/serial")).toString();
+    options.secondLegacySerialPort = settings.value(QStringLiteral("tester/secondSerial")).toString();
+    options.firstStageYps = settings.value(QStringLiteral("tester/firstYps"), 0).toInt();
+    options.secondStageYps = settings.value(QStringLiteral("tester/secondYps"), 0).toInt();
+    options.kpYps = settings.value(QStringLiteral("tester/kpYps"), 0).toInt();
+    options.legacySecondStage = settings.value(QStringLiteral("tester/legacySecondStage"), false).toBool();
+    if (parser.isSet("tester")) {
+        const QString type = parser.value("tester");
+        if (type == QStringLiteral("udp")) options.boardTransport = IntegrationSession::BoardTransport::Udp;
+        else if (type == QStringLiteral("rs485")) options.boardTransport = IntegrationSession::BoardTransport::Serial;
+        else if (type == QStringLiteral("legacy")) options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+        else parser.showHelp(2);
+    }
     options.debugSocket = parser.value("debug-socket");
-    options.boardIp = QHostAddress(parser.value("board-ip"));
+    options.boardIp = QHostAddress(parser.isSet("board-ip") ? parser.value("board-ip")
+        : settings.value(QStringLiteral("tester/ip"), parser.value("board-ip")).toString());
     options.bindIp = QHostAddress(parser.value("bind-ip"));
     bool portOk = false;
     const uint port = parser.value("board-port").toUInt(&portOk);
@@ -38,6 +71,35 @@ int main(int argc, char *argv[])
         options.serialPort = parser.value("board-serial");
         if (options.serialPort.isEmpty()) parser.showHelp(2);
     }
+    if (parser.isSet("legacy-serial")) {
+        if (parser.isSet("board-serial")) parser.showHelp(2);
+        options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+        options.serialPort = parser.value("legacy-serial");
+        options.secondLegacySerialPort.clear();
+        if (options.serialPort.isEmpty()) parser.showHelp(2);
+    }
+    if (parser.isSet("legacy-second-serial")) {
+        if (options.boardTransport != IntegrationSession::BoardTransport::LegacySerial) parser.showHelp(2);
+        options.secondLegacySerialPort = parser.value("legacy-second-serial");
+        if (options.secondLegacySerialPort.isEmpty() || options.secondLegacySerialPort.compare(options.serialPort, Qt::CaseInsensitive) == 0)
+            parser.showHelp(2);
+    }
+    if (parser.isSet("legacy-block")) {
+        const QString block = parser.value("legacy-block").toUpper();
+        if (block != QStringLiteral("A1") && block != QStringLiteral("B")) parser.showHelp(2);
+        options.legacySecondStage = block == QStringLiteral("B");
+    }
+    for (auto pair : {std::pair{"first-stage-yps", &options.firstStageYps},
+                      std::pair{"second-stage-yps", &options.secondStageYps},
+                      std::pair{"kp-yps", &options.kpYps}}) {
+        if (parser.isSet(pair.first)) {
+            bool ok = false;
+            *pair.second = parser.value(pair.first).toInt(&ok);
+            if (!ok || *pair.second < 1 || *pair.second > 12) parser.showHelp(2);
+        }
+        if (*pair.second < 0 || *pair.second > 12) *pair.second = 0;
+    }
+    if (options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) parser.showHelp(2);
 
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
@@ -111,7 +173,9 @@ int main(int argc, char *argv[])
         }
     )");
 
-    IntegrationWindow w(options, parser.value("mapping"));
+    IntegrationWindow w(options);
     w.show();
+    if (qEnvironmentVariableIsSet("PYRO_STAND_SMOKE_TEST"))
+        QTimer::singleShot(150, &a, &QCoreApplication::quit);
     return a.exec();
 }

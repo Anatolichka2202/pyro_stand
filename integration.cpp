@@ -59,6 +59,85 @@ bool blankFrame(const BoardFrame &frame) {
 }
 }
 
+void LegacyTesterDecoder::reset() {
+    m_frame = {};
+    m_samples = 0;
+    m_previous = 0;
+}
+
+BoardFrame LegacyTesterDecoder::append(quint8 mask) {
+    // Start at 1 ms so a real first sample is distinct from an absent timestamp.
+    const quint32 timeUs = quint32(++m_samples * 1000);
+    for (int bit = 0; bit < 8; ++bit) {
+        auto &channel = m_frame.channels[size_t(bit)];
+        const bool active = (mask & (1 << bit)) != 0;
+        if (active && !(m_previous & (1 << bit)) && !channel.triggered) {
+            channel.triggered = true;
+            channel.riseUs = timeUs;
+        }
+        if (!active && (m_previous & (1 << bit)) && channel.fallUs == 0)
+            channel.fallUs = timeUs;
+        channel.ready = active;
+    }
+    m_previous = mask;
+    return m_frame;
+}
+
+StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, int kpYps,
+                                       const CyclogramPlan &plan) {
+    StandMapping result;
+    result.version = QStringLiteral("БКД-А-1/Б · А:ЯПС%1 · Б:ЯПС%2 · КП:ЯПС%3/8")
+        .arg(firstStageYps).arg(secondStageYps).arg(kpYps);
+    auto add = [&](const QString &key, int yps, std::initializer_list<int> channels) {
+        if (yps < 1 || yps > 12) return;
+        ActionMapping action;
+        action.toleranceMs = 1.0;
+        for (int channel : channels) action.inputs.append({(yps - 1) * 8 + channel - 1, false});
+        result.actions.insert(key, action);
+    };
+    // Owner-confirmed item numbers, retained in original file order by ordinal.
+    for (const auto &action : plan.actions) {
+        QString expected;
+        int targetYps = 0;
+        switch (action.ordinal) {
+        case 3: expected = QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
+        case 5: expected = QStringLiteral("FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
+        case 16: expected = QStringLiteral("CLOSE_MAIN_VALVES_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
+        case 20: expected = QStringLiteral("IGNITE_PYRO_CANDLE"); targetYps = secondStageYps; break;
+        case 21: expected = QStringLiteral("OPEN_OXIDIZER_AND_FUEL_VALVES"); targetYps = secondStageYps; break;
+        case 22: expected = QStringLiteral("SHUTDOWN_ENGINE_BLOCK_B"); targetYps = secondStageYps; break;
+        default: break;
+        }
+        if (targetYps > 0 && action.key != expected) {
+            result.warnings << QStringLiteral("Пункт %1: ожидается %2, получено %3; входы не приписаны этому действию")
+                .arg(action.ordinal).arg(expected, action.key);
+            continue;
+        }
+        switch (action.ordinal) {
+        case 3: add(action.key, firstStageYps, {1, 2}); break;
+        case 5: add(action.key, firstStageYps, {3, 4, 5}); break;
+        case 16: add(action.key, firstStageYps, {6, 7}); break;
+        case 20: add(action.key, secondStageYps, {1, 2}); break;
+        case 21: add(action.key, secondStageYps, {3, 4, 5}); break;
+        case 22: add(action.key, secondStageYps, {6, 7}); break;
+        default: break;
+        }
+    }
+    if (kpYps >= 1 && kpYps <= 12) {
+        result.kp = {(kpYps - 1) * 8 + 7, false};
+        add(QStringLiteral("LIFT_OFF_CONTACT"), kpYps, {8});
+    }
+    if (!plan.actions.isEmpty()) {
+        for (int ordinal : {3, 5, 16, 20, 21, 22}) {
+            const bool selected = ordinal < 20 ? firstStageYps > 0 : secondStageYps > 0;
+            if (selected && std::none_of(plan.actions.cbegin(), plan.actions.cend(),
+                [ordinal](const auto &action) { return action.ordinal == ordinal; }))
+                result.warnings << QStringLiteral("В циклограмме нет назначенного пункта %1").arg(ordinal);
+        }
+    }
+    return result;
+}
+
 bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan, QString *error) {
     if (!plan || bytes.isEmpty()) return fail(error, QStringLiteral("Пустая циклограмма"));
     CyclogramPlan parsed;
@@ -202,31 +281,61 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
     });
     connect(&m_udp, &QUdpSocket::readyRead, this, &IntegrationSession::receiveUdp);
     connect(&m_serial, &QSerialPort::readyRead, this, &IntegrationSession::receiveSerial);
+    connect(&m_secondSerial, &QSerialPort::readyRead, this, [this] {
+        processLegacyBytes(m_secondSerial.readAll(), 1);
+    });
+    for (auto *serial : {&m_serial, &m_secondSerial}) {
+        connect(serial, &QSerialPort::errorOccurred, this, [this](QSerialPort::SerialPortError error) {
+            if (error == QSerialPort::ResourceError || error == QSerialPort::ReadError) {
+                m_boardArmed = false;
+                m_awaitReset = false;
+                setError(QStringLiteral("Ошибка COM: измерения недостоверны до нового сбора"));
+            }
+        });
+    }
     m_boardWatchdog.setInterval(1500);
     connect(&m_boardWatchdog, &QTimer::timeout, this, [this] {
         if (m_boardReceiving) { m_boardReceiving = false; emit changed(); }
     });
     m_resetWatchdog.setSingleShot(true);
+    for (int stream = 0; stream < 2; ++stream) {
+        m_legacyWatchdog[size_t(stream)].setInterval(1500);
+        m_legacyWatchdog[size_t(stream)].setSingleShot(true);
+        connect(&m_legacyWatchdog[size_t(stream)], &QTimer::timeout, this, [this, stream] {
+            if (m_options.boardTransport == BoardTransport::LegacySerial &&
+                (m_boardArmed || (m_awaitReset && m_legacyArmed[size_t(stream)]))) {
+                m_boardArmed = false;
+                m_awaitReset = false;
+                setError(QStringLiteral("Разрыв потока старой платы COM %1; начните новый сбор").arg(stream + 1));
+            }
+        });
+    }
     connect(&m_resetWatchdog, &QTimer::timeout, this, [this] {
         if (m_awaitReset) {
             m_awaitReset = false;
-            setError(QStringLiteral("После команды сброса не получен пустой кадр платы"));
+            setError(m_options.boardTransport == BoardTransport::LegacySerial
+                ? QStringLiteral("Не получены нулевые маски на всех выбранных COM")
+                : QStringLiteral("После команды сброса не получен пустой кадр платы"));
         }
     });
     m_frameEvidence.setAutoRemove(true);
     if (!m_frameEvidence.open()) setError(QStringLiteral("Не удалось создать журнал кадров платы"));
+    updateBenchMapping();
 }
 
 IntegrationSession::~IntegrationSession() {
+    for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
     m_reconnect.stop();
     m_boardWatchdog.stop();
     m_resetWatchdog.stop();
     m_debug.disconnect(this);
     m_udp.disconnect(this);
     m_serial.disconnect(this);
+    m_secondSerial.disconnect(this);
     m_debug.abort();
     m_udp.close();
     m_serial.close();
+    m_secondSerial.close();
 }
 
 void IntegrationSession::start() {
@@ -239,10 +348,68 @@ void IntegrationSession::start() {
     } else {
         m_serial.setPortName(m_options.serialPort);
         m_serial.setBaudRate(115200);
+        m_serial.setDataBits(QSerialPort::Data8);
+        m_serial.setParity(QSerialPort::NoParity);
+        m_serial.setStopBits(QSerialPort::OneStop);
+        m_serial.setFlowControl(QSerialPort::NoFlowControl);
+        if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.secondLegacySerialPort.isEmpty()) {
+            m_secondSerial.setPortName(m_options.secondLegacySerialPort);
+            m_secondSerial.setBaudRate(115200);
+            m_secondSerial.setDataBits(QSerialPort::Data8);
+            m_secondSerial.setParity(QSerialPort::NoParity);
+            m_secondSerial.setStopBits(QSerialPort::OneStop);
+            m_secondSerial.setFlowControl(QSerialPort::NoFlowControl);
+            if (!m_secondSerial.open(QIODevice::ReadOnly))
+                setError(QStringLiteral("COM БКД-Б %1: %2").arg(m_options.secondLegacySerialPort, m_secondSerial.errorString()));
+        }
         if (!m_serial.open(QIODevice::ReadOnly))
             setError(QStringLiteral("RS-485 %1: %2").arg(m_options.serialPort, m_serial.errorString()));
     }
     emit changed();
+}
+
+void IntegrationSession::configureBoard(const Options &options) {
+    for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
+    m_udp.close();
+    m_serial.close();
+    m_secondSerial.close();
+    m_boardWatchdog.stop();
+    m_resetWatchdog.stop();
+    m_options = options;
+    m_boardFrame = {};
+    m_serialBuffer.clear();
+    for (auto &decoder : m_legacy) decoder.reset();
+    m_legacyArmed = {};
+    m_hasBoardFrame = false;
+    m_boardReceiving = false;
+    m_boardArmed = false;
+    m_prePermissionActivity = false;
+    m_awaitReset = false;
+    m_mappingBytes.clear();
+    updateBenchMapping();
+    QJsonObject evidence;
+    evidence.insert(QStringLiteral("type"), QStringLiteral("TESTER_CONFIGURATION_CHANGED"));
+    evidence.insert(QStringLiteral("mapping"), m_mapping.version);
+    evidence.insert(QStringLiteral("at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    m_localEvidence.append(evidence);
+    for (const auto &warning : m_mapping.warnings) emit message(warning);
+    emit message(QStringLiteral("Подключение изменено; начните новый сбор измерений"));
+    start();
+}
+
+void IntegrationSession::updateBenchMapping() {
+    if (!m_mappingBytes.isEmpty()) return;
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        const bool dual = !m_options.secondLegacySerialPort.isEmpty();
+        m_mapping = StandProtocol::benchMapping(dual || !m_options.legacySecondStage ? 1 : 0,
+            dual ? 2 : (m_options.legacySecondStage ? 1 : 0), 1, m_plan);
+        m_mapping.version = dual ? QStringLiteral("Старый · COM А-1 + COM Б · КП8 в каждом потоке")
+            : (m_options.legacySecondStage ? QStringLiteral("Старый · БКД-Б · КП8")
+                                          : QStringLiteral("Старый · БКД-А-1 · КП8"));
+    } else {
+        m_mapping = StandProtocol::benchMapping(m_options.firstStageYps,
+            m_options.secondStageYps, m_options.kpYps, m_plan);
+    }
 }
 
 void IntegrationSession::connectDebug() {
@@ -347,6 +514,8 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
         m_cyclogramBytes = bytes;
         m_cyclogramSha = hash;
         m_plan = plan;
+        updateBenchMapping();
+        for (const auto &warning : m_mapping.warnings) emit message(warning);
         m_hasPlan = true;
         emit changed();
     } else if (type == QStringLiteral("CYCLOGRAM_UPLOAD_STATE") && id == m_uploadId) {
@@ -399,6 +568,10 @@ void IntegrationSession::receiveUdp() {
 }
 
 void IntegrationSession::receiveSerial() {
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        processLegacyBytes(m_serial.readAll());
+        return;
+    }
     m_serialBuffer.append(m_serial.readAll());
     while (true) {
         const int header = m_serialBuffer.indexOf(QByteArray::fromHex("aa55"));
@@ -431,12 +604,63 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
         setError(error);
         return;
     }
+    applyFrame(parsed);
+    ++m_acceptedFrames;
+    recordFrame(raw);
+    emit changed();
+}
+
+void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
+    if (raw.isEmpty()) return;
+    QJsonObject evidence;
+    evidence.insert(QStringLiteral("protocol"), QStringLiteral("legacy-mask-1ms"));
+    evidence.insert(QStringLiteral("stream"), stream);
+    evidence.insert(QStringLiteral("upload_id"), m_uploadId);
+    evidence.insert(QStringLiteral("first_sample_index"), QString::number(m_legacy[size_t(stream)].sampleCount()));
+    evidence.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    evidence.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
+    m_frameEvidence.write(QJsonDocument(evidence).toJson(QJsonDocument::Compact) + '\n');
+    int chunkOffset = 0;
+    for (char byte : raw) {
+        auto &decoder = m_legacy[size_t(stream)];
+        if (m_awaitReset && !m_legacyArmed[size_t(stream)]) decoder.reset();
+        const BoardFrame frame = decoder.append(quint8(byte));
+        for (int ch = 0; ch < 8; ++ch)
+            m_boardFrame.channels[size_t(stream * 8 + ch)] = frame.channels[size_t(ch)];
+        if (m_awaitReset && !m_legacyArmed[size_t(stream)] && quint8(byte) == 0) {
+            m_legacyArmed[size_t(stream)] = true;
+            QJsonObject baseline;
+            baseline.insert(QStringLiteral("type"), QStringLiteral("LEGACY_ZERO_MASK_OBSERVED"));
+            baseline.insert(QStringLiteral("stream"), stream);
+            baseline.insert(QStringLiteral("upload_id"), m_uploadId);
+            baseline.insert(QStringLiteral("raw_chunk_byte_offset"), chunkOffset);
+            baseline.insert(QStringLiteral("at_utc"), evidence.value(QStringLiteral("received_at_utc")));
+            m_localEvidence.append(baseline);
+        }
+        if (m_awaitReset && m_legacyArmed[0] &&
+            (m_options.secondLegacySerialPort.isEmpty() || m_legacyArmed[1])) {
+            m_awaitReset = false;
+            m_resetWatchdog.stop();
+            m_boardArmed = true;
+            emit message(QStringLiteral("Начат сбор старого пиротестера; нулевая маска получена на каждом COM"));
+        }
+        if (m_legacyArmed[size_t(stream)] && !m_executionObserved && quint8(byte) != 0)
+            m_prePermissionActivity = true;
+        ++chunkOffset;
+    }
+    m_hasBoardFrame = true;
+    m_boardReceiving = true;
+    m_boardWatchdog.start();
+    m_acceptedFrames += quint64(raw.size());
+    m_legacyWatchdog[size_t(stream)].start();
+    emit changed();
+}
+
+void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     m_boardFrame = parsed;
     m_hasBoardFrame = true;
     m_boardReceiving = true;
     m_boardWatchdog.start();
-    ++m_acceptedFrames;
-    recordFrame(raw);
     if (m_awaitReset && blankFrame(parsed)) {
         m_awaitReset = false;
         m_resetWatchdog.stop();
@@ -446,11 +670,12 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
         evidence.insert(QStringLiteral("at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
         evidence.insert(QStringLiteral("upload_id"), m_uploadId);
         m_localEvidence.append(evidence);
-        emit message(QStringLiteral("После команды сброса получен пустой кадр; отдельного ACK у платы нет"));
+        emit message(m_options.boardTransport == BoardTransport::LegacySerial
+            ? QStringLiteral("Начат сбор старого пиротестера; получена нулевая маска каналов")
+            : QStringLiteral("После команды сброса получен пустой кадр; отдельного ACK у платы нет"));
     }
     if (m_boardArmed && !m_executionObserved && !blankFrame(parsed))
         m_prePermissionActivity = true;
-    emit changed();
 }
 
 void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error) {
@@ -462,6 +687,10 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
     object.insert(QStringLiteral("valid"), error.isEmpty());
     if (!error.isEmpty()) object.insert(QStringLiteral("error"), error);
     object.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
+    object.insert(QStringLiteral("protocol"), m_options.boardTransport == BoardTransport::LegacySerial
+        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
+    if (m_options.boardTransport == BoardTransport::LegacySerial)
+        object.insert(QStringLiteral("first_sample_index"), QString::number(m_legacy[0].sampleCount()));
     m_frameEvidence.write(QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n');
 }
 
@@ -480,6 +709,37 @@ bool IntegrationSession::loadMapping(const QString &path) {
 }
 
 bool IntegrationSession::resetBoard() {
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        if (!m_serial.isOpen()) {
+            setError(QStringLiteral("COM-порт старого пиротестера не открыт"));
+            return false;
+        }
+        if (!m_options.secondLegacySerialPort.isEmpty() && !m_secondSerial.isOpen()) {
+            setError(QStringLiteral("Второй COM-порт старого пиротестера не открыт"));
+            return false;
+        }
+        if (!m_serial.clear(QSerialPort::Input) ||
+            (m_secondSerial.isOpen() && !m_secondSerial.clear(QSerialPort::Input))) {
+            setError(QStringLiteral("Не удалось очистить COM перед новым сбором"));
+            return false;
+        }
+        for (auto &decoder : m_legacy) decoder.reset();
+        m_legacyArmed = {};
+        m_boardFrame = {};
+        m_hasBoardFrame = false;
+        m_boardArmed = false;
+        m_prePermissionActivity = false;
+        m_awaitReset = true;
+        m_resetWatchdog.start(2000);
+        QJsonObject evidence;
+        evidence.insert(QStringLiteral("type"), QStringLiteral("LEGACY_COLLECTION_STARTED"));
+        evidence.insert(QStringLiteral("upload_id"), m_uploadId);
+        evidence.insert(QStringLiteral("at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        m_localEvidence.append(evidence);
+        emit message(QStringLiteral("Буфер COM очищен; ожидание нулевой маски. Команда на старую плату не отправляется"));
+        emit changed();
+        return true;
+    }
     const QByteArray command = StandProtocol::resetCommand();
     QUdpSocket commandSocket;
     if (commandSocket.writeDatagram(command, m_options.boardIp, m_options.commandPort) != command.size()) {
@@ -506,6 +766,26 @@ std::optional<quint32> IntegrationSession::kpTimeUs() const {
     return timestamp(m_boardFrame.channels[size_t(m_mapping.kp.index)], m_mapping.kp);
 }
 
+std::optional<double> IntegrationSession::measuredPositionMs() const {
+    if (!measurementEligible()) return std::nullopt;
+    const auto kp = kpTimeUs();
+    if (!kp) return std::nullopt;
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        if (m_legacy[0].sampleCount() * 1000 >= (quint64(1) << 31)) return std::nullopt;
+        return double(qint32(quint32(m_legacy[0].sampleCount() * 1000) - *kp)) / 1000.0;
+    }
+    // New frames contain event timestamps, not a frame's current counter value.
+    // Show only the latest known mapped event; never extrapolate with the PC clock.
+    double latest = 0;
+    for (const auto &mapped : m_mapping.actions) {
+        for (const auto &input : mapped.inputs) {
+            const auto value = timestamp(m_boardFrame.channels[size_t(input.index)], input);
+            if (value) latest = std::max(latest, double(qint32(*value - *kp)) / 1000.0);
+        }
+    }
+    return latest;
+}
+
 ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action) const {
     using State = ActionMeasurement::State;
     ActionMeasurement result;
@@ -525,16 +805,25 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     if (!m_boardArmed)
         return blocked(State::BoardNotArmed, QStringLiteral("Плата не сброшена для этого прогона"));
     const auto kp = kpTimeUs();
-    if (!kp)
-        return blocked(State::WaitingForKp, QStringLiteral("Ожидание КП"));
+    const bool dualLegacy = m_options.boardTransport == BoardTransport::LegacySerial &&
+        !m_options.secondLegacySerialPort.isEmpty();
+    const auto secondKp = dualLegacy ? timestamp(m_boardFrame.channels[15], InputRef{15, false}) : kp;
     const int repetitions = std::count_if(m_plan.actions.cbegin(), m_plan.actions.cend(),
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
         return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
     if (qAbs(qint64(action.offsetMs)) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Интервал счётчика неоднозначен после переполнения"));
+    if (m_options.boardTransport == BoardTransport::LegacySerial &&
+        (m_legacy[0].sampleCount() * 1000 >= (quint64(1) << 31) ||
+         (dualLegacy && m_legacy[1].sampleCount() * 1000 >= (quint64(1) << 31))))
+        return blocked(State::AmbiguousInterval, QStringLiteral("Слишком длинный сбор старого пиротестера для этой шкалы счётчика"));
 
     const ActionMapping mapped = m_mapping.actions.value(action.key);
+    for (const auto &input : mapped.inputs) {
+        if (!(dualLegacy && input.index >= 8 ? secondKp : kp))
+            return blocked(State::WaitingForKp, QStringLiteral("Ожидание КП8 в потоке этого БКД"));
+    }
     result.toleranceMs = mapped.toleranceMs;
     int observed = 0;
     for (const InputRef &input : mapped.inputs) {
@@ -544,7 +833,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         if (stamp) {
             // The board and КП share one uint32 microsecond counter.
             // Signed subtraction handles a single wrap; longer intervals are ambiguous.
-            const qint64 deltaUs = qint32(*stamp - *kp);
+            const auto inputKp = dualLegacy && input.index >= 8 ? secondKp : kp;
+            const qint64 deltaUs = qint32(*stamp - *inputKp);
             sample.actualMs = double(deltaUs) / 1000.0;
             sample.deviationMs = *sample.actualMs - action.offsetMs;
             ++observed;
@@ -618,7 +908,26 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("cyclogram_base64"), QString::fromLatin1(m_cyclogramBytes.toBase64()));
     report.insert(QStringLiteral("plan_t0_utc"), m_hasPlan ? m_plan.t0Utc.toString(Qt::ISODate) : QString());
     report.insert(QStringLiteral("mapping_version"), m_mapping.version);
+    report.insert(QStringLiteral("mapping_warnings"), QJsonArray::fromStringList(m_mapping.warnings));
     report.insert(QStringLiteral("mapping_json"), QJsonDocument::fromJson(m_mappingBytes).object());
+    report.insert(QStringLiteral("tester_protocol"), m_options.boardTransport == BoardTransport::LegacySerial
+        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
+    report.insert(QStringLiteral("measurement_clock"), m_options.boardTransport == BoardTransport::LegacySerial
+        ? QStringLiteral("received byte index, 1 byte = 1 ms; separate KP8 for each COM")
+        : QStringLiteral("board microsecond counter minus physical KP timestamp"));
+    if (m_options.boardTransport == BoardTransport::LegacySerial)
+        report.insert(QStringLiteral("legacy_integrity_limit"), QStringLiteral("The byte-mask protocol has no CRC or sequence number; individual missing bytes cannot be detected"));
+    report.insert(QStringLiteral("legacy_sample_count"), QString::number(m_legacy[0].sampleCount()));
+    report.insert(QStringLiteral("second_legacy_sample_count"), QString::number(m_legacy[1].sampleCount()));
+    report.insert(QStringLiteral("second_legacy_serial_port"), m_options.secondLegacySerialPort);
+    const auto secondKp = m_boardArmed && m_options.boardTransport == BoardTransport::LegacySerial && !m_options.secondLegacySerialPort.isEmpty()
+        ? timestamp(m_boardFrame.channels[15], InputRef{15, false}) : std::nullopt;
+    report.insert(QStringLiteral("second_legacy_kp_time_us"), secondKp ? QJsonValue(double(*secondKp)) : QJsonValue());
+    report.insert(QStringLiteral("serial_port"), m_options.serialPort);
+    report.insert(QStringLiteral("first_stage_yps"), m_options.firstStageYps);
+    report.insert(QStringLiteral("second_stage_yps"), m_options.secondStageYps);
+    report.insert(QStringLiteral("kp_yps"), m_options.kpYps);
+    report.insert(QStringLiteral("legacy_block"), m_options.legacySecondStage ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"));
     report.insert(QStringLiteral("kp_time_us"), kpTimeUs() ? QJsonValue(double(*kpTimeUs())) : QJsonValue());
     report.insert(QStringLiteral("accepted_frames"), QString::number(m_acceptedFrames));
     report.insert(QStringLiteral("rejected_frames"), QString::number(m_rejectedFrames));
@@ -629,8 +938,20 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     for (const auto &action : m_plan.actions) {
         QJsonObject item;
         item.insert(QStringLiteral("key"), action.key);
+        item.insert(QStringLiteral("ordinal"), action.ordinal);
         item.insert(QStringLiteral("offset_ms"), action.offsetMs);
         item.insert(QStringLiteral("result"), actionResult(action));
+        const auto measurement = measureAction(action);
+        QJsonArray channels;
+        for (const auto &sample : measurement.channels) {
+            QJsonObject channel;
+            channel.insert(QStringLiteral("yps_or_legacy_stream"), sample.input.index / 8 + 1);
+            channel.insert(QStringLiteral("channel"), sample.input.index % 8 + 1);
+            channel.insert(QStringLiteral("actual_ms"), sample.actualMs ? QJsonValue(*sample.actualMs) : QJsonValue());
+            channel.insert(QStringLiteral("deviation_ms"), sample.deviationMs ? QJsonValue(*sample.deviationMs) : QJsonValue());
+            channels.append(channel);
+        }
+        item.insert(QStringLiteral("channels"), channels);
         actions.append(item);
     }
     report.insert(QStringLiteral("actions"), actions);

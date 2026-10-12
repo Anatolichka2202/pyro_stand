@@ -8,6 +8,7 @@
 #include <QLocalSocket>
 #include <QObject>
 #include <QSerialPort>
+#include <QStringList>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QUdpSocket>
@@ -50,8 +51,22 @@ struct ActionMapping {
 
 struct StandMapping {
     QString version;
+    QStringList warnings;
     InputRef kp;
     QHash<QString, ActionMapping> actions;
+};
+
+// Old tester: one eight-bit state mask per hardware millisecond.
+// No PC clock or UART delivery time participates in the measurement.
+class LegacyTesterDecoder {
+public:
+    void reset();
+    BoardFrame append(quint8 mask);
+    quint64 sampleCount() const { return m_samples; }
+private:
+    BoardFrame m_frame{};
+    quint64 m_samples = 0;
+    quint8 m_previous = 0;
 };
 
 
@@ -78,26 +93,35 @@ namespace StandProtocol {
 bool parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan, QString *error);
 bool parseBoardFrame(const QByteArray &bytes, BoardFrame *frame, QString *error);
 bool parseMapping(const QByteArray &bytes, StandMapping *mapping, QString *error);
+StandMapping benchMapping(int firstStageYps, int secondStageYps, int kpYps,
+                          const CyclogramPlan &plan = {});
 QByteArray resetCommand();
 }
 
 class IntegrationSession : public QObject {
     Q_OBJECT
 public:
-    enum class BoardTransport { Udp, Serial };
+    enum class BoardTransport { Udp, Serial, LegacySerial };
     struct Options {
         QString debugSocket = QStringLiteral("kasupp-debug-events-v1");
         BoardTransport boardTransport = BoardTransport::Udp;
         QString serialPort;
+        QString secondLegacySerialPort; // optional simultaneous БКД-Б; own channel-8 KP
         QHostAddress boardIp = QHostAddress(QStringLiteral("192.168.17.144"));
         QHostAddress bindIp = QHostAddress::AnyIPv4;
         quint16 telemetryPort = 5000;
         quint16 commandPort = 101;
+        int firstStageYps = 0;  // 0 = wiring not selected, never guess a YPS number
+        int secondStageYps = 0;
+        int kpYps = 0;         // physical KP is always channel 8
+        bool legacySecondStage = false;
     };
 
     explicit IntegrationSession(Options options, QObject *parent = nullptr);
     ~IntegrationSession() override;
     void start();
+    void configureBoard(const Options &options);
+    const Options &options() const { return m_options; }
     bool loadMapping(const QString &path);
     bool resetBoard();
     bool saveReport(const QString &path, QString *error);
@@ -125,6 +149,7 @@ public:
     quint64 acceptedFrames() const { return m_acceptedFrames; }
     quint64 rejectedFrames() const { return m_rejectedFrames; }
     std::optional<quint32> kpTimeUs() const;
+    std::optional<double> measuredPositionMs() const;
     ActionMeasurement measureAction(const PlannedAction &action) const;
     QString actionResult(const PlannedAction &action) const;
 
@@ -133,6 +158,7 @@ signals:
     void message(const QString &text);
 
 private:
+    friend class IntegrationTest;
     void connectDebug();
     void readDebug();
     void processDebug(const QJsonObject &object);
@@ -140,6 +166,9 @@ private:
     void receiveUdp();
     void receiveSerial();
     void processFrame(const QByteArray &raw);
+    void processLegacyBytes(const QByteArray &raw, int stream = 0);
+    void updateBenchMapping();
+    void applyFrame(const BoardFrame &frame);
     void recordFrame(const QByteArray &raw, const QString &error = {});
     void setError(const QString &text);
 
@@ -147,11 +176,15 @@ private:
     QLocalSocket m_debug;
     QUdpSocket m_udp;
     QSerialPort m_serial;
+    QSerialPort m_secondSerial;
     QTimer m_reconnect;
     QTimer m_boardWatchdog;
     QTimer m_resetWatchdog;
+    std::array<QTimer, 2> m_legacyWatchdog;
     QByteArray m_debugBuffer;
     QByteArray m_serialBuffer;
+    std::array<LegacyTesterDecoder, 2> m_legacy;
+    std::array<bool, 2> m_legacyArmed{};
     QString m_runId;
     QString m_streamId;
     quint64 m_nextSeq = 0;

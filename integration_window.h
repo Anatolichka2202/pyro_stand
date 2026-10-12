@@ -10,20 +10,21 @@
 #include <QTimer>
 
 class TimelineWidget;
+class QPushButton;
 
 // Operator HMI based on the original summer layout; data comes from
 // IntegrationSession, never from the legacy Stand/serial transfer path.
 class IntegrationWindow final : public QMainWindow {
     Q_OBJECT
 public:
-    explicit IntegrationWindow(IntegrationSession::Options options, const QString &mappingPath = {},
-                               QWidget *parent = nullptr);
+    explicit IntegrationWindow(IntegrationSession::Options options, QWidget *parent = nullptr);
 
 private:
     void setupUi();
     void refresh();
     void updatePlannedClock();
     void appendMessage(const QString &text);
+    void configureTester();
 
     IntegrationSession m_session;
     QTimer m_refreshTimer;
@@ -46,6 +47,7 @@ private:
     QLabel *m_clockStatus = nullptr;
     QLabel *m_eventCaption = nullptr;
     QLabel *m_summaryLabel = nullptr;
+    QPushButton *m_resetButton = nullptr;
 
     TimelineWidget *m_timeline = nullptr;
     QTableWidget *m_eventTable = nullptr;

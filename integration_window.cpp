@@ -637,13 +637,21 @@ void IntegrationWindow::refresh() {
             : QStringLiteral("Ожидание циклограммы от КАСУ ПП"));
     }
 
-    // Exactly one row per tracked cyclogram action; input details stay in
-    // the tooltip and JSON report, not in a 96-channel diagnostic table.
-    if (m_eventTable->rowCount() != rows.size())
-        m_eventTable->setRowCount(rows.size());
+    // Show only assigned inputs as subrows; this is not the raw 96-channel table.
+    int displayCount = 0;
+    for (const auto &row : rows) {
+        ++displayCount;
+        if (!row.physicalKp) {
+            const auto mapped = m_session.mapping().actions.value(row.plan.key);
+            if (mapped.inputs.size() > 1)
+                displayCount += mapped.inputs.size();
+        }
+    }
+    if (m_eventTable->rowCount() != displayCount)
+        m_eventTable->setRowCount(displayCount);
     const int height = m_eventTable->horizontalHeader()->sizeHint().height() +
-                       8 + qBound(2, rows.size(), 12) * 28;
-    m_eventTable->setMaximumHeight(qMax(118, height));
+                       8 + std::clamp(displayCount, 2, 12) * 28;
+    m_eventTable->setMaximumHeight((std::max)(118, height));
 
     int completed = 0, deviations = 0, waiting = 0, unevaluated = 0;
     double maxDeviationMs = 0.0;
@@ -788,7 +796,6 @@ void IntegrationWindow::refresh() {
              Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         ++tableRow;
 
-<<<<<<< HEAD
         if (!row.physicalKp && evaluation.channels.size() > 1) {
             for (const auto &sample : evaluation.channels) {
                 const QColor subBg("#080c12");
@@ -817,8 +824,6 @@ void IntegrationWindow::refresh() {
                 ++tableRow;
             }
         }
-=======
->>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
     }
     if (!foundAwaited && !rows.isEmpty())
         m_nextEventLabel->setText(QStringLiteral("Назначенные события: %1").arg(rows.size()));

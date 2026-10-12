@@ -22,20 +22,6 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     QLocalServer server;
     QVERIFY(server.listen(socketName));
 
-<<<<<<< HEAD
-=======
-    QTemporaryFile mapping;
-    QVERIFY(mapping.open());
-    const QByteArray mappingBytes = R"({
-        "version":"gui-test-map",
-        "kp":{"yps":1,"channel":1},
-        "actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8",
-                    "inputs":[{"yps":1,"channel":2},{"yps":1,"channel":3}]}]
-    })";
-    QCOMPARE(mapping.write(mappingBytes), qint64(mappingBytes.size()));
-    QVERIFY(mapping.flush());
-
->>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
     IntegrationSession::Options options;
     options.debugSocket = socketName;
     options.boardIp = QHostAddress::LocalHost;
@@ -89,22 +75,14 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     client->write(QJsonDocument(available).toJson(QJsonDocument::Compact) + '\n');
     client->flush();
 
-<<<<<<< HEAD
     // One mapped action, its two input subrows, and the physical КП reference; never 96 channels
-=======
-    // A multi-input mapping still occupies one event row plus КП, not raw channels
->>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
     // and never an unassigned cyclogram command in the execution table.
     QTRY_COMPARE(table->rowCount(), 4);
     QStringList names;
     for (int row = 0; row < table->rowCount(); ++row)
         names << table->item(row, 1)->text();
     QVERIFY(names.join(QStringLiteral("|")).contains(
-<<<<<<< HEAD
-        QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12")));
-=======
-        QStringLiteral("Зажигание пиросвечей двигателей 1–8")));
->>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
+        QStringLiteral("Зажигание пиросвечей двигателей 9–12")));
     QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("КОНТАКТ ПОДЪЁМА")));
     QVERIFY(!names.join(QStringLiteral("|")).contains(QStringLiteral("CLOSE_MAIN_VALVES")));
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 1);

@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTextEdit>
 #include <QLocalServer>
 #include <QPushButton>
 #include <QTableWidget>
@@ -28,7 +29,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
         "version":"gui-test-map",
         "kp":{"yps":1,"channel":1},
         "actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8",
-                    "inputs":[{"yps":1,"channel":2}]}]
+                    "inputs":[{"yps":1,"channel":2},{"yps":1,"channel":3}]}]
     })";
     QCOMPARE(mapping.write(mappingBytes), qint64(mappingBytes.size()));
     QVERIFY(mapping.flush());
@@ -44,11 +45,15 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     auto *table = window.findChild<QTableWidget *>(QStringLiteral("eventTable"));
     QVERIFY(table);
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 1);
+    QCOMPARE(window.findChildren<QTextEdit *>().size(), 1);
     QCOMPARE(table->columnCount(), 7);
+    QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("КАНАЛЫ"));
     QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("СОБЫТИЕ"));
     QCOMPARE(table->horizontalHeaderItem(4)->text(), QStringLiteral("ФАКТ МС"));
     QCOMPARE(table->horizontalHeaderItem(5)->text(), QStringLiteral("ОТКЛ МС"));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("eventTimeline")));
+    QVERIFY(window.findChild<QWidget *>(QStringLiteral("operatorSurface")));
+    QVERIFY(window.findChild<QWidget *>(QStringLiteral("journalCaption")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("eventJournal")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("timerLabel")));
 
@@ -78,14 +83,14 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     client->write(QJsonDocument(available).toJson(QJsonDocument::Compact) + '\n');
     client->flush();
 
-    // One mapped action + physical КП reference; never 96 board channels
+    // A multi-input mapping still occupies one event row plus КП, not raw channels
     // and never an unassigned cyclogram command in the execution table.
     QTRY_COMPARE(table->rowCount(), 2);
     QStringList names;
     for (int row = 0; row < table->rowCount(); ++row)
         names << table->item(row, 1)->text();
     QVERIFY(names.join(QStringLiteral("|")).contains(
-        QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_1_TO_8")));
+        QStringLiteral("Зажигание пиросвечей двигателей 1–8")));
     QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("КОНТАКТ ПОДЪЁМА")));
     QVERIFY(!names.join(QStringLiteral("|")).contains(QStringLiteral("CLOSE_MAIN_VALVES")));
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 1);

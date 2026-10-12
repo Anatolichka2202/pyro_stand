@@ -41,73 +41,73 @@ int main(int argc, char *argv[])
 
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
-        QMainWindow {
-            background-color: #0a0c10;
+        QMainWindow, QWidget#operatorSurface {
+            background-color: #0d1117;
+            color: #e6edf3;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
         }
         QLabel, QPushButton, QTableWidget, QTextEdit, QLineEdit {
-            font-family: 'JetBrains Mono', 'Courier New', monospace;
-            color: #c8d0dc;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            color: #e6edf3;
         }
         QPushButton {
-            background-color: #0f1318;
-            border: 1px solid #1e2530;
-            padding: 8px 16px;
-            font-size: 13px;
-            letter-spacing: 0.12em;
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            color: #e6edf3;
+            padding: 7px 12px;
+            font-size: 12px;
             text-align: left;
         }
         QPushButton:hover:!disabled {
-            background-color: #1a2028;
-            border-color: #388bfd;
+            background-color: #1c2330;
+            border-color: #58a6ff;
         }
         QPushButton:disabled {
             color: #484f58;
-            border-color: #1e2530;
+            background-color: #161b22;
+            border-color: #30363d;
         }
-        QPushButton#stopBtn {
-            border-color: #ef444466;
+        QPushButton#resetBtn {
+            color: #f85149;
+            border-color: #f85149;
         }
-        QPushButton#stopBtn:hover:!disabled {
-            border-color: #ef4444;
+        QPushButton#resetBtn:hover:!disabled {
+            background-color: #281a1d;
+            border-color: #f85149;
         }
         QTableWidget {
             background-color: #0d1117;
-            border: 1px solid #1c2333;
-            gridline-color: #1c2333;
-            alternate-background-color: #0a0d13;
-            font-size: 13px;
+            border: 1px solid #30363d;
+            gridline-color: #30363d;
+            alternate-background-color: #161b22;
+            font-size: 11px;
         }
-        QTableWidget::item {
-            padding: 6px 12px;
-        }
+        QTableWidget::item { padding: 4px 8px; }
         QTableWidget::item:selected {
-            background-color: #1f2d3d;
+            background-color: #1c2d3a;
             color: #e6edf3;
         }
         QHeaderView::section {
-            background-color: #0a0d13;
-            color: #6e7681;
-            border: none;
-            border-bottom: 1px solid #21262d;
-            padding: 7px 12px;
-            font-size: 12px;
+            background-color: #161b22;
+            color: #8b949e;
+            border: 0;
+            border-bottom: 1px solid #30363d;
+            padding: 7px 8px;
+            font-size: 11px;
             font-weight: 600;
-            letter-spacing: 0.1em;
         }
         QTextEdit {
-            background-color: #0d1117;
-            border: 1px solid #1c2333;
-            font-size: 13px;
-            line-height: 1.5;
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            color: #c8d0dc;
+            font-size: 11px;
             padding: 4px 8px;
         }
-        QLineEdit {
-            background-color: #0a0d13;
+        QToolTip {
+            background-color: #161b22;
+            color: #e6edf3;
             border: 1px solid #30363d;
-            color: #e3b341;
-            font-size: 14px;
-            padding: 4px 8px;
-            width: 100px;
         }
     )");
 

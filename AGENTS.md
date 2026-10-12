@@ -43,6 +43,16 @@
   or stop the launch program. Restore old COM acquisition without restoring those controls.
 - Keep `IntegrationSession`, validation, reset and evidence/report handling
   intact when refactoring presentation.
+- Treat a new KASU run/upload, tester reconfiguration, and explicit new
+  collection/reset as **evidence boundaries**. Rotate `collection_id`, discard
+  prior collection frames/counters, and keep only relevant Debug evidence in the
+  new report. Refuse report export when raw evidence could not be written.
+- With two legacy COMs, track connection/receiving and KP8 **per stream**.
+  The overall healthy/green indicator requires every configured stream AND a
+  valid armed collection; one missing stream invalidates measurements until a
+  new collection. A recovered UART feed must not auto-rearm the collection.
+- Keep GUI `objectName` values stable for regression tests and avoid assigning
+  a second name to the same widget.
 
 ## Validation
 

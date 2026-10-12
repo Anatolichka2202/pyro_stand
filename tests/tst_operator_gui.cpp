@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QTextEdit>
 #include <QLocalServer>
 #include <QPushButton>
@@ -14,6 +15,7 @@ class OperatorGuiTest : public QObject {
     Q_OBJECT
 private slots:
     void showsMappedEventsNotRawTesterChannels();
+    void showsDualLegacyComStatuses();
 };
 
 void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
@@ -47,6 +49,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("eventJournal")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("timerLabel")));
     QVERIFY(window.findChild<QPushButton *>(QStringLiteral("testerConfigurationBtn")));
+    QVERIFY(window.findChild<QLabel *>(QStringLiteral("legacyStreamsStatus")));
 
     for (auto *button : window.findChildren<QPushButton *>())
         QVERIFY(!button->text().contains(QStringLiteral("ЗАГРУЗИТЬ НА БОРТ")));
@@ -86,6 +89,21 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("КОНТАКТ ПОДЪЁМА")));
     QVERIFY(!names.join(QStringLiteral("|")).contains(QStringLiteral("CLOSE_MAIN_VALVES")));
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 1);
+}
+
+void OperatorGuiTest::showsDualLegacyComStatuses() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort = QStringLiteral("NONEXISTENT_TEST_COM_A");
+    options.secondLegacySerialPort = QStringLiteral("NONEXISTENT_TEST_COM_B");
+    IntegrationWindow window(options);
+    window.show();
+    auto *status = window.findChild<QLabel *>(QStringLiteral("legacyStreamsStatus"));
+    QVERIFY(status);
+    QVERIFY(status->text().contains(QStringLiteral("БКД-А-1")));
+    QVERIFY(status->text().contains(QStringLiteral("БКД-Б")));
+    QVERIFY(status->text().contains(QStringLiteral("СБОР НЕДОСТОВЕРЕН")));
 }
 
 QTEST_MAIN(OperatorGuiTest)

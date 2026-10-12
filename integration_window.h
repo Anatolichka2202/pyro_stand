@@ -46,6 +46,7 @@ private:
     QLabel *m_kpStatus = nullptr;
     QLabel *m_mappingStatus = nullptr;
     QLabel *m_clockStatus = nullptr;
+    QLabel *m_streamStatus = nullptr;
     QLabel *m_eventCaption = nullptr;
     QLabel *m_summaryLabel = nullptr;
     QPushButton *m_resetButton = nullptr;

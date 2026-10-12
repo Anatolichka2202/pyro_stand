@@ -8,6 +8,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QUuid>
 #include <QtEndian>
 
 #include <algorithm>
@@ -284,12 +285,16 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
     connect(&m_secondSerial, &QSerialPort::readyRead, this, [this] {
         processLegacyBytes(m_secondSerial.readAll(), 1);
     });
-    for (auto *serial : {&m_serial, &m_secondSerial}) {
-        connect(serial, &QSerialPort::errorOccurred, this, [this](QSerialPort::SerialPortError error) {
+    for (int stream = 0; stream < 2; ++stream) {
+        QSerialPort *serial = stream == 0 ? &m_serial : &m_secondSerial;
+        connect(serial, &QSerialPort::errorOccurred, this, [this, stream](QSerialPort::SerialPortError error) {
             if (error == QSerialPort::ResourceError || error == QSerialPort::ReadError) {
+                m_legacyReceiving[size_t(stream)] = false;
+                m_boardReceiving = false;
                 m_boardArmed = false;
                 m_awaitReset = false;
-                setError(QStringLiteral("Ошибка COM: измерения недостоверны до нового сбора"));
+                setError(QStringLiteral("Ошибка COM %1: измерения недостоверны до нового сбора")
+                             .arg(stream + 1));
             }
         });
     }
@@ -302,11 +307,16 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
         m_legacyWatchdog[size_t(stream)].setInterval(1500);
         m_legacyWatchdog[size_t(stream)].setSingleShot(true);
         connect(&m_legacyWatchdog[size_t(stream)], &QTimer::timeout, this, [this, stream] {
-            if (m_options.boardTransport == BoardTransport::LegacySerial &&
-                (m_boardArmed || (m_awaitReset && m_legacyArmed[size_t(stream)]))) {
+            if (m_options.boardTransport != BoardTransport::LegacySerial) return;
+            m_legacyReceiving[size_t(stream)] = false;
+            m_boardReceiving = false;
+            if (m_boardArmed || (m_awaitReset && m_legacyArmed[size_t(stream)])) {
                 m_boardArmed = false;
                 m_awaitReset = false;
-                setError(QStringLiteral("Разрыв потока старой платы COM %1; начните новый сбор").arg(stream + 1));
+                setError(QStringLiteral("Разрыв потока старой платы COM %1; начните новый сбор")
+                             .arg(stream + 1));
+            } else {
+                emit changed();
             }
         });
     }
@@ -319,7 +329,10 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
         }
     });
     m_frameEvidence.setAutoRemove(true);
-    if (!m_frameEvidence.open()) setError(QStringLiteral("Не удалось создать журнал кадров платы"));
+    if (!m_frameEvidence.open()) {
+        m_evidenceValid = false;
+        setError(QStringLiteral("Не удалось создать журнал кадров платы"));
+    }
     updateBenchMapping();
 }
 
@@ -380,12 +393,14 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_serialBuffer.clear();
     for (auto &decoder : m_legacy) decoder.reset();
     m_legacyArmed = {};
+    m_legacyReceiving = {};
     m_hasBoardFrame = false;
     m_boardReceiving = false;
     m_boardArmed = false;
     m_prePermissionActivity = false;
     m_awaitReset = false;
     m_mappingBytes.clear();
+    resetCollectionEvidence(false);
     updateBenchMapping();
     QJsonObject evidence;
     evidence.insert(QStringLiteral("type"), QStringLiteral("TESTER_CONFIGURATION_CHANGED"));
@@ -395,6 +410,27 @@ void IntegrationSession::configureBoard(const Options &options) {
     for (const auto &warning : m_mapping.warnings) emit message(warning);
     emit message(QStringLiteral("Подключение изменено; начните новый сбор измерений"));
     start();
+}
+
+bool IntegrationSession::clearFrameEvidence() {
+    if (!m_frameEvidence.isOpen() ||
+        !m_frameEvidence.resize(0) || !m_frameEvidence.seek(0)) {
+        m_evidenceValid = false;
+        setError(QStringLiteral("Не удалось очистить журнал кадров для нового сбора: %1")
+                     .arg(m_frameEvidence.errorString()));
+        return false;
+    }
+    m_evidenceValid = true;
+    m_acceptedFrames = 0;
+    m_rejectedFrames = 0;
+    return true;
+}
+
+void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
+    if (resetDebugEvidence) m_debugEvidence = QJsonArray{};
+    m_localEvidence = QJsonArray{};
+    if (clearFrameEvidence())
+        m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
 void IntegrationSession::updateBenchMapping() {
@@ -428,10 +464,19 @@ void IntegrationSession::resetDebugState() {
     m_cyclogramBytes.clear();
     m_cyclogramSha.clear();
     m_plan = {};
+    m_boardFrame = {};
+    m_hasBoardFrame = false;
+    m_boardReceiving = false;
     m_boardArmed = false;
     m_prePermissionActivity = false;
     m_awaitReset = false;
+    m_legacyArmed = {};
+    m_legacyReceiving = {};
+    for (auto &decoder : m_legacy) decoder.reset();
+    for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
+    m_boardWatchdog.stop();
     m_resetWatchdog.stop();
+    resetCollectionEvidence(true);
     emit changed();
 }
 
@@ -498,6 +543,18 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
             setError(QStringLiteral("Файл Debug: %1").arg(error)); return;
         }
         if (id != m_uploadId) {
+            // New upload, even within the same KASU run: previous board frames
+            // and evidence must never appear in the next flight report.
+            resetCollectionEvidence(true);
+            m_debugEvidence.append(object);
+            m_boardFrame = {};
+            m_hasBoardFrame = false;
+            m_boardReceiving = false;
+            m_legacyArmed = {};
+            m_legacyReceiving = {};
+            for (auto &decoder : m_legacy) decoder.reset();
+            for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
+            m_boardWatchdog.stop();
             m_uploadId = id;
             m_uploadState = QStringLiteral("PREPARED");
             m_executionEnabled = false;
@@ -614,12 +671,18 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
     if (raw.isEmpty()) return;
     QJsonObject evidence;
     evidence.insert(QStringLiteral("protocol"), QStringLiteral("legacy-mask-1ms"));
+    evidence.insert(QStringLiteral("collection_id"), m_collectionId);
+    evidence.insert(QStringLiteral("run_id"), m_runId);
     evidence.insert(QStringLiteral("stream"), stream);
     evidence.insert(QStringLiteral("upload_id"), m_uploadId);
     evidence.insert(QStringLiteral("first_sample_index"), QString::number(m_legacy[size_t(stream)].sampleCount()));
     evidence.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     evidence.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
-    m_frameEvidence.write(QJsonDocument(evidence).toJson(QJsonDocument::Compact) + '\n');
+    const QByteArray evidenceLine = QJsonDocument(evidence).toJson(QJsonDocument::Compact) + '\n';
+    if (!m_frameEvidence.isOpen() || m_frameEvidence.write(evidenceLine) != evidenceLine.size()) {
+        m_evidenceValid = false;
+        setError(QStringLiteral("Не удалось записать аппаратные маски в журнал доказательств"));
+    }
     int chunkOffset = 0;
     for (char byte : raw) {
         auto &decoder = m_legacy[size_t(stream)];
@@ -649,7 +712,8 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
         ++chunkOffset;
     }
     m_hasBoardFrame = true;
-    m_boardReceiving = true;
+    m_legacyReceiving[size_t(stream)] = true;
+    m_boardReceiving = boardReceiving();
     m_boardWatchdog.start();
     m_acceptedFrames += quint64(raw.size());
     m_legacyWatchdog[size_t(stream)].start();
@@ -683,6 +747,8 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
     QJsonObject object;
     object.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     object.insert(QStringLiteral("upload_id"), m_uploadId);
+    object.insert(QStringLiteral("run_id"), m_runId);
+    object.insert(QStringLiteral("collection_id"), m_collectionId);
     object.insert(QStringLiteral("board_armed"), m_boardArmed);
     object.insert(QStringLiteral("valid"), error.isEmpty());
     if (!error.isEmpty()) object.insert(QStringLiteral("error"), error);
@@ -691,7 +757,11 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
         ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
     if (m_options.boardTransport == BoardTransport::LegacySerial)
         object.insert(QStringLiteral("first_sample_index"), QString::number(m_legacy[0].sampleCount()));
-    m_frameEvidence.write(QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n');
+    const QByteArray evidenceLine = QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+    if (m_frameEvidence.write(evidenceLine) != evidenceLine.size()) {
+        m_evidenceValid = false;
+        setError(QStringLiteral("Не удалось записать кадр в журнал доказательств"));
+    }
 }
 
 bool IntegrationSession::loadMapping(const QString &path) {
@@ -723,10 +793,16 @@ bool IntegrationSession::resetBoard() {
             setError(QStringLiteral("Не удалось очистить COM перед новым сбором"));
             return false;
         }
+        if (!clearFrameEvidence()) return false;
+        m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_localEvidence = QJsonArray{};
+        for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
         for (auto &decoder : m_legacy) decoder.reset();
         m_legacyArmed = {};
+        m_legacyReceiving = {};
         m_boardFrame = {};
         m_hasBoardFrame = false;
+        m_boardReceiving = false;
         m_boardArmed = false;
         m_prePermissionActivity = false;
         m_awaitReset = true;
@@ -746,7 +822,13 @@ bool IntegrationSession::resetBoard() {
         setError(QStringLiteral("Не удалось отправить сброс: %1").arg(commandSocket.errorString()));
         return false;
     }
+    if (!clearFrameEvidence()) return false;
+    m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_localEvidence = QJsonArray{};
     m_boardArmed = false;
+    m_boardFrame = {};
+    m_hasBoardFrame = false;
+    m_boardReceiving = false;
     m_prePermissionActivity = false;
     m_awaitReset = true;
     m_resetWatchdog.start(2000);
@@ -759,6 +841,15 @@ bool IntegrationSession::resetBoard() {
     emit message(QStringLiteral("Команда сброса отправлена; ожидание пустого кадра"));
     emit changed();
     return true;
+}
+
+bool IntegrationSession::legacyStreamKpObserved(int stream) const {
+    if (m_options.boardTransport != BoardTransport::LegacySerial ||
+        stream < 0 || stream > 1 || !m_legacyArmed[size_t(stream)] || !m_hasBoardFrame)
+        return false;
+    if (stream == 1 && m_options.secondLegacySerialPort.isEmpty()) return false;
+    const int kpIndex = stream * 8 + 7;
+    return timestamp(m_boardFrame.channels[size_t(kpIndex)], InputRef{kpIndex, false}).has_value();
 }
 
 std::optional<quint32> IntegrationSession::kpTimeUs() const {
@@ -880,6 +971,8 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
 }
 
 bool IntegrationSession::saveReport(const QString &path, QString *error) {
+    if (!m_evidenceValid)
+        return fail(error, QStringLiteral("Журнал доказательств неполон или недоступен; сохранять отчёт нельзя"));
     if (path.isEmpty()) return fail(error, QStringLiteral("Не задан путь отчёта"));
     const QString framesPath = path + QStringLiteral(".frames.jsonl");
     m_frameEvidence.flush();
@@ -897,6 +990,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("format"), QStringLiteral("pyro_stand.report.v1"));
     report.insert(QStringLiteral("saved_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     report.insert(QStringLiteral("run_id"), m_runId);
+    report.insert(QStringLiteral("collection_id"), m_collectionId);
     report.insert(QStringLiteral("upload_id"), m_uploadId);
     report.insert(QStringLiteral("upload_state"), m_uploadState);
     report.insert(QStringLiteral("bcvm_lock_state"), m_lockState);

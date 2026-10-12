@@ -79,6 +79,8 @@ private slots:
     void builtInBenchProfile();
     void legacyDecoder();
     void legacyIndependentCounters();
+    void legacyStreamHealth();
+    void evidenceIsolation();
 };
 
 void IntegrationTest::builtInBenchProfile() {
@@ -184,6 +186,117 @@ void IntegrationTest::legacyIndependentCounters() {
         QCOMPARE(single.measureAction(blockB ? firstAction : secondAction).state,
                  ActionMeasurement::State::Unmapped);
     }
+}
+
+
+void IntegrationTest::legacyStreamHealth() {
+    IntegrationSession::Options options;
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort = QStringLiteral("TEST-A");
+    options.secondLegacySerialPort = QStringLiteral("TEST-B");
+    IntegrationSession session(options);
+    session.m_awaitReset = true;
+
+    session.processLegacyBytes(QByteArray(4, char(0)), 0);
+    QVERIFY(session.legacyStreamReceiving(0));
+    QVERIFY(!session.legacyStreamReceiving(1));
+    QVERIFY(!session.boardReceiving());
+    QVERIFY(!session.boardArmed());
+
+    session.processLegacyBytes(QByteArray(4, char(0)), 1);
+    QVERIFY(session.legacyStreamReceiving(1));
+    QVERIFY(session.boardReceiving());
+    QVERIFY(session.boardArmed());
+
+    // Only the second serial feed times out. First feed may still appear
+    // healthy, but the combined collection is no longer valid.
+    session.m_legacyWatchdog[1].setInterval(15);
+    session.m_legacyWatchdog[1].start();
+    QTRY_VERIFY(!session.legacyStreamReceiving(1));
+    QVERIFY(session.legacyStreamReceiving(0));
+    QVERIFY(!session.boardReceiving());
+    QVERIFY(!session.boardArmed());
+    session.processLegacyBytes(QByteArray(4, char(0)), 1);
+    QVERIFY(session.boardReceiving());
+    QVERIFY(!session.boardArmed()); // receiving again cannot silently re-arm
+}
+
+void IntegrationTest::evidenceIsolation() {
+    IntegrationSession::Options options;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationSession session(options);
+    auto available = [](const QString &id) {
+        const QByteArray file = benchCyclogram();
+        QJsonObject message = contract("CYCLOGRAM_AVAILABLE", 1, "run", "stream");
+        message.insert("upload_id", id);
+        message.insert("byte_count", file.size());
+        message.insert("sha256_hex", QString::fromLatin1(
+            QCryptographicHash::hash(file, QCryptographicHash::Sha256).toHex()));
+        message.insert("content_base64", QString::fromLatin1(file.toBase64()));
+        return message;
+    };
+    session.processDebug(available("upload-old"));
+    const QString oldCollection = session.m_collectionId;
+    QVERIFY(!oldCollection.isEmpty());
+    session.processFrame(frame(1000000U, 1020000U));
+    QCOMPARE(session.acceptedFrames(), quint64(1));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QString error;
+    const QString oldReport = dir.filePath("old.json");
+    QVERIFY2(session.saveReport(oldReport, &error), qPrintable(error));
+    QFile oldEvidence(oldReport + ".frames.jsonl");
+    QVERIFY(oldEvidence.open(QIODevice::ReadOnly));
+    QVERIFY(!oldEvidence.readAll().isEmpty());
+
+    // A new collection starts without carrying forward a previous board
+    // frame, even if the KASU upload is unchanged.
+    QVERIFY(session.resetBoard()); // sends reset to loopback; no hardware ACK required
+    const QString freshCollection = session.m_collectionId;
+    QVERIFY(!freshCollection.isEmpty());
+    QVERIFY(freshCollection != oldCollection);
+    QCOMPARE(session.acceptedFrames(), quint64(0));
+    QVERIFY(!session.hasBoardFrame());
+    const QString freshReport = dir.filePath("fresh.json");
+    QVERIFY2(session.saveReport(freshReport, &error), qPrintable(error));
+    QFile freshEvidence(freshReport + ".frames.jsonl");
+    QVERIFY(freshEvidence.open(QIODevice::ReadOnly));
+    QVERIFY(freshEvidence.readAll().isEmpty());
+
+    session.processFrame(frame(2000000U, 2020000U));
+    QCOMPARE(session.acceptedFrames(), quint64(1));
+    session.processDebug(available("upload-next"));
+    QVERIFY(session.m_collectionId != freshCollection);
+    QCOMPARE(session.acceptedFrames(), quint64(0));
+    QCOMPARE(session.rejectedFrames(), quint64(0));
+    QVERIFY(!session.hasBoardFrame());
+    QVERIFY(!session.boardArmed());
+    QCOMPARE(session.m_debugEvidence.size(), 1);
+    QCOMPARE(session.m_debugEvidence.at(0).toObject().value("upload_id").toString(),
+             QStringLiteral("upload-next"));
+    const QString nextReport = dir.filePath("next.json");
+    QVERIFY2(session.saveReport(nextReport, &error), qPrintable(error));
+    QFile nextEvidence(nextReport + ".frames.jsonl");
+    QVERIFY(nextEvidence.open(QIODevice::ReadOnly));
+    QVERIFY(nextEvidence.readAll().isEmpty());
+
+    // The KASU run boundary is also an evidence boundary.
+    session.processFrame(frame(3000000U, 3020000U));
+    QCOMPARE(session.acceptedFrames(), quint64(1));
+    session.resetDebugState();
+    QCOMPARE(session.acceptedFrames(), quint64(0));
+    QVERIFY(session.m_debugEvidence.isEmpty());
+    QVERIFY(session.m_localEvidence.isEmpty());
+    QVERIFY(session.m_collectionId != freshCollection);
+    QVERIFY(!session.hasBoardFrame());
+
+    // A failed evidence writer must never yield an apparently complete report.
+    session.m_frameEvidence.close();
+    session.processFrame(frame(4000000U, 4020000U));
+    QString writeError;
+    QVERIFY(!session.saveReport(dir.filePath("invalid.json"), &writeError));
+    QVERIFY(writeError.contains(QStringLiteral("Журнал доказательств")));
 }
 
 void IntegrationTest::boardFrameValidation() {

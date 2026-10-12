@@ -239,7 +239,6 @@ void IntegrationWindow::setupUi() {
     auto *map = new QPushButton(QStringLiteral("ПОДКЛЮЧЕНИЕ ПИРОТЕСТЕРА"), controls);
     map->setObjectName(QStringLiteral("testerConfigurationBtn"));
     auto *save = new QPushButton(QStringLiteral("СОХРАНИТЬ ОТЧЁТ"), controls);
-    map->setObjectName(QStringLiteral("mappingBtn"));
     save->setObjectName(QStringLiteral("reportBtn"));
     ctrl->addWidget(map);
     ctrl->addWidget(save);
@@ -282,10 +281,14 @@ void IntegrationWindow::setupUi() {
     m_mappingStatus = new QLabel(meta);
     m_clockStatus = new QLabel(meta);
     m_clockStatus->setWordWrap(true);
+    m_streamStatus = new QLabel(meta);
+    m_streamStatus->setObjectName(QStringLiteral("legacyStreamsStatus"));
+    m_streamStatus->setWordWrap(true);
     metaLay->addWidget(m_uploadStatus);
     metaLay->addWidget(m_kpStatus);
     metaLay->addWidget(m_mappingStatus);
     metaLay->addWidget(m_clockStatus);
+    metaLay->addWidget(m_streamStatus);
     main->addWidget(meta);
 
     // Use the original timeline painter and event-centric semantics.
@@ -373,7 +376,9 @@ void IntegrationWindow::updatePlannedClock() {
     const auto measured = m_session.measuredPositionMs();
     if (measured) {
         const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
-        m_clockCaption->setText(legacy ? QStringLiteral("ПОСЛЕ КП · СЧЁТЧИК COM")
+        m_clockCaption->setText(legacy ? (m_session.options().secondLegacySerialPort.isEmpty()
+                ? QStringLiteral("ПОСЛЕ КП · СЧЁТЧИК COM")
+                : QStringLiteral("ПОСЛЕ КП БКД-А-1 · СЧЁТЧИК COM"))
                                       : QStringLiteral("ПОСЛЕДНЯЯ ОТМЕТКА ПЛАТЫ · КП"));
         m_timerLabel->setText(QStringLiteral("+%1.%2")
             .arg(qint64(*measured) / 1000).arg(qint64(*measured) % 1000, 3, 10, QChar('0')));
@@ -526,14 +531,25 @@ void IntegrationWindow::refresh() {
                                   : QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"));
     const bool hasPlan = m_session.hasPlan();
     const bool eligible = m_session.measurementEligible();
-    const bool kpKnown = eligible && m_session.kpTimeUs().has_value();
+    const bool dualLegacy = legacy && !m_session.options().secondLegacySerialPort.isEmpty();
+    const bool firstKp = legacy ? m_session.legacyStreamKpObserved(0)
+                                 : m_session.kpTimeUs().has_value();
+    const bool secondKp = dualLegacy && m_session.legacyStreamKpObserved(1);
+    const bool kpKnown = eligible && firstKp && (!dualLegacy || secondKp);
     const bool uploaded = m_session.uploadState() == QStringLiteral("CONFIRMED");
 
     setChip(m_debugDot, m_debugStatus, m_session.debugConnected(),
             m_session.debugConnected() ? QStringLiteral("подключён") : QStringLiteral("нет связи"));
-    setChip(m_boardDot, m_boardStatus, m_session.boardReceiving(),
-            m_session.boardReceiving() ? (legacy ? QStringLiteral("маски идут · 1 байт/мс") : QStringLiteral("кадры идут"))
-                                       : (legacy ? QStringLiteral("нет COM-данных") : QStringLiteral("нет кадров")));
+    const bool allStreamsReceiving = m_session.boardReceiving();
+    const bool validCollection = !legacy || m_session.boardArmed();
+    setChip(m_boardDot, m_boardStatus, allStreamsReceiving && validCollection,
+            !allStreamsReceiving
+                ? (legacy && dualLegacy ? QStringLiteral("не все COM активны")
+                                        : legacy ? QStringLiteral("нет COM-данных")
+                                                 : QStringLiteral("нет кадров"))
+                : legacy && !validCollection ? QStringLiteral("сбор не готов")
+                                              : legacy ? QStringLiteral("COM-потоки идут")
+                                                       : QStringLiteral("кадры идут"));
     setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(),
             m_session.executionEnabled() ? QStringLiteral("разрешено")
                                          : QStringLiteral("не разрешено"));
@@ -549,7 +565,12 @@ void IntegrationWindow::refresh() {
         phaseText = QStringLiteral("КП ЗАФИКСИРОВАН");
         phaseColor = QStringLiteral("#3fb950");
     } else if (m_session.executionPermissionObserved()) {
-        phaseText = QStringLiteral("ОЖИДАНИЕ ОПОРНОГО КП");
+        phaseText = !m_session.boardArmed() ? QStringLiteral("СБОР НЕ ГОТОВ")
+            : dualLegacy && firstKp && !secondKp
+                ? QStringLiteral("ОЖИДАНИЕ КП БКД-Б")
+            : dualLegacy && !firstKp && secondKp
+                ? QStringLiteral("ОЖИДАНИЕ КП БКД-А-1")
+            : QStringLiteral("ОЖИДАНИЕ ОПОРНОГО КП");
         phaseColor = QStringLiteral("#e3b341");
     } else {
         phaseText = QStringLiteral("ПЛАН ПРИНЯТ, ОЖИДАНИЕ");
@@ -569,10 +590,38 @@ void IntegrationWindow::refresh() {
                       : QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА")));
     m_uploadStatus->setToolTip(QStringLiteral("Состояние: %1\nID загрузки: %2")
         .arg(m_session.uploadState(), m_session.uploadId()));
-    m_kpStatus->setText(kpKnown
-        ? QStringLiteral("КП · зафиксирован на счётчике платы: %1 мкс; относительный ноль = 0 мс")
-              .arg(*m_session.kpTimeUs())
-        : QStringLiteral("КП · нет подтверждённой опорной отметки; относительные факты не вычисляются"));
+    if (dualLegacy) {
+        m_kpStatus->setText(QStringLiteral("КП8 А-1: %1 · КП8 Б: %2 · %3")
+            .arg(firstKp ? QStringLiteral("зафиксирован") : QStringLiteral("нет"),
+                 secondKp ? QStringLiteral("зафиксирован") : QStringLiteral("нет"),
+                 eligible ? QStringLiteral("независимые шкалы каждого COM")
+                          : QStringLiteral("сбор недостоверен или не подтверждён")));
+    } else {
+        m_kpStatus->setText(kpKnown
+            ? QStringLiteral("КП · зафиксирован: %1 мкс; относительный ноль = 0 мс")
+                  .arg(*m_session.kpTimeUs())
+            : QStringLiteral("КП · нет подтверждённой опорной отметки; относительные факты не вычисляются"));
+    }
+    if (legacy) {
+        const QString firstLabel = dualLegacy || !secondOnly
+            ? QStringLiteral("БКД-А-1") : QStringLiteral("БКД-Б");
+        const auto streamText = [&](int stream, const QString &name) {
+            return QStringLiteral("%1: COM%2 %3, КП8 %4")
+                .arg(name)
+                .arg(stream + 1)
+                .arg(m_session.legacyStreamReceiving(stream)
+                         ? QStringLiteral("принимает") : QStringLiteral("нет потока"))
+                .arg(m_session.legacyStreamKpObserved(stream)
+                         ? QStringLiteral("есть") : QStringLiteral("нет"));
+        };
+        m_streamStatus->setText(streamText(0, firstLabel) +
+            (dualLegacy ? QStringLiteral(" · ") +
+                streamText(1, QStringLiteral("БКД-Б")) : QString()) +
+            (m_session.boardArmed() ? QString() : QStringLiteral(" · СБОР НЕДОСТОВЕРЕН")));
+        m_streamStatus->show();
+    } else {
+        m_streamStatus->hide();
+    }
     m_mappingStatus->setText(QStringLiteral("ПОДКЛЮЧЕНИЕ БКД · %1")
         .arg(m_session.mapping().version.isEmpty()
             ? QStringLiteral("не загружена") : m_session.mapping().version));

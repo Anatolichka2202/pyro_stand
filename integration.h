@@ -127,7 +127,16 @@ public:
     bool saveReport(const QString &path, QString *error);
 
     bool debugConnected() const { return m_debug.state() == QLocalSocket::ConnectedState; }
-    bool boardReceiving() const { return m_boardReceiving; }
+    bool boardReceiving() const {
+        return m_options.boardTransport == BoardTransport::LegacySerial
+            ? m_legacyReceiving[0] &&
+                  (m_options.secondLegacySerialPort.isEmpty() || m_legacyReceiving[1])
+            : m_boardReceiving;
+    }
+    bool legacyStreamReceiving(int stream) const {
+        return stream >= 0 && stream < 2 && m_legacyReceiving[size_t(stream)];
+    }
+    bool legacyStreamKpObserved(int stream) const;
     bool boardArmed() const { return m_boardArmed; }
     bool hasPlan() const { return m_hasPlan; }
     bool hasBoardFrame() const { return m_hasBoardFrame; }
@@ -168,6 +177,8 @@ private:
     void processFrame(const QByteArray &raw);
     void processLegacyBytes(const QByteArray &raw, int stream = 0);
     void updateBenchMapping();
+    bool clearFrameEvidence();
+    void resetCollectionEvidence(bool resetDebugEvidence);
     void applyFrame(const BoardFrame &frame);
     void recordFrame(const QByteArray &raw, const QString &error = {});
     void setError(const QString &text);
@@ -185,7 +196,9 @@ private:
     QByteArray m_serialBuffer;
     std::array<LegacyTesterDecoder, 2> m_legacy;
     std::array<bool, 2> m_legacyArmed{};
+    std::array<bool, 2> m_legacyReceiving{};
     QString m_runId;
+    QString m_collectionId;
     QString m_streamId;
     quint64 m_nextSeq = 0;
     QString m_uploadId;
@@ -209,6 +222,7 @@ private:
     QString m_lastError;
     quint64 m_acceptedFrames = 0;
     quint64 m_rejectedFrames = 0;
+    bool m_evidenceValid = true;
     QJsonArray m_debugEvidence;
     QJsonArray m_localEvidence;
     QTemporaryFile m_frameEvidence;

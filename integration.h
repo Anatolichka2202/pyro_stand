@@ -54,6 +54,26 @@ struct StandMapping {
     QHash<QString, ActionMapping> actions;
 };
 
+
+// Evaluation is based on mapped cyclogram events, not raw tester diagnostics.
+struct ChannelMeasurement {
+    InputRef input;
+    std::optional<double> actualMs;
+    std::optional<double> deviationMs;
+};
+
+struct ActionMeasurement {
+    enum class State {
+        Unmapped, UploadUnconfirmed, ExecutionUnconfirmed, PrematureActivity,
+        BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
+        WaitingForInputs, Partial, Measured
+    };
+    State state = State::Unmapped;
+    QString reason;
+    QVector<ChannelMeasurement> channels;
+    std::optional<double> toleranceMs;
+};
+
 namespace StandProtocol {
 bool parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan, QString *error);
 bool parseBoardFrame(const QByteArray &bytes, BoardFrame *frame, QString *error);
@@ -97,10 +117,15 @@ public:
     QString bcvmUtc() const { return m_bcvmUtc; }
     bool executionEnabled() const { return m_executionEnabled; }
     bool executionPermissionObserved() const { return m_executionObserved; }
+    bool measurementEligible() const {
+        return m_uploadState == QStringLiteral("CONFIRMED") && m_executionObserved &&
+               !m_prePermissionActivity && m_boardArmed;
+    }
     QString lastError() const { return m_lastError; }
     quint64 acceptedFrames() const { return m_acceptedFrames; }
     quint64 rejectedFrames() const { return m_rejectedFrames; }
     std::optional<quint32> kpTimeUs() const;
+    ActionMeasurement measureAction(const PlannedAction &action) const;
     QString actionResult(const PlannedAction &action) const;
 
 signals:

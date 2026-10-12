@@ -87,6 +87,10 @@ void IntegrationTest::cyclogramAndMapping() {
     QVERIFY(StandProtocol::parseMapping(config, &mapping, &error));
     QCOMPARE(mapping.kp.index, 0);
     QCOMPARE(mapping.actions.size(), 1);
+    QCOMPARE(mapping.actions.value(QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_1_TO_8")).toleranceMs.value(), 2.0);
+    const QByteArray defaultTolerance = R"({"version":"bench-default","kp":{"yps":1,"channel":1},"actions":[{"key":"A","inputs":[{"yps":1,"channel":2}]}]})";
+    QVERIFY(StandProtocol::parseMapping(defaultTolerance, &mapping, &error));
+    QCOMPARE(mapping.actions.value(QStringLiteral("A")).toleranceMs.value(), 1.0);
     const QByteArray duplicate = R"({"version":"bench-1","kp":{"yps":1,"channel":1},"actions":[{"key":"A","inputs":[{"yps":1,"channel":2}]},{"key":"B","inputs":[{"yps":1,"channel":2}]}]})";
     QVERIFY(!StandProtocol::parseMapping(duplicate, &mapping, &error));
 }
@@ -158,6 +162,11 @@ void IntegrationTest::twoExternalStreams() {
     QTRY_VERIFY(session.kpTimeUs().has_value());
     QCOMPARE(*session.kpTimeUs(), quint32(1000000));
     QVERIFY(session.actionResult(session.plan().actions[0]).contains("в допуске"));
+    const ActionMeasurement onTime = session.measureAction(session.plan().actions[0]);
+    QCOMPARE(int(onTime.state), int(ActionMeasurement::State::Measured));
+    QCOMPARE(onTime.channels.size(), 1);
+    QCOMPARE(onTime.channels[0].actualMs.value(), 20.0);
+    QCOMPARE(onTime.channels[0].deviationMs.value(), 0.0);
     QTemporaryDir reportDir;
     QVERIFY(reportDir.isValid());
     QString reportError;
@@ -175,6 +184,10 @@ void IntegrationTest::twoExternalStreams() {
     const QByteArray wrapped = frame(4294960000U, 20000U);
     QCOMPARE(board.writeDatagram(wrapped, QHostAddress::LocalHost, telemetryPort), qint64(wrapped.size()));
     QTRY_VERIFY(session.actionResult(session.plan().actions[0]).contains("27.296"));
+    const ActionMeasurement late = session.measureAction(session.plan().actions[0]);
+    QCOMPARE(int(late.state), int(ActionMeasurement::State::Measured));
+    QCOMPARE(late.channels[0].actualMs.value(), 27.296);
+    QVERIFY(qAbs(late.channels[0].deviationMs.value() - 7.296) < 1e-9);
 
     QJsonObject stale = contract("BCVM_STATE", 4, run, stream);
     stale.insert("fresh", false);

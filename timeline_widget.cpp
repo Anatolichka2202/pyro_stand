@@ -4,6 +4,7 @@
 #include <QFontMetrics>
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 // ─── Оформление ───────────────────────────────────────────────────────────────
 
@@ -165,9 +166,9 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
     for (const auto &cn : nodes) {
         QColor dotColor;
         if (cn.hasT0) {
-            // T0: цвет по статусу — pending=красный (не выстрелил), иначе оранжевый
+            // Пока КП не измерен, он ожидается (нейтральный), а не считается отказом.
             dotColor = (cn.status.isEmpty() || cn.status == "pending")
-                ? TICK_FAIL : T0_COLOR;
+                ? TICK_PENDING : T0_COLOR;
         } else if (cn.status == "ok") {
             dotColor = TICK_OK;
         } else if (cn.status == "late") {

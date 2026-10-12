@@ -153,6 +153,8 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
         if (key.isEmpty() || parsed.actions.contains(key) || !inputs.isArray() || inputs.toArray().isEmpty())
             return fail(error, QStringLiteral("Неверный или повторный ключ действия"));
         ActionMapping action;
+        // Bench default: +/- 1 ms. An approved mapping may specify an override.
+        action.toleranceMs = 1.0;
         for (const QJsonValue &input : inputs.toArray()) {
             const auto parsedInput = parseInput(input);
             if (!parsedInput)
@@ -504,42 +506,87 @@ std::optional<quint32> IntegrationSession::kpTimeUs() const {
     return timestamp(m_boardFrame.channels[size_t(m_mapping.kp.index)], m_mapping.kp);
 }
 
-QString IntegrationSession::actionResult(const PlannedAction &action) const {
-    if (!m_mapping.actions.contains(action.key)) return QStringLiteral("Не сопоставлено");
-    if (m_uploadState != QStringLiteral("CONFIRMED")) return QStringLiteral("Загрузка БЦВМ не подтверждена");
-    if (!m_executionObserved) return QStringLiteral("Разрешение исполнения не подтверждено");
-    if (m_prePermissionActivity) return QStringLiteral("Кадр с сигналом получен до разрешения исполнения");
-    if (!m_boardArmed) return QStringLiteral("Плата не сброшена для этого прогона");
+ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action) const {
+    using State = ActionMeasurement::State;
+    ActionMeasurement result;
+    const auto blocked = [&result](State state, const QString &reason) {
+        result.state = state;
+        result.reason = reason;
+        return result;
+    };
+    if (!m_mapping.actions.contains(action.key))
+        return blocked(State::Unmapped, QStringLiteral("Не сопоставлено"));
+    if (m_uploadState != QStringLiteral("CONFIRMED"))
+        return blocked(State::UploadUnconfirmed, QStringLiteral("Загрузка БЦВМ не подтверждена"));
+    if (!m_executionObserved)
+        return blocked(State::ExecutionUnconfirmed, QStringLiteral("Разрешение исполнения не подтверждено"));
+    if (m_prePermissionActivity)
+        return blocked(State::PrematureActivity, QStringLiteral("Кадр с сигналом получен до разрешения исполнения"));
+    if (!m_boardArmed)
+        return blocked(State::BoardNotArmed, QStringLiteral("Плата не сброшена для этого прогона"));
     const auto kp = kpTimeUs();
-    if (!kp) return QStringLiteral("Ожидание КП");
+    if (!kp)
+        return blocked(State::WaitingForKp, QStringLiteral("Ожидание КП"));
     const int repetitions = std::count_if(m_plan.actions.cbegin(), m_plan.actions.cend(),
-                                          [&action](const PlannedAction &other) { return other.key == action.key; });
-    if (repetitions > 1) return QStringLiteral("Повтор действия: плата хранит только первый фронт");
+        [&action](const PlannedAction &other) { return other.key == action.key; });
+    if (repetitions > 1)
+        return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
     if (qAbs(qint64(action.offsetMs)) * 1000 >= (qint64(1) << 31))
-        return QStringLiteral("Интервал счётчика неоднозначен после переполнения");
+        return blocked(State::AmbiguousInterval, QStringLiteral("Интервал счётчика неоднозначен после переполнения"));
+
     const ActionMapping mapped = m_mapping.actions.value(action.key);
-    QStringList results;
+    result.toleranceMs = mapped.toleranceMs;
+    int observed = 0;
     for (const InputRef &input : mapped.inputs) {
+        ChannelMeasurement sample;
+        sample.input = input;
         const auto stamp = timestamp(m_boardFrame.channels[size_t(input.index)], input);
-        const int yps = input.index / 8 + 1;
-        const int channel = input.index % 8 + 1;
-        if (!stamp) {
-            results << QStringLiteral("ЯПС%1/%2: нет отметки").arg(yps).arg(channel);
+        if (stamp) {
+            // The board and КП share one uint32 microsecond counter.
+            // Signed subtraction handles a single wrap; longer intervals are ambiguous.
+            const qint64 deltaUs = qint32(*stamp - *kp);
+            sample.actualMs = double(deltaUs) / 1000.0;
+            sample.deviationMs = *sample.actualMs - action.offsetMs;
+            ++observed;
+        }
+        result.channels.append(sample);
+    }
+    if (observed == 0) {
+        result.state = State::WaitingForInputs;
+        result.reason = QStringLiteral("Нет отметок сопоставленных входов");
+    } else if (observed != mapped.inputs.size()) {
+        result.state = State::Partial;
+        result.reason = QStringLiteral("Часть входов без отметки");
+    } else {
+        result.state = State::Measured;
+    }
+    return result;
+}
+
+QString IntegrationSession::actionResult(const PlannedAction &action) const {
+    const ActionMeasurement result = measureAction(action);
+    using State = ActionMeasurement::State;
+    if (result.state != State::WaitingForInputs && result.state != State::Partial &&
+        result.state != State::Measured)
+        return result.reason;
+
+    QStringList lines;
+    for (const auto &sample : result.channels) {
+        const int yps = sample.input.index / 8 + 1;
+        const int channel = sample.input.index % 8 + 1;
+        if (!sample.actualMs) {
+            lines << QStringLiteral("ЯПС%1/%2: нет отметки").arg(yps).arg(channel);
             continue;
         }
-        // Both timestamps belong to the same uint32 counter; this also handles one wrap.
-        // Intervals beyond half of the counter range are ambiguous and need a new protocol.
-        const qint64 deltaUs = qint32(*stamp - *kp);
-        const double measuredMs = double(deltaUs) / 1000.0;
-        const double deviation = measuredMs - action.offsetMs;
-        QString result = QStringLiteral("ЯПС%1/%2: %3 мс, Δ %4 мс")
-                             .arg(yps).arg(channel).arg(measuredMs, 0, 'f', 3).arg(deviation, 0, 'f', 3);
-        if (mapped.toleranceMs)
-            result += qAbs(deviation) <= *mapped.toleranceMs ? QStringLiteral(" [в допуске]")
-                                                             : QStringLiteral(" [вне допуска]");
-        results << result;
+        QString line = QStringLiteral("ЯПС%1/%2: %3 мс, Δ %4 мс")
+            .arg(yps).arg(channel)
+            .arg(*sample.actualMs, 0, 'f', 3).arg(*sample.deviationMs, 0, 'f', 3);
+        if (result.toleranceMs)
+            line += qAbs(*sample.deviationMs) <= *result.toleranceMs
+                ? QStringLiteral(" [в допуске]") : QStringLiteral(" [вне допуска]");
+        lines << line;
     }
-    return results.join(QStringLiteral("; "));
+    return lines.join(QStringLiteral("; "));
 }
 
 bool IntegrationSession::saveReport(const QString &path, QString *error) {

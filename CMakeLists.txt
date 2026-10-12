@@ -17,6 +17,9 @@ add_executable(pyro_stand
     integration.h
     integration_window.cpp
     integration_window.h
+    timeline_widget.cpp
+    timeline_widget.h
+    types.h
 )
 
 target_link_libraries(pyro_stand
@@ -89,5 +92,19 @@ if(BUILD_GUI_TESTS)
     )
     add_test(NAME tst_gui COMMAND tst_gui)
     set_tests_properties(tst_gui PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Regression: restored event-centric operator HMI, not the 96-channel tester UI.
+    add_executable(tst_operator_gui
+        tests/tst_operator_gui.cpp
+        integration.cpp integration.h
+        integration_window.cpp integration_window.h
+        timeline_widget.cpp timeline_widget.h types.h
+    )
+    target_include_directories(tst_operator_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(tst_operator_gui
+        Qt6::Core Qt6::Widgets Qt6::Test Qt6::Network Qt6::SerialPort)
+    add_test(NAME tst_operator_gui COMMAND tst_operator_gui)
+    set_tests_properties(tst_operator_gui PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

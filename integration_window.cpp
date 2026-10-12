@@ -17,9 +17,11 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSplitter>
 #include <QStringList>
 #include <QVBoxLayout>
+#include <QSizePolicy>
+#include <cstdint>
+#include <limits>
 
 #include <algorithm>
 #include <cmath>
@@ -61,6 +63,20 @@ QString inputNames(const ActionMapping &mapping, bool legacy = false, bool secon
     return names.join(QStringLiteral(", "));
 }
 
+// The debug contract supplies event keys, not the legacy INI descriptions.
+// Only the four labels confirmed by the operator design are expanded.
+QString eventName(const QString &key) {
+    if (key == QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"))
+        return QStringLiteral("Зажигание пиросвечей двигателей 9–12");
+    if (key == QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_1_TO_8"))
+        return QStringLiteral("Зажигание пиросвечей двигателей 1–8");
+    if (key == QStringLiteral("CLOSE_MAIN_VALVES_ENGINES_9_TO_12"))
+        return QStringLiteral("Закрытие главных клапанов двигателей 9–12");
+    if (key == QStringLiteral("LIFT_OFF_CONTACT"))
+        return QStringLiteral("Контакт подъёма");
+    return key;
+}
+
 void cell(QTableWidget *table, int row, int col, const QString &value,
           const QColor &foreground = kNeutral, const QColor &background = QColor(),
           Qt::Alignment alignment = Qt::AlignLeft | Qt::AlignVCenter,
@@ -79,8 +95,9 @@ void cell(QTableWidget *table, int row, int col, const QString &value,
 
 QFrame *statusChip(QWidget *parent, const QString &title, QLabel **dotOut, QLabel **statusOut) {
     auto *chip = new QFrame(parent);
+    chip->setObjectName(QStringLiteral("connectionChip"));
     chip->setStyleSheet(QStringLiteral(
-        "QFrame { background:#161b22; border:1px solid #30363d; border-radius:5px; }"));
+        "QFrame#connectionChip { background:#161b22; border:1px solid #30363d; border-radius:4px; }"));
     auto *lay = new QHBoxLayout(chip);
     lay->setContentsMargins(8, 6, 9, 6);
     lay->setSpacing(8);
@@ -104,7 +121,7 @@ QFrame *statusChip(QWidget *parent, const QString &title, QLabel **dotOut, QLabe
 }
 
 void setChip(QLabel *dot, QLabel *status, bool active, const QString &message) {
-    const QString color = active ? QStringLiteral("#3fb950") : QStringLiteral("#f85149");
+    const QString color = active ? QStringLiteral("#3fb950") : QStringLiteral("#484f58");
     dot->setStyleSheet(QStringLiteral("background:%1; border:0; border-radius:4px;").arg(color));
     status->setText(message);
     status->setStyleSheet(QStringLiteral(
@@ -140,37 +157,32 @@ IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
 
 void IntegrationWindow::setupUi() {
     setWindowTitle(QStringLiteral("Пиростенд — контроль исполнения циклограммы"));
-    resize(1380, 840);
-    setMinimumSize(940, 580);
+    resize(1280, 800);
+    setMinimumSize(980, 600);
 
-    // Original summer HMI structure: main content with timer, timeline,
-    // event table and system log; narrow event journal on the right.
-    auto *splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setChildrenCollapsible(false);
-    splitter->setStyleSheet(QStringLiteral(
-        "QSplitter::handle { background:#21262d; width:3px; }"));
-    setCentralWidget(splitter);
-
-    auto *left = new QWidget(splitter);
-    auto *main = new QVBoxLayout(left);
+    // One 1280×800 operator canvas, as in FullScreen-v1.
+    auto *surface = new QWidget(this);
+    surface->setObjectName(QStringLiteral("operatorSurface"));
+    setCentralWidget(surface);
+    auto *main = new QVBoxLayout(surface);
     main->setSpacing(10);
-    main->setContentsMargins(20, 14, 10, 14);
+    main->setContentsMargins(20, 14, 20, 14);
 
     auto *top = new QHBoxLayout;
     top->setSpacing(16);
     auto *clock = new QVBoxLayout;
     clock->setSpacing(4);
-    m_clockCaption = new QLabel(QStringLiteral("ДО ПЛАНОВОГО T0 · ЧАСЫ ПК"), left);
+    m_clockCaption = new QLabel(QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)"), surface);
     m_clockCaption->setStyleSheet(QStringLiteral(
         "font-size:13px; letter-spacing:0.15em; color:#8b949e;"));
-    m_timerLabel = new QLabel(QStringLiteral("--:--"), left);
+    m_timerLabel = new QLabel(QStringLiteral("--:--"), surface);
     m_timerLabel->setObjectName(QStringLiteral("timerLabel"));
     m_timerLabel->setStyleSheet(QStringLiteral(
-        "font-size:64px; font-weight:700; color:#30363d; font-family:'JetBrains Mono';"));
+        "font-size:52px; font-weight:600; color:#484f58; font-family:'JetBrains Mono';"));
     auto *phase = new QHBoxLayout;
-    m_phaseLabel = new QLabel(QStringLiteral("● ОЖИДАНИЕ"), left);
+    m_phaseLabel = new QLabel(QStringLiteral("● ОЖИДАНИЕ"), surface);
     m_phaseLabel->setStyleSheet(QStringLiteral("font-size:13px; font-weight:600; color:#8b949e;"));
-    m_nextEventLabel = new QLabel(QStringLiteral("Нет циклограммы"), left);
+    m_nextEventLabel = new QLabel(QStringLiteral("Нет циклограммы"), surface);
     m_nextEventLabel->setStyleSheet(QStringLiteral("font-size:12px; color:#6e7681;"));
     phase->addWidget(m_phaseLabel);
     phase->addWidget(m_nextEventLabel, 1);
@@ -181,10 +193,10 @@ void IntegrationWindow::setupUi() {
     clock->addStretch();
     top->addLayout(clock, 1);
 
-    auto *controls = new QWidget(left);
+    auto *controls = new QWidget(surface);
     controls->setObjectName(QStringLiteral("ctrlCard"));
     controls->setMinimumWidth(250);
-    controls->setMaximumWidth(360);
+    controls->setMaximumWidth(340);
     controls->setStyleSheet(QStringLiteral(
         "QWidget#ctrlCard { background:#161b22; border:1px solid #30363d; border-radius:6px; }"));
     auto *ctrl = new QVBoxLayout(controls);
@@ -199,6 +211,10 @@ void IntegrationWindow::setupUi() {
     ctrl->addLayout(connection);
     ctrl->addWidget(statusChip(controls, QStringLiteral("БЦВМ / разрешение"),
                                &m_bcvmDot, &m_bcvmStatus));
+    auto *settingsCaption = new QLabel(QStringLiteral("НАСТРОЙКА И УПРАВЛЕНИЕ"), controls);
+    settingsCaption->setStyleSheet(QStringLiteral(
+        "font-size:11px; font-weight:600; color:#8b949e; border:0; background:transparent;"));
+    ctrl->addWidget(settingsCaption);
 
     auto *startBox = new QFrame(controls);
     startBox->setStyleSheet(QStringLiteral(
@@ -218,22 +234,15 @@ void IntegrationWindow::setupUi() {
     auto *reset = new QPushButton(QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"), controls);
     m_resetButton = reset;
     reset->setObjectName(QStringLiteral("resetBtn"));
-    reset->setStyleSheet(QStringLiteral(
-        "QPushButton { background:#1f6feb; color:white; border:1px solid #1f6feb;"
-        "border-radius:5px; padding:9px 10px; font-size:12px; font-weight:600; }"
-        "QPushButton:hover { background:#388bfd; }"));
     ctrl->addWidget(reset);
 
     auto *map = new QPushButton(QStringLiteral("ПОДКЛЮЧЕНИЕ ПИРОТЕСТЕРА"), controls);
     map->setObjectName(QStringLiteral("testerConfigurationBtn"));
     auto *save = new QPushButton(QStringLiteral("СОХРАНИТЬ ОТЧЁТ"), controls);
-    for (auto *button : {map, save}) {
-        button->setStyleSheet(QStringLiteral(
-            "QPushButton { background:#0d1117; color:#c8d0dc; border:1px solid #30363d;"
-            "border-radius:5px; padding:7px 10px; font-size:11px; }"
-            "QPushButton:hover { border-color:#58a6ff; color:#58a6ff; }"));
-        ctrl->addWidget(button);
-    }
+    map->setObjectName(QStringLiteral("mappingBtn"));
+    save->setObjectName(QStringLiteral("reportBtn"));
+    ctrl->addWidget(map);
+    ctrl->addWidget(save);
     top->addWidget(controls);
     main->addLayout(top);
 
@@ -261,7 +270,7 @@ void IntegrationWindow::setupUi() {
     });
 
     // Keep an operator-centric status line, not a table of all tester inputs.
-    auto *meta = new QFrame(left);
+    auto *meta = new QFrame(surface);
     meta->setStyleSheet(QStringLiteral(
         "QFrame { background:#161b22; border:1px solid #30363d; border-radius:5px; }"
         "QLabel { background:transparent; border:0; font-size:11px; color:#8b949e; }"));
@@ -280,21 +289,21 @@ void IntegrationWindow::setupUi() {
     main->addWidget(meta);
 
     // Use the original timeline painter and event-centric semantics.
-    m_timeline = new TimelineWidget(left);
+    m_timeline = new TimelineWidget(surface);
     m_timeline->setObjectName(QStringLiteral("eventTimeline"));
     m_timeline->setVisible(false);
     main->addWidget(m_timeline);
 
-    m_eventCaption = new QLabel(QStringLiteral("ОТСЛЕЖИВАЕМЫЕ СОБЫТИЯ"), left);
+    m_eventCaption = new QLabel(QStringLiteral("ОТСЛЕЖИВАЕМЫЕ СОБЫТИЯ"), surface);
     m_eventCaption->setStyleSheet(QStringLiteral(
         "font-size:12px; letter-spacing:0.2em; color:#8b949e;"));
     main->addWidget(m_eventCaption);
 
-    m_eventTable = new QTableWidget(0, 7, left);
+    m_eventTable = new QTableWidget(0, 7, surface);
     m_eventTable->setObjectName(QStringLiteral("eventTable"));
     m_eventTable->setHorizontalHeaderLabels({
         QStringLiteral("#"), QStringLiteral("СОБЫТИЕ"),
-        QStringLiteral("КАНАЛЫ СОБЫТИЯ"), QStringLiteral("ПЛАН МС"),
+        QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
         QStringLiteral("ФАКТ МС"), QStringLiteral("ОТКЛ МС"),
         QStringLiteral("СТАТУС")});
     auto *header = m_eventTable->horizontalHeader();
@@ -304,13 +313,15 @@ void IntegrationWindow::setupUi() {
         header->setSectionResizeMode(col, QHeaderView::ResizeToContents);
     m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_eventTable->setAlternatingRowColors(true);
+    m_eventTable->verticalHeader()->setDefaultSectionSize(28);
+    m_eventTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_eventTable->verticalHeader()->hide();
     m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_eventTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_eventTable->setFocusPolicy(Qt::NoFocus);
-    main->addWidget(m_eventTable, 1);
+    main->addWidget(m_eventTable);
 
-    auto *summary = new QFrame(left);
+    auto *summary = new QFrame(surface);
     summary->setStyleSheet(QStringLiteral(
         "QFrame { background:#161b22; border-top:2px solid #30363d; }"));
     auto *summaryLay = new QHBoxLayout(summary);
@@ -321,47 +332,41 @@ void IntegrationWindow::setupUi() {
     summaryLay->addWidget(m_summaryLabel);
     main->addWidget(summary);
 
-    m_log = new QTextEdit(left);
-    m_log->setObjectName(QStringLiteral("systemJournal"));
-    m_log->setReadOnly(true);
-    m_log->setMinimumHeight(80);
-    m_log->setMaximumHeight(140);
-    m_log->setStyleSheet(QStringLiteral(
-        "QTextEdit { background:#0d1117; border:1px solid #21262d; border-radius:4px;"
-        "color:#8b949e; font-size:11px; font-family:'JetBrains Mono'; padding:4px; }"));
-    main->addWidget(m_log);
+    auto *journalCaption = new QLabel(QStringLiteral("ЖУРНАЛ СЕССИИ"), surface);
+    journalCaption->setObjectName(QStringLiteral("journalCaption"));
+    journalCaption->setStyleSheet(QStringLiteral(
+        "font-size:11px; font-weight:600; color:#8b949e;"));
+    main->addWidget(journalCaption);
 
-    auto *right = new QWidget(splitter);
-    right->setMinimumWidth(175);
-    auto *rightLay = new QVBoxLayout(right);
-    rightLay->setContentsMargins(4, 14, 14, 14);
-    rightLay->setSpacing(6);
-    auto *eventCaption = new QLabel(QStringLiteral("СРАБАТЫВАНИЯ"), right);
-    eventCaption->setStyleSheet(QStringLiteral(
-        "font-size:11px; font-weight:600; letter-spacing:0.2em; color:#8b949e;"));
-    rightLay->addWidget(eventCaption);
-    auto *eventSub = new QLabel(QStringLiteral("события циклограммы"), right);
-    eventSub->setStyleSheet(QStringLiteral("font-size:10px; color:#484f58;"));
-    rightLay->addWidget(eventSub);
-    m_eventLog = new QTextEdit(right);
+    m_eventLog = new QTextEdit(surface);
     m_eventLog->setObjectName(QStringLiteral("eventJournal"));
     m_eventLog->setReadOnly(true);
+    m_eventLog->setMinimumHeight(105);
+    m_eventLog->setMaximumHeight(190);
     m_eventLog->setStyleSheet(QStringLiteral(
-        "QTextEdit { background:#0a0c10; border:1px solid #21262d; border-radius:4px;"
-        "color:#3fb950; font-size:12px; font-family:'JetBrains Mono'; padding:6px; }"));
-    rightLay->addWidget(m_eventLog, 1);
+        "QTextEdit { background:#161b22; border:1px solid #30363d; border-radius:4px;"
+        "color:#c8d0dc; font-size:11px; font-family:'JetBrains Mono'; padding:4px 8px; }"));
+    main->addWidget(m_eventLog, 1);
+}
 
-    splitter->addWidget(left);
-    splitter->addWidget(right);
-    splitter->setStretchFactor(0, 4);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({1080, 280});
+void IntegrationWindow::appendJournal(const QString &level, const QString &message,
+                                      const QString &color) {
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+    // Qt rich text has no reliable border-left; use the spec's visible ▌ glyph.
+    m_eventLog->append(QStringLiteral(
+        "<span style=\"color:%1;\">▌</span>  "
+        "<span style=\"color:#8b949e;\">%2</span>  "
+        "<span style=\"color:%1; font-weight:600;\">%3</span>  "
+        "<span style=\"color:#c8d0dc;\">%4</span>")
+        .arg(color, stamp.toHtmlEscaped(), level.toHtmlEscaped(), message.toHtmlEscaped()));
 }
 
 void IntegrationWindow::appendMessage(const QString &message) {
-    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
-    m_log->append(QStringLiteral("<span style=\"color:#6e7681;\">%1</span> %2")
-        .arg(stamp.toHtmlEscaped(), message.toHtmlEscaped()));
+    const bool error = message.contains(QStringLiteral("ошиб"), Qt::CaseInsensitive) ||
+                       message.contains(QStringLiteral("не удалось"), Qt::CaseInsensitive) ||
+                       message.contains(QStringLiteral("сбой"), Qt::CaseInsensitive);
+    appendJournal(error ? QStringLiteral("ОШИБКА") : QStringLiteral("INFO"), message,
+                  error ? QStringLiteral("#f85149") : QStringLiteral("#8b949e"));
 }
 
 void IntegrationWindow::updatePlannedClock() {
@@ -383,13 +388,18 @@ void IntegrationWindow::updatePlannedClock() {
     m_timeline->setPlayheadMs(INT64_MIN);
     if (!m_session.hasPlan() || !m_session.plan().t0Utc.isValid()) {
         m_timerLabel->setText(QStringLiteral("--:--"));
+        m_timerLabel->setStyleSheet(QStringLiteral(
+            "font-size:52px; font-weight:600; color:#484f58; font-family:'JetBrains Mono';"));
+        m_clockCaption->setText(QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)"));
         return;
     }
-    // This is explicitly the PC's UTC clock, NOT the tester's hardware counter.
+    // This PC UTC clock is not the tester's physical microsecond counter.
     const qint64 deltaMs = QDateTime::currentDateTimeUtc().msecsTo(m_session.plan().t0Utc);
     const bool before = deltaMs > 0;
-    m_clockCaption->setText(before ? QStringLiteral("ДО ПЛАНОВОГО T0 · ЧАСЫ ПК")
-                                   : QStringLiteral("ПОСЛЕ ПЛАНОВОГО T0 · ЧАСЫ ПК"));
+    const bool kpConfirmed = m_session.measurementEligible() &&
+                             m_session.kpTimeUs().has_value();
+    m_clockCaption->setText(before ? QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)")
+        : QStringLiteral("ПОСЛЕ ПЛАНОВОГО T0 · ЧАСЫ ПК (UTC)"));
     const qint64 seconds = qAbs(deltaMs) / 1000;
     const QString display = seconds >= 3600
         ? QStringLiteral("%1:%2:%3")
@@ -399,13 +409,15 @@ void IntegrationWindow::updatePlannedClock() {
         : QStringLiteral("%1:%2")
             .arg(seconds / 60, 2, 10, QChar('0'))
             .arg(seconds % 60, 2, 10, QChar('0'));
-    m_timerLabel->setText(before ? display : QStringLiteral("+") + display);
+    m_timerLabel->setText(display);
+    const QString color = kpConfirmed ? QStringLiteral("#3fb950")
+        : (before && m_session.uploadState() == QStringLiteral("CONFIRMED")
+           ? QStringLiteral("#e3b341") : QStringLiteral("#8b949e"));
     m_timerLabel->setStyleSheet(QStringLiteral(
-        "font-size:64px; font-weight:700; font-family:'JetBrains Mono'; color:%1;")
-        .arg(before ? QStringLiteral("#e3b341") : QStringLiteral("#58a6ff")));
+        "font-size:52px; font-weight:600; font-family:'JetBrains Mono'; color:%1;").arg(color));
     m_timerLabel->setToolTip(QStringLiteral(
-        "Только разница между плановым T0 UTC и текущими часами ПК. "
-        "Не является временем исполнения, полученным от платы."));
+        "Время до/после планового T0 UTC по часам ПК. "
+        "Зелёный подтверждает наличие КП, но не означает синхронизацию ПК с платой."));
 }
 
 void IntegrationWindow::configureTester() {
@@ -552,9 +564,11 @@ void IntegrationWindow::refresh() {
     m_startTimeLabel->setToolTip(hasPlan ? m_session.plan().t0Utc.toString(Qt::ISODateWithMs)
                                         : QString());
 
-    m_uploadStatus->setText(QStringLiteral("ЦИКЛОГРАММА · %1 · upload_id: %2")
-        .arg(m_session.uploadState(),
-             m_session.uploadId().isEmpty() ? QStringLiteral("—") : m_session.uploadId()));
+    m_uploadStatus->setText(QStringLiteral("ЦИКЛОГРАММА · %1")
+        .arg(uploaded ? QStringLiteral("ЗАГРУЗКА ПОДТВЕРЖДЕНА")
+                      : QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА")));
+    m_uploadStatus->setToolTip(QStringLiteral("Состояние: %1\nID загрузки: %2")
+        .arg(m_session.uploadState(), m_session.uploadId()));
     m_kpStatus->setText(kpKnown
         ? QStringLiteral("КП · зафиксирован на счётчике платы: %1 мкс; относительный ноль = 0 мс")
               .arg(*m_session.kpTimeUs())
@@ -569,8 +583,9 @@ void IntegrationWindow::refresh() {
         "UTC БЦВМ при загрузке: %1 · синхронизация с платой не подтверждена")
         .arg(m_session.bcvmUtc().isEmpty()
             ? QStringLiteral("неизвестно") : m_session.bcvmUtc()));
-    m_uploadStatus->setToolTip(m_session.cyclogramSha256().isEmpty()
-        ? QString() : QStringLiteral("SHA-256 циклограммы: ") + m_session.cyclogramSha256());
+    if (!m_session.cyclogramSha256().isEmpty())
+        m_uploadStatus->setToolTip(m_uploadStatus->toolTip() +
+            QStringLiteral("\nSHA-256 циклограммы: ") + m_session.cyclogramSha256());
 
     if (m_lastUploadId != m_session.uploadId()) {
         m_lastUploadId = m_session.uploadId();
@@ -622,29 +637,27 @@ void IntegrationWindow::refresh() {
             : QStringLiteral("Ожидание циклограммы от КАСУ ПП"));
     }
 
-    // Keep the original multichannel subrows, now strictly restricted to
-    // inputs assigned to a planned event by the approved mapping.
-    int displayCount = 0;
-    for (const auto &row : rows) {
-        ++displayCount;
-        if (!row.physicalKp) {
-            const auto mapped = m_session.mapping().actions.value(row.plan.key);
-            if (mapped.inputs.size() > 1) displayCount += mapped.inputs.size();
-        }
-    }
-    if (m_eventTable->rowCount() != displayCount)
-        m_eventTable->setRowCount(displayCount);
+    // Exactly one row per tracked cyclogram action; input details stay in
+    // the tooltip and JSON report, not in a 96-channel diagnostic table.
+    if (m_eventTable->rowCount() != rows.size())
+        m_eventTable->setRowCount(rows.size());
+    const int height = m_eventTable->horizontalHeader()->sizeHint().height() +
+                       8 + qBound(2, rows.size(), 12) * 28;
+    m_eventTable->setMaximumHeight(qMax(118, height));
 
     int completed = 0, deviations = 0, waiting = 0, unevaluated = 0;
+    double maxDeviationMs = 0.0;
+    double latestMeasuredMs = -std::numeric_limits<double>::infinity();
     bool foundAwaited = false;
     int tableRow = 0;
     for (const auto &row : rows) {
         const auto &action = row.plan;
-        const QColor rowBg = row.physicalKp ? QColor("#132434") : QColor();
+        const QColor rowBg;
         QString facts = QStringLiteral("—"), delta = QStringLiteral("—");
         QString status, tooltip;
         QColor statusColor = kDim;
         QColor bg = rowBg;
+        bool nextPending = false;
         ActionMeasurement evaluation;
         QString stateKey = QString::number(action.ordinal) + QStringLiteral(":") + action.key;
 
@@ -656,6 +669,11 @@ void IntegrationWindow::refresh() {
                 "КП является физическим нулём аппаратной шкалы. "
                 "Отклонение от планового UTC без подтверждённой синхронизации не вычисляется.");
             m_timeline->markEventFired(action.ordinal, kpKnown ? QStringLiteral("ok") : QString());
+            if (!kpKnown && !foundAwaited) {
+                nextPending = true;
+                foundAwaited = true;
+                m_nextEventLabel->setText(QStringLiteral("Ожидание контакта подъёма"));
+            }
         } else {
             evaluation = m_session.measureAction(action);
             if (evaluation.channels.isEmpty()) {
@@ -672,6 +690,8 @@ void IntegrationWindow::refresh() {
                 bool inTolerance = true;
                 for (const auto &sample : evaluation.channels) {
                     lastMs = std::max(lastMs, *sample.actualMs);
+                    latestMeasuredMs = std::max(latestMeasuredMs, *sample.actualMs);
+                    maxDeviationMs = std::max(maxDeviationMs, std::abs(*sample.deviationMs));
                     if (evaluation.toleranceMs &&
                         std::abs(*sample.deviationMs) > *evaluation.toleranceMs)
                         inTolerance = false;
@@ -702,12 +722,10 @@ void IntegrationWindow::refresh() {
                     : inTolerance ? QStringLiteral("ok") : QStringLiteral("fail"));
                 const QString logValue = status + QStringLiteral("|") + facts + QStringLiteral("|") + delta;
                 if (m_loggedStates.value(stateKey) != logValue) {
-                    m_eventLog->append(QStringLiteral(
-                        "<span style=\"color:#8b949e;\">%1</span> %2<br/>"
-                        "<span style=\"color:%3;\">%4 · факт %5 мс · Δ %6 мс</span>")
-                        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")).toHtmlEscaped(),
-                             action.key.toHtmlEscaped(), statusColor.name(), status.toHtmlEscaped(),
-                             facts, delta));
+                    appendJournal(QStringLiteral("СОБЫТ."),
+                                  QStringLiteral("%1 · %2 · факт %3 мс · Δ %4 мс")
+                                      .arg(eventName(action.key), status, facts, delta),
+                                  statusColor.name());
                 }
                 m_loggedStates.insert(stateKey, logValue);
             } else {
@@ -724,19 +742,37 @@ void IntegrationWindow::refresh() {
                     statusColor = kAmber;
                     ++unevaluated;
                 }
+                for (const auto &sample : evaluation.channels)
+                    if (sample.actualMs)
+                        latestMeasuredMs = std::max(latestMeasuredMs, *sample.actualMs);
                 if (!foundAwaited) {
-                    m_nextEventLabel->setText(QStringLiteral("Без факта: ") + action.key);
+                    m_nextEventLabel->setText(QStringLiteral("Без факта: ") + eventName(action.key));
+                    nextPending = true;
                     foundAwaited = true;
                 }
                 m_loggedStates.remove(stateKey);
             }
         }
 
+        if (!row.physicalKp) {
+            QStringList details;
+            for (const auto &sample : evaluation.channels)
+                details << QStringLiteral("%1 · %2")
+                    .arg(inputName(sample.input),
+                         sample.actualMs ? QStringLiteral("%1 мс · Δ %2 мс")
+                             .arg(*sample.actualMs, 0, 'f', 3)
+                             .arg(*sample.deviationMs, 0, 'f', 3)
+                             : QStringLiteral("нет отметки"));
+            tooltip = QStringLiteral("Ключ: %1\n%2").arg(action.key, tooltip);
+            if (!details.isEmpty()) tooltip += QStringLiteral("\n") + details.join(QStringLiteral("\n"));
+        }
+        if (nextPending) bg = QColor("#1c2d3a");
         cell(m_eventTable, tableRow, 0,
              row.physicalKp ? QStringLiteral("КП") : QString::number(action.ordinal),
-             kDim, bg, Qt::AlignCenter);
+             nextPending ? QColor("#0d1117") : kDim,
+             nextPending ? QColor("#58a6ff") : bg, Qt::AlignCenter);
         cell(m_eventTable, tableRow, 1,
-             row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : action.key,
+             row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : eventName(action.key),
              kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 2,
              row.physicalKp ? inputName(m_session.mapping().kp, legacy, secondOnly)
@@ -752,6 +788,7 @@ void IntegrationWindow::refresh() {
              Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         ++tableRow;
 
+<<<<<<< HEAD
         if (!row.physicalKp && evaluation.channels.size() > 1) {
             for (const auto &sample : evaluation.channels) {
                 const QColor subBg("#080c12");
@@ -780,12 +817,20 @@ void IntegrationWindow::refresh() {
                 ++tableRow;
             }
         }
+=======
+>>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
     }
     if (!foundAwaited && !rows.isEmpty())
         m_nextEventLabel->setText(QStringLiteral("Назначенные события: %1").arg(rows.size()));
     m_summaryLabel->setText(QStringLiteral(
-        "ФАКТ: %1 / %2    ·    ОТКЛОНЕНИЯ: %3    ·    ОЖИДАЮТ: %4    ·    БЕЗ ОЦЕНКИ: %5")
+        "РЕЗУЛЬТАТ · ИЗМЕРЕНО: %1 / %2  ·  ВНЕ ДОПУСКА: %3  ·  "
+        "ОЖИДАНИЕ: %4  ·  БЕЗ ОЦЕНКИ: %5  ·  МАКС. |Δ|: %6 мс")
         .arg(completed).arg(rows.size() - int(m_session.mapping().kp.index >= 0 && !explicitKp))
-        .arg(deviations).arg(waiting).arg(unevaluated));
+        .arg(deviations).arg(waiting).arg(unevaluated)
+        .arg(completed ? QString::number(maxDeviationMs, 'f', 3) : QStringLiteral("—")));
+    // The marker tracks the latest physical relative measurement, not PC UTC.
+    m_timeline->setPlayheadMs(kpKnown && std::isfinite(latestMeasuredMs)
+        ? int64_t(std::llround(latestMeasuredMs))
+        : std::numeric_limits<int64_t>::min());
     updatePlannedClock();
 }

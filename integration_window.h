@@ -24,7 +24,11 @@ private:
     void refresh();
     void updatePlannedClock();
     void appendMessage(const QString &text);
+<<<<<<< HEAD
     void configureTester();
+=======
+    void appendJournal(const QString &level, const QString &message, const QString &color);
+>>>>>>> bb14c8941144af1cc1682efb526040b30bd1061b
 
     IntegrationSession m_session;
     QTimer m_refreshTimer;
@@ -52,7 +56,6 @@ private:
     TimelineWidget *m_timeline = nullptr;
     QTableWidget *m_eventTable = nullptr;
     QTextEdit *m_eventLog = nullptr;
-    QTextEdit *m_log = nullptr;
 
     QString m_lastUploadId;
     QString m_timelineSignature;

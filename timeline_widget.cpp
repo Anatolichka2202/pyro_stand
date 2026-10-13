@@ -165,7 +165,11 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
     // ── Рисуем узлы ─────────────────────────────────────────────────────────
     for (const auto &cn : nodes) {
         QColor dotColor;
-        if (cn.hasT0) {
+        if (cn.status == "fail") {
+            dotColor = TICK_FAIL;
+        } else if (cn.status == "late") {
+            dotColor = TICK_NEAR;
+        } else if (cn.hasT0) {
             // Пока КП не измерен, он ожидается (нейтральный), а не считается отказом.
             dotColor = (cn.status.isEmpty() || cn.status == "pending")
                 ? TICK_PENDING : T0_COLOR;
@@ -200,7 +204,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
             : (cn.hasT0 ? "T0" : QString::number(cn.displayIdx));
 
         const int tw = fm.horizontalAdvance(topLabel);
-        p.setPen(cn.hasT0 ? T0_COLOR : dotColor);
+        p.setPen(cn.hasT0 && cn.status != "fail" && cn.status != "late" ? T0_COLOR : dotColor);
         p.drawText(cn.x - tw / 2, axisY - r - 3, topLabel);
 
         // Временная метка под осью

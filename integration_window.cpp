@@ -14,6 +14,7 @@
 #include <QFileDialog>
 #include <QFrame>
 #include <QHeaderView>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
@@ -57,9 +58,25 @@ QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = 
         .arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
 }
 
+QString compactInput(const InputRef &input, bool legacy, bool secondOnly) {
+    return legacy
+        ? QStringLiteral("%1: %2").arg(input.index >= 8 || secondOnly
+            ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1")).arg(input.index % 8 + 1)
+        : QStringLiteral("ЯПС %1: %2 %3").arg(input.index / 8 + 1)
+            .arg(input.index % 8 + 1).arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
+}
+
 QString inputNames(const ActionMapping &mapping, bool legacy = false, bool secondOnly = false) {
     QStringList names;
-    for (const auto &input : mapping.inputs) names << inputName(input, legacy, secondOnly);
+    int previousGroup = -1;
+    for (const auto &input : mapping.inputs) {
+        const int group = input.index / 8;
+        names << (group == previousGroup
+            ? QString::number(input.index % 8 + 1) +
+                (legacy ? QString() : (input.falling ? QStringLiteral(" ↓") : QStringLiteral(" ↑")))
+            : compactInput(input, legacy, secondOnly));
+        previousGroup = group;
+    }
     return names.join(QStringLiteral(", "));
 }
 
@@ -165,10 +182,13 @@ void IntegrationWindow::setupUi() {
     surface->setObjectName(QStringLiteral("operatorSurface"));
     setCentralWidget(surface);
     auto *main = new QVBoxLayout(surface);
-    main->setSpacing(10);
+    main->setSpacing(8);
     main->setContentsMargins(20, 14, 20, 14);
 
-    auto *top = new QHBoxLayout;
+    auto *topWidget = new QWidget(surface);
+    topWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *top = new QHBoxLayout(topWidget);
+    top->setContentsMargins(0, 0, 0, 0);
     top->setSpacing(16);
     auto *clock = new QVBoxLayout;
     clock->setSpacing(4);
@@ -195,22 +215,22 @@ void IntegrationWindow::setupUi() {
 
     auto *controls = new QWidget(surface);
     controls->setObjectName(QStringLiteral("ctrlCard"));
-    controls->setMinimumWidth(250);
-    controls->setMaximumWidth(340);
+    controls->setMinimumWidth(530);
+    controls->setMaximumWidth(640);
     controls->setStyleSheet(QStringLiteral(
         "QWidget#ctrlCard { background:#161b22; border:1px solid #30363d; border-radius:6px; }"));
     auto *ctrl = new QVBoxLayout(controls);
-    ctrl->setSpacing(8);
-    ctrl->setContentsMargins(10, 10, 10, 10);
+    ctrl->setSpacing(6);
+    ctrl->setContentsMargins(10, 8, 10, 8);
     auto *connection = new QHBoxLayout;
     connection->setSpacing(6);
     connection->addWidget(statusChip(controls, QStringLiteral("Debug КАСУ ПП"),
                                      &m_debugDot, &m_debugStatus));
     connection->addWidget(statusChip(controls, QStringLiteral("Плата"),
                                      &m_boardDot, &m_boardStatus));
-    ctrl->addLayout(connection);
-    ctrl->addWidget(statusChip(controls, QStringLiteral("БЦВМ / разрешение"),
+    connection->addWidget(statusChip(controls, QStringLiteral("БЦВМ / разрешение"),
                                &m_bcvmDot, &m_bcvmStatus));
+    ctrl->addLayout(connection);
     auto *settingsCaption = new QLabel(QStringLiteral("НАСТРОЙКА И УПРАВЛЕНИЕ"), controls);
     settingsCaption->setStyleSheet(QStringLiteral(
         "font-size:11px; font-weight:600; color:#8b949e; border:0; background:transparent;"));
@@ -234,16 +254,19 @@ void IntegrationWindow::setupUi() {
     auto *reset = new QPushButton(QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"), controls);
     m_resetButton = reset;
     reset->setObjectName(QStringLiteral("resetBtn"));
-    ctrl->addWidget(reset);
+    auto *actions = new QHBoxLayout;
+    actions->setSpacing(6);
+    actions->addWidget(reset);
 
     auto *map = new QPushButton(QStringLiteral("ПОДКЛЮЧЕНИЕ ПИРОТЕСТЕРА"), controls);
     map->setObjectName(QStringLiteral("testerConfigurationBtn"));
     auto *save = new QPushButton(QStringLiteral("СОХРАНИТЬ ОТЧЁТ"), controls);
     save->setObjectName(QStringLiteral("reportBtn"));
-    ctrl->addWidget(map);
-    ctrl->addWidget(save);
+    actions->addWidget(map);
+    actions->addWidget(save);
+    ctrl->addLayout(actions);
     top->addWidget(controls);
-    main->addLayout(top);
+    main->addWidget(topWidget);
 
     connect(reset, &QPushButton::clicked, this, [this] {
         const auto answer = QMessageBox::question(
@@ -273,7 +296,9 @@ void IntegrationWindow::setupUi() {
     meta->setStyleSheet(QStringLiteral(
         "QFrame { background:#161b22; border:1px solid #30363d; border-radius:5px; }"
         "QLabel { background:transparent; border:0; font-size:11px; color:#8b949e; }"));
-    auto *metaLay = new QVBoxLayout(meta);
+    auto *metaLay = new QGridLayout(meta);
+    metaLay->setColumnStretch(0, 1);
+    metaLay->setColumnStretch(1, 1);
     metaLay->setContentsMargins(10, 6, 10, 6);
     metaLay->setSpacing(3);
     m_uploadStatus = new QLabel(meta);
@@ -284,11 +309,14 @@ void IntegrationWindow::setupUi() {
     m_streamStatus = new QLabel(meta);
     m_streamStatus->setObjectName(QStringLiteral("legacyStreamsStatus"));
     m_streamStatus->setWordWrap(true);
-    metaLay->addWidget(m_uploadStatus);
-    metaLay->addWidget(m_kpStatus);
-    metaLay->addWidget(m_mappingStatus);
-    metaLay->addWidget(m_clockStatus);
-    metaLay->addWidget(m_streamStatus);
+    m_uploadStatus->setWordWrap(true);
+    m_kpStatus->setWordWrap(true);
+    m_mappingStatus->setWordWrap(true);
+    metaLay->addWidget(m_uploadStatus, 0, 0);
+    metaLay->addWidget(m_kpStatus, 0, 1);
+    metaLay->addWidget(m_mappingStatus, 1, 0);
+    metaLay->addWidget(m_clockStatus, 1, 1);
+    metaLay->addWidget(m_streamStatus, 2, 0, 1, 2);
     main->addWidget(meta);
 
     // Use the original timeline painter and event-centric semantics.
@@ -317,12 +345,16 @@ void IntegrationWindow::setupUi() {
     m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_eventTable->setAlternatingRowColors(true);
     m_eventTable->verticalHeader()->setDefaultSectionSize(28);
-    m_eventTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_eventTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    header->setSectionResizeMode(2, QHeaderView::Fixed);
+    header->resizeSection(2, 180);
+    header->setSectionResizeMode(6, QHeaderView::Fixed);
+    header->resizeSection(6, 185);
     m_eventTable->verticalHeader()->hide();
     m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_eventTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_eventTable->setFocusPolicy(Qt::NoFocus);
-    main->addWidget(m_eventTable);
+    main->addWidget(m_eventTable, 1);
 
     auto *summary = new QFrame(surface);
     summary->setStyleSheet(QStringLiteral(
@@ -344,12 +376,12 @@ void IntegrationWindow::setupUi() {
     m_eventLog = new QTextEdit(surface);
     m_eventLog->setObjectName(QStringLiteral("eventJournal"));
     m_eventLog->setReadOnly(true);
-    m_eventLog->setMinimumHeight(105);
-    m_eventLog->setMaximumHeight(190);
+    m_eventLog->setMinimumHeight(70);
+    m_eventLog->setMaximumHeight(100);
     m_eventLog->setStyleSheet(QStringLiteral(
         "QTextEdit { background:#161b22; border:1px solid #30363d; border-radius:4px;"
         "color:#c8d0dc; font-size:11px; font-family:'JetBrains Mono'; padding:4px 8px; }"));
-    main->addWidget(m_eventLog, 1);
+    main->addWidget(m_eventLog);
 }
 
 void IntegrationWindow::appendJournal(const QString &level, const QString &message,
@@ -380,10 +412,16 @@ void IntegrationWindow::updatePlannedClock() {
                 ? QStringLiteral("ПОСЛЕ КП · СЧЁТЧИК COM")
                 : QStringLiteral("ПОСЛЕ КП БКД-А-1 · СЧЁТЧИК COM"))
                                       : QStringLiteral("ПОСЛЕДНЯЯ ОТМЕТКА ПЛАТЫ · КП"));
-        m_timerLabel->setText(QStringLiteral("+%1.%2")
-            .arg(qint64(*measured) / 1000).arg(qint64(*measured) % 1000, 3, 10, QChar('0')));
+        const qint64 elapsed = qint64(*measured);
+        const qint64 seconds = elapsed / 1000;
+        const QString minutesSeconds = QStringLiteral("%1:%2.%3")
+            .arg((seconds / 60) % 60, 2, 10, QChar('0'))
+            .arg(seconds % 60, 2, 10, QChar('0')).arg((elapsed % 1000) / 100);
+        m_timerLabel->setText(seconds >= 3600
+            ? QStringLiteral("%1:").arg(seconds / 3600, 2, 10, QChar('0')) + minutesSeconds
+            : minutesSeconds);
         m_timerLabel->setStyleSheet(QStringLiteral(
-            "font-size:64px; font-weight:700; font-family:'JetBrains Mono'; color:#3fb950;"));
+            "font-size:52px; font-weight:600; font-family:'JetBrains Mono'; color:#3fb950;"));
         m_timerLabel->setToolTip(legacy
             ? QStringLiteral("Индекс последнего принятого байта минус индекс КП8 того же COM; один байт = 1 мс")
             : QStringLiteral("Последняя известная отметка сопоставленного входа относительно КП. Между событиями часы ПК её не продвигают."));
@@ -700,6 +738,8 @@ void IntegrationWindow::refresh() {
         m_eventTable->setRowCount(displayCount);
     const int height = m_eventTable->horizontalHeader()->sizeHint().height() +
                        8 + std::clamp(displayCount, 2, 12) * 28;
+    m_eventTable->setMinimumHeight(m_eventTable->horizontalHeader()->sizeHint().height() +
+        (std::min)(6, displayCount) * 28 + 4);
     m_eventTable->setMaximumHeight((std::max)(118, height));
 
     int completed = 0, deviations = 0, waiting = 0, unevaluated = 0;
@@ -815,7 +855,7 @@ void IntegrationWindow::refresh() {
             QStringList details;
             for (const auto &sample : evaluation.channels)
                 details << QStringLiteral("%1 · %2")
-                    .arg(inputName(sample.input),
+                    .arg(inputName(sample.input, legacy, secondOnly),
                          sample.actualMs ? QStringLiteral("%1 мс · Δ %2 мс")
                              .arg(*sample.actualMs, 0, 'f', 3)
                              .arg(*sample.deviationMs, 0, 'f', 3)
@@ -832,9 +872,9 @@ void IntegrationWindow::refresh() {
              row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : eventName(action.key),
              kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 2,
-             row.physicalKp ? inputName(m_session.mapping().kp, legacy, secondOnly)
+             row.physicalKp ? compactInput(m_session.mapping().kp, legacy, secondOnly)
                  : inputNames(m_session.mapping().actions.value(action.key), legacy, secondOnly),
-             kDim, bg, Qt::AlignLeft | Qt::AlignVCenter);
+             kDim, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
              kDim, bg, Qt::AlignRight | Qt::AlignVCenter);
         cell(m_eventTable, tableRow, 4, facts, kNeutral, bg, Qt::AlignRight | Qt::AlignVCenter,
@@ -860,7 +900,8 @@ void IntegrationWindow::refresh() {
                 cell(m_eventTable, tableRow, 0, QString(), kDim, subBg);
                 cell(m_eventTable, tableRow, 1, QStringLiteral("    ↳ ") + inputName(sample.input, legacy, secondOnly),
                      kDim, subBg);
-                cell(m_eventTable, tableRow, 2, inputName(sample.input, legacy, secondOnly), kDim, subBg);
+                cell(m_eventTable, tableRow, 2, compactInput(sample.input, legacy, secondOnly), kDim, subBg,
+                     Qt::AlignLeft | Qt::AlignVCenter, inputName(sample.input, legacy, secondOnly));
                 cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
                      kDim, subBg, Qt::AlignRight | Qt::AlignVCenter);
                 cell(m_eventTable, tableRow, 4,
@@ -879,7 +920,8 @@ void IntegrationWindow::refresh() {
     m_summaryLabel->setText(QStringLiteral(
         "РЕЗУЛЬТАТ · ИЗМЕРЕНО: %1 / %2  ·  ВНЕ ДОПУСКА: %3  ·  "
         "ОЖИДАНИЕ: %4  ·  БЕЗ ОЦЕНКИ: %5  ·  МАКС. |Δ|: %6 мс")
-        .arg(completed).arg(rows.size() - int(m_session.mapping().kp.index >= 0 && !explicitKp))
+        .arg(completed).arg(std::count_if(rows.cbegin(), rows.cend(),
+            [](const DisplayAction &row) { return !row.physicalKp; }))
         .arg(deviations).arg(waiting).arg(unevaluated)
         .arg(completed ? QString::number(maxDeviationMs, 'f', 3) : QStringLiteral("—")));
     // The marker tracks the latest physical relative measurement, not PC UTC.

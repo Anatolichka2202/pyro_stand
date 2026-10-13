@@ -81,6 +81,8 @@ private slots:
     void legacyIndependentCounters();
     void legacyStreamHealth();
     void evidenceIsolation();
+    void resetDiscardsPartialSerialFrame();
+    void failedExportPreservesEvidence();
 };
 
 void IntegrationTest::builtInBenchProfile() {
@@ -297,6 +299,51 @@ void IntegrationTest::evidenceIsolation() {
     QString writeError;
     QVERIFY(!session.saveReport(dir.filePath("invalid.json"), &writeError));
     QVERIFY(writeError.contains(QStringLiteral("Журнал доказательств")));
+}
+
+void IntegrationTest::resetDiscardsPartialSerialFrame() {
+    IntegrationSession::Options options;
+    options.boardTransport = IntegrationSession::BoardTransport::Serial;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationSession session(options);
+    const QByteArray emptyFrame = frame();
+    session.m_serialBuffer = emptyFrame.first(500);
+    QVERIFY(session.resetBoard());
+    QVERIFY(session.m_serialBuffer.isEmpty());
+    session.m_serialBuffer.append(emptyFrame.mid(500));
+    session.receiveSerial();
+    QVERIFY(!session.boardArmed());
+    QCOMPARE(session.acceptedFrames(), quint64(0));
+    session.m_serialBuffer.append(emptyFrame);
+    session.receiveSerial();
+    QVERIFY(session.boardArmed());
+    QCOMPARE(session.acceptedFrames(), quint64(1));
+
+    session.m_serialBuffer = emptyFrame.first(500);
+    session.resetDebugState();
+    QVERIFY(session.m_serialBuffer.isEmpty());
+}
+
+void IntegrationTest::failedExportPreservesEvidence() {
+    IntegrationSession session(IntegrationSession::Options{});
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QByteArray first = frame(1000000, 1020000);
+    const QByteArray second = frame(2000000, 2020000);
+    session.processFrame(first);
+    QString error;
+    QVERIFY(!session.saveReport(dir.filePath("missing/report.json"), &error));
+    session.processFrame(second);
+    const QString report = dir.filePath("report.json");
+    QVERIFY2(session.saveReport(report, &error), qPrintable(error));
+    QFile evidence(report + ".frames.jsonl");
+    QVERIFY(evidence.open(QIODevice::ReadOnly));
+    const auto lines = evidence.readAll().trimmed().split('\n');
+    QCOMPARE(lines.size(), 2);
+    QCOMPARE(QJsonDocument::fromJson(lines[0]).object().value("frame_base64").toString(),
+             QString::fromLatin1(first.toBase64()));
+    QCOMPARE(QJsonDocument::fromJson(lines[1]).object().value("frame_base64").toString(),
+             QString::fromLatin1(second.toBase64()));
 }
 
 void IntegrationTest::boardFrameValidation() {

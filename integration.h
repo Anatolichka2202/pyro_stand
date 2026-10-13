@@ -168,6 +168,7 @@ signals:
 
 private:
     friend class IntegrationTest;
+    friend class OperatorGuiTest;
     void connectDebug();
     void readDebug();
     void processDebug(const QJsonObject &object);
@@ -178,6 +179,7 @@ private:
     void processLegacyBytes(const QByteArray &raw, int stream = 0);
     void updateBenchMapping();
     bool clearFrameEvidence();
+    bool discardPendingBoardData();
     void resetCollectionEvidence(bool resetDebugEvidence);
     void applyFrame(const BoardFrame &frame);
     void recordFrame(const QByteArray &raw, const QString &error = {});

@@ -5,6 +5,8 @@
 #include <QTableWidget>
 #include <QLabel>
 #include <QPushButton>
+#include <QMessageBox>
+#include <QTimer>
 #include "../mainwindow.h"
 #include "../stand.h"
 #include "../mocks/mock_serial.h"
@@ -52,8 +54,24 @@ static MainWindow *makeWindow(MockSerial *mock, const QString &cyclogramPath,
 class TstGui : public QObject
 {
     Q_OBJECT
+    QTimer m_dialogCloser;
 
 private slots:
+    void initTestCase()
+    {
+        // dropAfter deliberately disconnects the mock. A modal error must not
+        // block an offscreen test indefinitely; unexpected errors still fail.
+        connect(&m_dialogCloser, &QTimer::timeout, this, [] {
+            for (auto *widget : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QMessageBox *>(widget);
+                if (!dialog || !dialog->isVisible()) continue;
+                if (!dialog->text().contains(QStringLiteral("MockSerial: port dropped")))
+                    QTest::qFail(qPrintable(dialog->text()), __FILE__, __LINE__);
+                dialog->accept();
+            }
+        });
+        m_dialogCloser.start(10);
+    }
 
     // ── Scenario 1: all events fire on time ──────────────────────────────────
     void fullFlightSuccess()
@@ -75,7 +93,7 @@ private slots:
         // Table populated after loadCyclogram
         auto *table = w->findChild<QTableWidget*>();
         QVERIFY(table);
-        QCOMPARE(table->rowCount(), 4); // 4 hasChannels events
+        QCOMPARE(table->rowCount(), 3); // КП is the clock reference, displayed outside this legacy table.
 
         // Spy on analysisDone before clicking
         QSignalSpy done(standPtr, &Stand::analysisDone);
@@ -89,19 +107,19 @@ private slots:
         // Wait for flight to complete (up to 10s — mock runs at CPU speed)
         QVERIFY(done.wait(10000));
 
-        // All 4 tracked events should be "ok"
+        // All three pyro events should be "ok"; КП provides their time origin.
         const auto events = qvariant_cast<QVector<EventRow>>(done.last().at(0));
         QVector<EventRow> tracked;
         for (const auto &e : events) if (e.hasChannels) tracked.append(e);
 
-        QCOMPARE(tracked.size(), 4);
+        QCOMPARE(tracked.size(), 3);
         for (const auto &e : tracked)
             QCOMPARE(e.status, QString("ok"));
 
-        // Summary strip visible and contains "4 ✓"
+        // Summary strip counts the three pyro events.
         auto *summaryLabel = w->findChild<QLabel*>("summaryLabel");
         QVERIFY(summaryLabel);
-        QVERIFY(summaryLabel->text().contains("4"));
+        QVERIFY(summaryLabel->text().contains("3"));
 
         // Timer label should not still show "--:--"
         auto *timerLabel = w->findChild<QLabel*>("timerLabel");

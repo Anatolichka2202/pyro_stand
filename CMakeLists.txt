@@ -30,6 +30,7 @@ target_link_libraries(pyro_stand
 )
 
 if(WIN32)
+    set_target_properties(pyro_stand PROPERTIES WIN32_EXECUTABLE TRUE)
     target_compile_definitions(pyro_stand PRIVATE PYRO_WINDOWS)
 elseif(UNIX)
     target_compile_definitions(pyro_stand PRIVATE PYRO_LINUX)

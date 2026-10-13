@@ -15,6 +15,7 @@ class QPushButton;
 // Operator HMI based on the original summer layout; data comes from
 // IntegrationSession, never from the legacy Stand/serial transfer path.
 class IntegrationWindow final : public QMainWindow {
+    friend class OperatorGuiTest;
     Q_OBJECT
 public:
     explicit IntegrationWindow(IntegrationSession::Options options, QWidget *parent = nullptr);

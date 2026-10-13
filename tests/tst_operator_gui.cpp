@@ -1,4 +1,5 @@
 #include "integration_window.h"
+#include "timeline_widget.h"
 
 #include <QCryptographicHash>
 #include <QJsonDocument>
@@ -16,6 +17,8 @@ class OperatorGuiTest : public QObject {
 private slots:
     void showsMappedEventsNotRawTesterChannels();
     void showsDualLegacyComStatuses();
+    void fullPlanKeepsTableUsableAndHardwareClockStable();
+    void kpClusterDoesNotHideFailure();
 };
 
 void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
@@ -104,6 +107,78 @@ void OperatorGuiTest::showsDualLegacyComStatuses() {
     QVERIFY(status->text().contains(QStringLiteral("БКД-А-1")));
     QVERIFY(status->text().contains(QStringLiteral("БКД-Б")));
     QVERIFY(status->text().contains(QStringLiteral("СБОР НЕДОСТОВЕРЕН")));
+}
+
+void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort = "NONEXISTENT_TEST_A";
+    options.secondLegacySerialPort = "NONEXISTENT_TEST_B";
+    IntegrationWindow window(options);
+    window.show();
+    QVERIFY(!window.m_summaryLabel->text().contains("/ -1"));
+    QByteArray file = "START_UTC_DATE = 2026-10-13\nSTART_UTC_TIME = 12:00:00\n";
+    const QHash<int, QByteArray> keys = {
+        {3, "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"},
+        {5, "FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"},
+        {7, "LIFT_OFF_CONTACT"}, {16, "CLOSE_MAIN_VALVES_ENGINES_9_TO_12"},
+        {20, "IGNITE_PYRO_CANDLE"}, {21, "OPEN_OXIDIZER_AND_FUEL_VALVES"},
+        {22, "SHUTDOWN_ENGINE_BLOCK_B"}};
+    for (int i = 1; i <= 22; ++i)
+        file += keys.value(i, "OTHER_" + QByteArray::number(i)) + " = " + QByteArray::number(i) + '\n';
+    QJsonObject event{{"contract", "kasu.pp.debug.stand.v1"}, {"type", "CYCLOGRAM_AVAILABLE"},
+        {"seq", "1"}, {"run_id", "run"}, {"stream_id", "stream"}, {"upload_id", "upload"},
+        {"byte_count", file.size()}, {"sha256_hex", QString::fromLatin1(
+            QCryptographicHash::hash(file, QCryptographicHash::Sha256).toHex())},
+        {"content_base64", QString::fromLatin1(file.toBase64())}};
+    window.m_session.processDebug(event);
+    window.refresh();
+    auto *table = window.m_eventTable;
+    QCOMPARE(table->rowCount(), 21);
+    QTRY_VERIFY(table->viewport()->height() >= 6 * table->rowHeight(0));
+    QCOMPARE(window.size(), QSize(1280, 800));
+    QVERIFY(table->columnWidth(1) > table->columnWidth(2));
+
+    event["type"] = "CYCLOGRAM_UPLOAD_STATE";
+    event["seq"] = "2";
+    event["upload_state"] = "CONFIRMED";
+    window.m_session.processDebug(event);
+    event["type"] = "BCVM_EXECUTION_ENABLED";
+    event["seq"] = "3";
+    window.m_session.processDebug(event);
+    window.m_session.m_awaitReset = true;
+    window.m_session.processLegacyBytes(QByteArray(1, char(0)), 0);
+    window.m_session.processLegacyBytes(QByteArray(1, char(0)), 1);
+    window.m_session.processLegacyBytes(QByteArray(61001, char(0x80)), 0);
+    window.refresh();
+    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("01:01.0"));
+    QVERIFY(window.m_timerLabel->styleSheet().contains("font-size:52px"));
+    QVERIFY(window.m_timerLabel->styleSheet().contains("font-weight:600"));
+    QTest::qWait(30);
+    window.updatePlannedClock();
+    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("01:01.0"));
+}
+
+void OperatorGuiTest::kpClusterDoesNotHideFailure() {
+    TimelineWidget timeline;
+    timeline.resize(800, 72);
+    EventRow kp;
+    kp.id = 1; kp.time_ms = 0; kp.hasChannels = true;
+    EventRow failed;
+    failed.id = 2; failed.time_ms = 1; failed.hasChannels = true;
+    timeline.setEvents({kp, failed});
+    timeline.markEventFired(1, "ok");
+    timeline.markEventFired(2, "fail");
+    const QImage image = timeline.grab().toImage();
+    // The rendered failure must remain visible even when its node shares KP.
+    const QColor failure("#f85149");
+    bool visibleFailure = false;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            visibleFailure |= image.pixelColor(x, y) == failure ||
+                              image.pixelColor(x, y) == failure.darker(130);
+    QVERIFY(visibleFailure);
 }
 
 QTEST_MAIN(OperatorGuiTest)

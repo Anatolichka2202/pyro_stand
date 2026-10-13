@@ -426,11 +426,28 @@ bool IntegrationSession::clearFrameEvidence() {
     return true;
 }
 
+bool IntegrationSession::discardPendingBoardData() {
+    m_serialBuffer.clear();
+    for (auto *serial : {&m_serial, &m_secondSerial}) {
+        if (serial->isOpen() && !serial->clear(QSerialPort::Input)) {
+            m_evidenceValid = false;
+            setError(QStringLiteral("Не удалось очистить входной буфер пиротестера %1: %2")
+                         .arg(serial->portName(), serial->errorString()));
+            return false;
+        }
+    }
+    while (m_udp.state() == QAbstractSocket::BoundState && m_udp.hasPendingDatagrams())
+        m_udp.readDatagram(nullptr, 0);
+    return true;
+}
+
 void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
+    const bool inputCleared = discardPendingBoardData();
     if (resetDebugEvidence) m_debugEvidence = QJsonArray{};
     m_localEvidence = QJsonArray{};
     if (clearFrameEvidence())
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!inputCleared) m_evidenceValid = false;
 }
 
 void IntegrationSession::updateBenchMapping() {
@@ -743,7 +760,11 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
 }
 
 void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error) {
-    if (!m_frameEvidence.isOpen()) return;
+    if (!m_frameEvidence.isOpen()) {
+        m_evidenceValid = false;
+        setError(QStringLiteral("Журнал доказательств недоступен; кадр не записан"));
+        return;
+    }
     QJsonObject object;
     object.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     object.insert(QStringLiteral("upload_id"), m_uploadId);
@@ -816,6 +837,7 @@ bool IntegrationSession::resetBoard() {
         emit changed();
         return true;
     }
+    if (!discardPendingBoardData()) return false;
     const QByteArray command = StandProtocol::resetCommand();
     QUdpSocket commandSocket;
     if (commandSocket.writeDatagram(command, m_options.boardIp, m_options.commandPort) != command.size()) {
@@ -975,16 +997,24 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         return fail(error, QStringLiteral("Журнал доказательств неполон или недоступен; сохранять отчёт нельзя"));
     if (path.isEmpty()) return fail(error, QStringLiteral("Не задан путь отчёта"));
     const QString framesPath = path + QStringLiteral(".frames.jsonl");
-    m_frameEvidence.flush();
-    if (!m_frameEvidence.seek(0)) return fail(error, QStringLiteral("Не удалось прочитать журнал кадров"));
+    if (!m_frameEvidence.flush()) {
+        m_evidenceValid = false;
+        return fail(error, QStringLiteral("Журнал доказательств не удалось записать на диск"));
+    }
+    // Export through an independent reader: every failure leaves the writer
+    // at its append position so later measurements cannot overwrite evidence.
+    QFile evidenceReader(m_frameEvidence.fileName());
+    if (!evidenceReader.open(QIODevice::ReadOnly))
+        return fail(error, evidenceReader.errorString());
     QSaveFile frames(framesPath);
     if (!frames.open(QIODevice::WriteOnly)) return fail(error, frames.errorString());
-    while (!m_frameEvidence.atEnd()) {
-        const QByteArray chunk = m_frameEvidence.read(65536);
+    while (!evidenceReader.atEnd()) {
+        const QByteArray chunk = evidenceReader.read(65536);
+        if (evidenceReader.error() != QFileDevice::NoError)
+            return fail(error, evidenceReader.errorString());
         if (frames.write(chunk) != chunk.size()) return fail(error, frames.errorString());
     }
     if (!frames.commit()) return fail(error, frames.errorString());
-    m_frameEvidence.seek(m_frameEvidence.size());
 
     QJsonObject report;
     report.insert(QStringLiteral("format"), QStringLiteral("pyro_stand.report.v1"));

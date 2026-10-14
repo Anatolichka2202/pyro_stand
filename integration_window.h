@@ -8,11 +8,14 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <memory>
+#include "event_canvas.h"
 
 class TimelineWidget;
 class QPushButton;
 
-// Operator HMI based on the original summer layout; data comes from
+// Event-oriented operator HMI accepted in V3; data comes from
 // IntegrationSession, never from the legacy Stand/serial transfer path.
 class IntegrationWindow final : public QMainWindow {
     friend class OperatorGuiTest;
@@ -22,6 +25,9 @@ public:
 
 private:
     void setupUi();
+    void refreshCanvas();
+    void configurePeer();
+    IntegrationSession &clockSession();
     void refresh();
     void updatePlannedClock();
     void appendMessage(const QString &text);
@@ -29,6 +35,16 @@ private:
     void appendJournal(const QString &level, const QString &message, const QString &color);
 
     IntegrationSession m_session;
+    std::unique_ptr<IntegrationSession> m_peer;
+    EventCanvas *m_canvas = nullptr;
+    QLabel *m_firstClock = nullptr;
+    QLabel *m_clockSource = nullptr;
+    QLabel *m_peerStatus = nullptr;
+    QElapsedTimer m_visualElapsed;
+    std::optional<double> m_visualAnchor;
+    QString m_visualCollection;
+    std::optional<double> m_forecastPosition;
+    double m_lastVisualPosition = 0;
     QTimer m_refreshTimer;
     QTimer m_clockTimer;
 

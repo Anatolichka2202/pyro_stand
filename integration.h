@@ -106,6 +106,8 @@ public:
         QString debugSocket = QStringLiteral("kasupp-debug-events-v1");
         BoardTransport boardTransport = BoardTransport::Udp;
         QString serialPort;
+        QString comparisonLegacyPort; // independent legacy observer alongside a new tester
+        bool comparisonLegacySecondStage = false;
         QString secondLegacySerialPort; // optional simultaneous БКД-Б; own channel-8 KP
         QHostAddress boardIp = QHostAddress(QStringLiteral("192.168.17.144"));
         QHostAddress bindIp = QHostAddress::AnyIPv4;
@@ -143,6 +145,7 @@ public:
     const CyclogramPlan &plan() const { return m_plan; }
     const BoardFrame &boardFrame() const { return m_boardFrame; }
     const StandMapping &mapping() const { return m_mapping; }
+    QString collectionId() const { return m_collectionId; }
     QString uploadId() const { return m_uploadId; }
     QString cyclogramSha256() const { return m_cyclogramSha; }
     QString uploadState() const { return m_uploadState; }

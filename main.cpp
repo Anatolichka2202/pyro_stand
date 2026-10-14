@@ -31,12 +31,14 @@ int main(int argc, char *argv[])
     parser.addOption({"board-port", "UDP-порт телеметрии платы", "port", "5000"});
     parser.addOption({"board-serial", "COM-порт платы вместо UDP", "port"});
     parser.addOption({"tester", "Тип пиротестера: udp, rs485, legacy", "type"});
+    parser.addOption({"compare-legacy-serial", "Старый COM одновременно с новой платой; независимая опора КП", "port"});
+    parser.addOption({"compare-legacy-block", "БКД дополнительного старого COM: A1 или B", "block"});
     parser.addOption({"legacy-serial", "Старый пиротестер: 8-битная маска, 1 байт/мс", "port"});
     parser.addOption({"legacy-second-serial", "Второй старый пиротестер БКД-Б (первый COM — А-1)", "port"});
     parser.addOption({"legacy-block", "БКД при одном старом COM: A1 или B", "block"});
-    parser.addOption({"first-stage-yps", "ЯПС новой платы, подключённый к БКД-А-1 (1..12)", "number"});
-    parser.addOption({"second-stage-yps", "ЯПС новой платы, подключённый к БКД-Б (1..12)", "number"});
-    parser.addOption({"kp-yps", "ЯПС новой платы с КП на входе 8 (1..12)", "number"});
+    parser.addOption({"first-stage-yps", "ЯПС новой платы, подключённый к БКД-А-1 (0 = не назначен, 1..12)", "number"});
+    parser.addOption({"second-stage-yps", "ЯПС новой платы, подключённый к БКД-Б (0 = не назначен, 1..12)", "number"});
+    parser.addOption({"kp-yps", "ЯПС новой платы с КП на входе 8 (0 = не назначен, 1..12)", "number"});
     parser.process(a);
 
     IntegrationSession::Options options;
@@ -44,6 +46,8 @@ int main(int argc, char *argv[])
     const int savedTransport = settings.value(QStringLiteral("tester/transport"), 0).toInt();
     if (savedTransport >= 0 && savedTransport <= 2)
         options.boardTransport = IntegrationSession::BoardTransport(savedTransport);
+    options.comparisonLegacyPort=settings.value("tester/comparisonLegacyPort").toString();
+    options.comparisonLegacySecondStage=settings.value("tester/comparisonLegacySecondStage",false).toBool();
     options.serialPort = settings.value(QStringLiteral("tester/serial")).toString();
     options.secondLegacySerialPort = settings.value(QStringLiteral("tester/secondSerial")).toString();
     options.firstStageYps = settings.value(QStringLiteral("tester/firstYps"), 0).toInt();
@@ -95,12 +99,16 @@ int main(int argc, char *argv[])
         if (parser.isSet(pair.first)) {
             bool ok = false;
             *pair.second = parser.value(pair.first).toInt(&ok);
-            if (!ok || *pair.second < 1 || *pair.second > 12) parser.showHelp(2);
+            if (!ok || *pair.second < 0 || *pair.second > 12) parser.showHelp(2);
         }
         if (*pair.second < 0 || *pair.second > 12) *pair.second = 0;
     }
     if (options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) parser.showHelp(2);
 
+    if(parser.isSet("compare-legacy-serial"))options.comparisonLegacyPort=parser.value("compare-legacy-serial");
+    if(parser.isSet("compare-legacy-block")){const auto block=parser.value("compare-legacy-block").toUpper();if(block!="A1"&&block!="B")parser.showHelp(2);options.comparisonLegacySecondStage=block=="B";}
+    if(options.boardTransport==IntegrationSession::BoardTransport::LegacySerial)options.comparisonLegacyPort.clear();
+    if(options.boardTransport==IntegrationSession::BoardTransport::Serial&&!options.comparisonLegacyPort.isEmpty()&&options.comparisonLegacyPort.compare(options.serialPort,Qt::CaseInsensitive)==0)parser.showHelp(2);
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
         QMainWindow, QWidget#operatorSurface {

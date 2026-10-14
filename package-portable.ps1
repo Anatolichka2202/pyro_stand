@@ -1,6 +1,7 @@
 ﻿param(
     [string]$DestinationRoot = (Join-Path $PSScriptRoot 'build\portable'),
     [string]$KasuBuildDir = 'C:\qt_repos_2\KASU_PP\build\agent-debug',
+    [switch]$SkipTester,
     [string]$TesterExe = 'C:\Users\МилТех\Desktop\пиротестер\piro_tester\desctop_app\dist\ТестерЯПС.exe'
 )
 $ErrorActionPreference = 'Stop'
@@ -59,9 +60,11 @@ DeployQt $KasuBuildDir 'kasu_pp.exe' 'KASU_PP' 'Debug'
 DeployQt $standBuild 'pyro_stand.exe' 'PyroStand' 'Release'
 'Portable preferences in settings/PyroStand/Operator.ini' | Set-Content -LiteralPath (Join-Path $package 'PyroStand\portable.mode') -Encoding ascii
 
+if (-not $SkipTester) {
 AssertX64 $TesterExe
 New-Item -ItemType Directory -Force -Path (Join-Path $package 'PyroTester') | Out-Null
 Copy-Item -LiteralPath $TesterExe -Destination (Join-Path $package 'PyroTester\pyro_tester.exe')
+}
 
 @'
 @echo off
@@ -73,17 +76,20 @@ start "" /D "%~dp0KASU_PP" "%~dp0KASU_PP\kasu_pp.exe" --debug-stand-socket kasup
 setlocal
 start "" /D "%~dp0PyroStand" "%~dp0PyroStand\pyro_stand.exe" %*
 '@ | Set-Content -LiteralPath (Join-Path $package 'START_PYROSTAND.cmd') -Encoding ascii
+if (-not $SkipTester) {
 @'
 @echo off
 setlocal
 start "" /D "%~dp0PyroTester" "%~dp0PyroTester\pyro_tester.exe"
 '@ | Set-Content -LiteralPath (Join-Path $package 'START_TESTER.cmd') -Encoding ascii
+}
 @'
 @echo off
 setlocal
 call "%~dp0START_KASU.cmd"
 call "%~dp0START_PYROSTAND.cmd" %*
 '@ | Set-Content -LiteralPath (Join-Path $package 'START_STAND.cmd') -Encoding ascii
+if (-not $SkipTester) {
 @'
 @echo off
 setlocal
@@ -93,6 +99,7 @@ call "%~dp0START_KASU.cmd"
 call "%~dp0START_PYROSTAND.cmd" --board-serial "%TESTER_COM%"
 call "%~dp0START_TESTER.cmd"
 '@ | Set-Content -LiteralPath (Join-Path $package 'START_COMPARE_NEW_BOARD.cmd') -Encoding ascii
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $package 'docs'),(Join-Path $package 'verification'),(Join-Path $package 'tools') | Out-Null
 Copy-Item -LiteralPath (Join-Path $standRoot 'README.md') -Destination (Join-Path $package 'docs\PYROSTAND.md')
@@ -115,6 +122,7 @@ Read-Host 'Enter to close'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\check-network.ps1"
 '@ | Set-Content -LiteralPath (Join-Path $package 'CHECK_NETWORK.cmd') -Encoding ascii
 
+if (-not $SkipTester) {
 $firmware = Join-Path $testerRoot 'GD32F4xx_Firmware_Library\Examples\ENET\piro-tester'
 $firmwareTarget = Join-Path $package 'Firmware\NewTester'
 New-Item -ItemType Directory -Force -Path $firmwareTarget | Out-Null
@@ -127,6 +135,7 @@ foreach ($name in @('YLS.hex','YLS_BKHO_A.hex','YLS_BKHO_B.hex')) {
 }
 if (Test-Path -LiteralPath (Join-Path $testerRoot 'arduino')) {
     Copy-Item -LiteralPath (Join-Path $testerRoot 'arduino') -Destination (Join-Path $package 'Firmware') -Recurse
+}
 }
 
 @'
@@ -153,6 +162,10 @@ COM/IP/ЯПС БКД-А-1, БКД-Б и КП8. Внешний JSON настро�
   --legacy-serial COM7 --legacy-block B
   --legacy-serial COM7 --legacy-second-serial COM8
 Для новой Ethernet-платы: --tester udp.
+Одновременно новый Ethernet и старый COM: --tester udp --compare-legacy-serial COM9
+и --compare-legacy-block A1 либо B по проводке. Отчёты и опоры плат независимы.
+Поканальный UI: все назначенные входы, аппаратный тик, факт и дельта.
+Расчётный прогноз КП обозначен ≈ и не подтверждает допуск.
 Не открывать одновременно два приёмника UDP 5000 на одном ПК.
 Если C++ принимает UDP, для приложения пиротестера нужен отдельный RS-485-приём;
 его фактический источник проверить в журнале приложения.
@@ -193,30 +206,54 @@ Firmware: справочные исходники и имеющиеся HEX из
 Подробности и SHA-256 приложений — manifest.json; общие суммы — checksums.sha256.
 '@ | Set-Content -LiteralPath (Join-Path $package 'README_RU.txt') -Encoding utf8
 
+if ($SkipTester) {
+@'
+СТЕНД — WINDOWS x64, PORTABLE: КАСУ ПП Debug + C++ Пиростенд
+Распаковать весь ZIP. Qt отдельно не нужен. Приложение Егора и прошивки не включены.
+START_STAND.cmd — оба приложения; START_KASU.cmd и START_PYROSTAND.cmd — отдельно.
+Запускать одну копию КАСУ ПП и один приёмник на каждом выбранном COM/UDP.
+Для нового Ethernet + старого COM9:
+START_PYROSTAND.cmd --tester udp --compare-legacy-serial COM9 --compare-legacy-block A1
+ЯПС новой платы задавать по проводке; 0 в параметрах означает «не назначен».
+Текущая проводка: COM9 → ЯПС 0 / БКД-А 0; КП — канал 8 БКД-А.
+Новая плата пока без подключённых входов. Профиль А-1 — сопоставление пунктов
+3/5/16; его название не задаёт аппаратный адрес БКД.
+Плавные часы — индикация ПК; ≈ — прогноз, не подтверждение допуска.
+Для прогона нужны загрузка, разрешение, новый сбор и физический КП.
+Подробности — docs/PYROSTAND.md; результаты проверок — verification/.
+'@ | Set-Content -LiteralPath (Join-Path $package 'README_RU.txt') -Encoding utf8
+}
+
 function GitSnapshot([string]$root) {
     $head = (& git -C $root rev-parse HEAD).Trim()
     $status = @(& git -C $root status --porcelain)
     return @{ root=$root; head=$head; dirty=($status.Count -gt 0); status=$status }
 }
+$testerSnapshot = if ($SkipTester) { @{included=$false;reason='Owner uses existing stand installation'} } else { GitSnapshot $testerRoot }
 $manifest = @{
     format='stand.portable.v1'
     created_at=(Get-Date).ToString('o')
     architecture='Windows x64'
     stand=(GitSnapshot $standRoot)
     kasu=(GitSnapshot $kasuRoot)
-    tester=(GitSnapshot $testerRoot)
+    tester=$testerSnapshot
+    tester_included=(-not $SkipTester)
     tester_binary_source=$TesterExe
     tester_binary_rebuilt=$false
     executables=@()
 }
-foreach ($relative in @('KASU_PP\kasu_pp.exe','PyroStand\pyro_stand.exe','PyroTester\pyro_tester.exe')) {
+$executables=@('KASU_PP\kasu_pp.exe','PyroStand\pyro_stand.exe')
+if (-not $SkipTester) { $executables+='PyroTester\pyro_tester.exe' }
+foreach ($relative in $executables) {
     $item = Get-Item -LiteralPath (Join-Path $package $relative)
     $manifest.executables += @{ file=$relative; sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash; bytes=$item.Length }
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $package 'manifest.json') -Encoding utf8
 & git -C $standRoot diff --binary | Set-Content -LiteralPath (Join-Path $package 'verification\pyrostand-local-changes.patch') -Encoding utf8
 Copy-Item -LiteralPath (Join-Path $standRoot 'tests\test_portable.ps1') -Destination (Join-Path $package 'verification\run-portable-smoke.ps1')
-& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'verification\run-portable-smoke.ps1') -Package $package
+$smokeArguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $package 'verification\run-portable-smoke.ps1'),'-Package',$package)
+if ($SkipTester) { $smokeArguments+='-SkipTester' }
+& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" @smokeArguments
 if ($LASTEXITCODE -ne 0) { throw 'Portable startup verification failed; package retained for diagnosis' }
 $sums = foreach ($file in (Get-ChildItem -LiteralPath $package -Recurse -File | Sort-Object FullName)) {
     $relative = $file.FullName.Substring($package.Length + 1).Replace('\','/')

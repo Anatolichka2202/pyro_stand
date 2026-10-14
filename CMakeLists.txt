@@ -17,6 +17,7 @@ add_executable(pyro_stand
     integration.h
     integration_window.cpp
     integration_window.h
+    event_canvas.cpp event_canvas.h
     timeline_widget.cpp
     timeline_widget.h
     types.h
@@ -100,6 +101,7 @@ if(BUILD_GUI_TESTS)
         tests/tst_operator_gui.cpp
         integration.cpp integration.h
         integration_window.cpp integration_window.h
+        event_canvas.cpp event_canvas.h
         timeline_widget.cpp timeline_widget.h types.h
     )
     target_include_directories(tst_operator_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -108,4 +110,11 @@ if(BUILD_GUI_TESTS)
     add_test(NAME tst_operator_gui COMMAND tst_operator_gui)
     set_tests_properties(tst_operator_gui PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
+option(BUILD_HARDWARE_PROBE "Build passive local tester/KASU connectivity probe" OFF)
+if(BUILD_HARDWARE_PROBE)
+    add_executable(live_io_probe tests/live_io_probe.cpp integration.cpp integration.h)
+    target_include_directories(live_io_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(live_io_probe Qt6::Core Qt6::Network Qt6::SerialPort)
 endif()

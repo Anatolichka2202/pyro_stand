@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Package)
+param([Parameter(Mandatory=$true)][string]$Package, [switch]$SkipTester)
 $ErrorActionPreference='Stop'
 $Package=[IO.Path]::GetFullPath($Package)
 $verification=Join-Path $Package 'verification'
@@ -41,6 +41,7 @@ $env:PYRO_STAND_SMOKE_TEST='1'
 $results+=RunFinite 'PyroStand' 'pyro_stand.exe' ("--tester udp --bind-ip 127.0.0.1 --board-ip 127.0.0.1 --board-port "+$port+" --debug-socket portable-startup-no-server")
 Remove-Item Env:PYRO_STAND_SMOKE_TEST
 
+if (-not $SkipTester) {
 $testerPath=Join-Path $Package 'PyroTester\pyro_tester.exe'
 $tester=Start-Process -FilePath $testerPath -WorkingDirectory (Split-Path $testerPath) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $verification 'PyroTester-smoke.stdout.txt') -RedirectStandardError (Join-Path $verification 'PyroTester-smoke.stderr.txt')
 try {
@@ -63,6 +64,7 @@ try {
     if(-not $tester.HasExited) { Stop-Process -Id $tester.Id -Force -ErrorAction SilentlyContinue }
     $tester.WaitForExit(3000) | Out-Null
 }
+}
 $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $verification 'portable-smoke.json') -Encoding utf8
 foreach($relative in @('PyroTester\app.log','KASU_PP\bcvm-exchange.jsonl','KASU_PP\bcvm-debug.jsonl')) {
     $path=Join-Path $Package $relative
@@ -71,4 +73,4 @@ foreach($relative in @('PyroTester\app.log','KASU_PP\bcvm-exchange.jsonl','KASU_
         Move-Item -LiteralPath $path -Destination (Join-Path $verification ($relative.Replace('\','-')+'.smoke')) -Force
     }
 }
-Write-Output 'Portable startup checks passed for all three applications.'
+Write-Output "Portable startup checks passed for $($results.Count) included applications."

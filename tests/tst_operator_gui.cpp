@@ -10,15 +10,23 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTest>
+#include <QFontDatabase>
 #include <QUuid>
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase(){
+#ifdef Q_OS_WIN
+      QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");
+      QFontDatabase::addApplicationFont("C:/Windows/Fonts/consola.ttf");
+#endif
+    }
     void showsMappedEventsNotRawTesterChannels();
     void showsDualLegacyComStatuses();
     void fullPlanKeepsTableUsableAndHardwareClockStable();
     void kpClusterDoesNotHideFailure();
+    void combinedKeepsCountersSeparate();
 };
 
 void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
@@ -136,9 +144,13 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     window.refresh();
     auto *table = window.m_eventTable;
     QCOMPARE(table->rowCount(), 21);
-    QTRY_VERIFY(table->viewport()->height() >= 6 * table->rowHeight(0));
+    QTRY_COMPARE(window.m_canvas->channelCount(), 16);
+    window.grab().save(QCoreApplication::applicationDirPath()+"/operator-full-plan.png");
+    QTRY_VERIFY(window.m_canvas->fits());
+    QCOMPARE(window.m_canvas->columnCount(), 2);
     QCOMPARE(window.size(), QSize(1280, 800));
-    QVERIFY(table->columnWidth(1) > table->columnWidth(2));
+    window.grab().save(QCoreApplication::applicationDirPath()+"/operator-full-plan.png");
+    QVERIFY(!table->isVisible());
 
     event["type"] = "CYCLOGRAM_UPLOAD_STATE";
     event["seq"] = "2";
@@ -152,12 +164,12 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     window.m_session.processLegacyBytes(QByteArray(1, char(0)), 1);
     window.m_session.processLegacyBytes(QByteArray(61001, char(0x80)), 0);
     window.refresh();
-    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("01:01.0"));
-    QVERIFY(window.m_timerLabel->styleSheet().contains("font-size:52px"));
-    QVERIFY(window.m_timerLabel->styleSheet().contains("font-weight:600"));
+    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("+01:01.0"));
+    QVERIFY(window.m_timerLabel->styleSheet().contains("28px"));
+    const auto hardwarePosition=window.m_session.measuredPositionMs();
     QTest::qWait(30);
     window.updatePlannedClock();
-    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("01:01.0"));
+    QCOMPARE(window.m_session.measuredPositionMs(), hardwarePosition);
 }
 
 void OperatorGuiTest::kpClusterDoesNotHideFailure() {
@@ -179,6 +191,27 @@ void OperatorGuiTest::kpClusterDoesNotHideFailure() {
             visibleFailure |= image.pixelColor(x, y) == failure ||
                               image.pixelColor(x, y) == failure.darker(130);
     QVERIFY(visibleFailure);
+}
+
+void OperatorGuiTest::combinedKeepsCountersSeparate(){
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;options.firstStageYps=1;options.kpYps=1;options.comparisonLegacyPort="NONEXISTENT_TEST_COMPARE";
+    IntegrationWindow window(options);QVERIFY(window.m_peer);window.resize(1600,900);window.show();
+    const QByteArray file="START_UTC_DATE = 2026-10-14\nSTART_UTC_TIME = 12:00:00\nOTHER1=0\nOTHER2=1\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-20\n";
+    for(auto *session:{&window.m_session,window.m_peer.get()}){
+      QString error;QVERIFY(StandProtocol::parseCyclogram(file,&session->m_plan,&error));session->m_hasPlan=true;session->m_uploadState="CONFIRMED";session->m_executionObserved=true;session->m_boardArmed=true;session->m_hasBoardFrame=true;session->updateBenchMapping();
+    }
+    auto &newFrame=window.m_session.m_boardFrame;newFrame.channels[7]={true,false,500000,0};newFrame.channels[0]={true,false,480000,0};newFrame.channels[1]={true,false,481000,0};
+    auto &old=*window.m_peer;old.m_legacyArmed[0]=true;old.m_boardFrame.channels[7]={true,false,100000,0};old.m_boardFrame.channels[0]={true,false,80000,0};old.m_boardFrame.channels[1]={true,false,81000,0};
+    window.refresh();QCOMPARE(window.m_canvas->channelCount(),6);QTRY_VERIFY(window.m_canvas->fits());
+    QStringList raw,facts;for(const auto &group:window.m_canvas->events())for(const auto &row:group.channels)if(row.role==QStringLiteral("Свеча камеры")){raw<<row.rawTick;facts<<row.actual;}
+    QCOMPARE(raw,QStringList({"480000","80000"}));QCOMPARE(facts,QStringList({"-20.000","-20.000"}));
+    old.m_boardFrame.channels[7]={};window.refresh();
+    for(const auto &group:window.m_canvas->events())if(group.source.contains("NONEXISTENT_TEST_COMPARE"))for(const auto &row:group.channels)QVERIFY(row.status!=QStringLiteral("в допуске"));
+    window.m_session.m_mapping = {};
+    window.refresh();
+    QCOMPARE(&window.clockSession(), window.m_peer.get());
+    QVERIFY(!window.m_timeline->isHidden());
+    window.grab().save(QCoreApplication::applicationDirPath()+"/operator-combined.png");
 }
 
 QTEST_MAIN(OperatorGuiTest)

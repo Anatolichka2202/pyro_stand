@@ -21,6 +21,7 @@
 #include <QStringList>
 #include <QVBoxLayout>
 #include <QSizePolicy>
+#include <QFileInfo>
 #include <cstdint>
 #include <limits>
 
@@ -91,6 +92,10 @@ QString eventName(const QString &key) {
         return QStringLiteral("Закрытие главных клапанов двигателей 9–12");
     if (key == QStringLiteral("LIFT_OFF_CONTACT"))
         return QStringLiteral("Контакт подъёма");
+    if(key=="FIRE_STARTING_CHAMBER_ENGINES_9_TO_12")return QStringLiteral("Пусковая камера и клапаны");
+    if(key=="IGNITE_PYRO_CANDLE")return QStringLiteral("Зажигание пиросвечей");
+    if(key=="OPEN_OXIDIZER_AND_FUEL_VALVES")return QStringLiteral("Открытие пусковых клапанов");
+    if(key=="SHUTDOWN_ENGINE_BLOCK_B")return QStringLiteral("Закрытие отсечных клапанов");
     return key;
 }
 
@@ -164,236 +169,460 @@ IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
         if (!m_refreshTimer.isActive()) m_refreshTimer.start();
     });
     connect(&m_session, &IntegrationSession::message, this, &IntegrationWindow::appendMessage);
-    m_clockTimer.setInterval(250);
+    m_clockTimer.setInterval(33);
     connect(&m_clockTimer, &QTimer::timeout, this, &IntegrationWindow::updatePlannedClock);
     m_clockTimer.start();
 
     m_session.start();
+    configurePeer();
     refresh();
 }
 
 void IntegrationWindow::setupUi() {
-    setWindowTitle(QStringLiteral("Пиростенд — контроль исполнения циклограммы"));
+    setWindowTitle(QStringLiteral("Пиростенд — поканальная проверка циклограммы"));
     resize(1280, 800);
-    setMinimumSize(980, 600);
-
-    // One 1280×800 operator canvas, as in FullScreen-v1.
+    setMinimumSize(1100, 700);
+    setStyleSheet("QMainWindow,QWidget#operatorSurface{background:#10161c;color:#e8edf1;} "
+                  "QLabel{color:#a6b3be;font-family:'Segoe UI';font-size:12px;} "
+                  "QPushButton{background:#19222b;color:#e8edf1;border:1px solid "
+                  "#35434f;padding:5px 9px;} QPushButton:focus{border:1px solid #81b6d0;} "
+                  "QDialog,QTextEdit{background:#10161c;color:#e8edf1;}");
     auto *surface = new QWidget(this);
-    surface->setObjectName(QStringLiteral("operatorSurface"));
+    surface->setObjectName("operatorSurface");
     setCentralWidget(surface);
     auto *main = new QVBoxLayout(surface);
-    main->setSpacing(8);
-    main->setContentsMargins(20, 14, 20, 14);
-
-    auto *topWidget = new QWidget(surface);
-    topWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *top = new QHBoxLayout(topWidget);
-    top->setContentsMargins(0, 0, 0, 0);
-    top->setSpacing(16);
-    auto *clock = new QVBoxLayout;
-    clock->setSpacing(4);
-    m_clockCaption = new QLabel(QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)"), surface);
-    m_clockCaption->setStyleSheet(QStringLiteral(
-        "font-size:13px; letter-spacing:0.15em; color:#8b949e;"));
-    m_timerLabel = new QLabel(QStringLiteral("--:--"), surface);
-    m_timerLabel->setObjectName(QStringLiteral("timerLabel"));
-    m_timerLabel->setStyleSheet(QStringLiteral(
-        "font-size:52px; font-weight:600; color:#484f58; font-family:'JetBrains Mono';"));
-    auto *phase = new QHBoxLayout;
-    m_phaseLabel = new QLabel(QStringLiteral("● ОЖИДАНИЕ"), surface);
-    m_phaseLabel->setStyleSheet(QStringLiteral("font-size:13px; font-weight:600; color:#8b949e;"));
-    m_nextEventLabel = new QLabel(QStringLiteral("Нет циклограммы"), surface);
-    m_nextEventLabel->setStyleSheet(QStringLiteral("font-size:12px; color:#6e7681;"));
-    phase->addWidget(m_phaseLabel);
-    phase->addWidget(m_nextEventLabel, 1);
-    clock->addStretch();
-    clock->addWidget(m_clockCaption);
-    clock->addWidget(m_timerLabel);
-    clock->addLayout(phase);
-    clock->addStretch();
-    top->addLayout(clock, 1);
-
-    auto *controls = new QWidget(surface);
-    controls->setObjectName(QStringLiteral("ctrlCard"));
-    controls->setMinimumWidth(530);
-    controls->setMaximumWidth(640);
-    controls->setStyleSheet(QStringLiteral(
-        "QWidget#ctrlCard { background:#161b22; border:1px solid #30363d; border-radius:6px; }"));
-    auto *ctrl = new QVBoxLayout(controls);
-    ctrl->setSpacing(6);
-    ctrl->setContentsMargins(10, 8, 10, 8);
-    auto *connection = new QHBoxLayout;
-    connection->setSpacing(6);
-    connection->addWidget(statusChip(controls, QStringLiteral("Debug КАСУ ПП"),
-                                     &m_debugDot, &m_debugStatus));
-    connection->addWidget(statusChip(controls, QStringLiteral("Плата"),
-                                     &m_boardDot, &m_boardStatus));
-    connection->addWidget(statusChip(controls, QStringLiteral("БЦВМ / разрешение"),
-                               &m_bcvmDot, &m_bcvmStatus));
-    ctrl->addLayout(connection);
-    auto *settingsCaption = new QLabel(QStringLiteral("НАСТРОЙКА И УПРАВЛЕНИЕ"), controls);
-    settingsCaption->setStyleSheet(QStringLiteral(
-        "font-size:11px; font-weight:600; color:#8b949e; border:0; background:transparent;"));
-    ctrl->addWidget(settingsCaption);
-
-    auto *startBox = new QFrame(controls);
-    startBox->setStyleSheet(QStringLiteral(
-        "QFrame { background:#0d1117; border:1px solid #30363d; border-radius:5px; }"));
-    auto *startLay = new QHBoxLayout(startBox);
-    startLay->setContentsMargins(8, 7, 8, 7);
-    auto *startCaption = new QLabel(QStringLiteral("T0 UTC"), startBox);
-    startCaption->setStyleSheet(QStringLiteral("font-size:11px; color:#6e7681; border:0;"));
-    m_startTimeLabel = new QLabel(QStringLiteral("--:--:--"), startBox);
-    m_startTimeLabel->setStyleSheet(QStringLiteral(
-        "font-size:12px; color:#e6edf3; font-family:'JetBrains Mono'; border:0;"));
-    startLay->addWidget(startCaption);
-    startLay->addWidget(m_startTimeLabel, 1);
-    ctrl->addWidget(startBox);
-
-    // КАСУ ПП loads the plan and controls the vehicle. Never offer those controls here.
-    auto *reset = new QPushButton(QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"), controls);
-    m_resetButton = reset;
-    reset->setObjectName(QStringLiteral("resetBtn"));
-    auto *actions = new QHBoxLayout;
-    actions->setSpacing(6);
-    actions->addWidget(reset);
-
-    auto *map = new QPushButton(QStringLiteral("ПОДКЛЮЧЕНИЕ ПИРОТЕСТЕРА"), controls);
-    map->setObjectName(QStringLiteral("testerConfigurationBtn"));
-    auto *save = new QPushButton(QStringLiteral("СОХРАНИТЬ ОТЧЁТ"), controls);
-    save->setObjectName(QStringLiteral("reportBtn"));
-    actions->addWidget(map);
-    actions->addWidget(save);
-    ctrl->addLayout(actions);
-    top->addWidget(controls);
-    main->addWidget(topWidget);
-
-    connect(reset, &QPushButton::clicked, this, [this] {
-        const auto answer = QMessageBox::question(
-            this, QStringLiteral("Сброс измерений"),
-            m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial
-                ? QStringLiteral("Начать новый сбор старого пиротестера? Буфер COM и накопленные отметки будут очищены. Все входы должны быть неактивны.")
-                : QStringLiteral("Отправить аппаратную команду сброса пиротестеру? "
-                           "Полученные отметки платы будут сброшены. "
-                           "Для нового прогона потребуется пустой кадр после сброса."));
-        if (answer == QMessageBox::Yes) m_session.resetBoard();
-    });
-    connect(map, &QPushButton::clicked, this, &IntegrationWindow::configureTester);
-    connect(save, &QPushButton::clicked, this, [this] {
-        const QString path = QFileDialog::getSaveFileName(
-            this, QStringLiteral("Отчёт испытания"),
-            QStringLiteral("pyro_stand_report.json"), QStringLiteral("JSON (*.json)"));
-        if (path.isEmpty()) return;
-        QString error;
-        if (!m_session.saveReport(path, &error))
-            QMessageBox::warning(this, QStringLiteral("Отчёт"), error);
-        else
-            appendMessage(QStringLiteral("Отчёт сохранён: %1 (включая .frames.jsonl)").arg(path));
-    });
-
-    // Keep an operator-centric status line, not a table of all tester inputs.
-    auto *meta = new QFrame(surface);
-    meta->setStyleSheet(QStringLiteral(
-        "QFrame { background:#161b22; border:1px solid #30363d; border-radius:5px; }"
-        "QLabel { background:transparent; border:0; font-size:11px; color:#8b949e; }"));
-    auto *metaLay = new QGridLayout(meta);
-    metaLay->setColumnStretch(0, 1);
-    metaLay->setColumnStretch(1, 1);
-    metaLay->setContentsMargins(10, 6, 10, 6);
-    metaLay->setSpacing(3);
-    m_uploadStatus = new QLabel(meta);
-    m_kpStatus = new QLabel(meta);
-    m_mappingStatus = new QLabel(meta);
-    m_clockStatus = new QLabel(meta);
-    m_clockStatus->setWordWrap(true);
-    m_streamStatus = new QLabel(meta);
-    m_streamStatus->setObjectName(QStringLiteral("legacyStreamsStatus"));
-    m_streamStatus->setWordWrap(true);
-    m_uploadStatus->setWordWrap(true);
+    main->setContentsMargins(14, 10, 14, 10);
+    main->setSpacing(5);
+    auto *header = new QHBoxLayout;
+    auto *title = new QLabel(QStringLiteral("ПИРОСТЕНД · контроль исполнения"), surface);
+    title->setStyleSheet("font-size:17px;color:#81b6d0");
+    header->addWidget(title);
+    header->addStretch();
+    m_startTimeLabel = new QLabel(surface);
+    header->addWidget(m_startTimeLabel);
+    auto *map = new QPushButton(QStringLiteral("Подключение"), surface);
+    map->setObjectName("testerConfigurationBtn");
+    m_resetButton = new QPushButton(QStringLiteral("Новый сбор"), surface);
+    m_resetButton->setObjectName("resetBtn");
+    auto *save = new QPushButton(QStringLiteral("Отчёт"), surface);
+    save->setObjectName("reportBtn");
+    auto *log = new QPushButton(QStringLiteral("Журнал"), surface);
+    log->setObjectName("journalBtn");
+    for (auto *button : {map, m_resetButton, save, log})
+        header->addWidget(button);
+    main->addLayout(header);
+    auto *clocks = new QHBoxLayout;
+    m_firstClock = new QLabel(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"), surface);
+    m_firstClock->setObjectName("firstEventClock");
+    clocks->addWidget(m_firstClock, 1);
+    auto *time = new QVBoxLayout;
+    m_clockCaption = new QLabel(surface);
+    m_timerLabel = new QLabel("--:--", surface);
+    m_timerLabel->setObjectName("timerLabel");
+    m_clockSource = new QLabel(surface);
+    m_clockSource->setObjectName("clockSource");
+    time->setSpacing(0);
+    time->addWidget(m_clockCaption);
+    time->addWidget(m_timerLabel);
+    time->addWidget(m_clockSource);
+    clocks->addLayout(time, 1);
+    auto *reference = new QVBoxLayout;
+    m_kpStatus = new QLabel(surface);
     m_kpStatus->setWordWrap(true);
-    m_mappingStatus->setWordWrap(true);
-    metaLay->addWidget(m_uploadStatus, 0, 0);
-    metaLay->addWidget(m_kpStatus, 0, 1);
-    metaLay->addWidget(m_mappingStatus, 1, 0);
-    metaLay->addWidget(m_clockStatus, 1, 1);
-    metaLay->addWidget(m_streamStatus, 2, 0, 1, 2);
-    main->addWidget(meta);
-
-    // Use the original timeline painter and event-centric semantics.
+    m_peerStatus = new QLabel(surface);
+    m_peerStatus->setObjectName("comparisonStatus");
+    m_peerStatus->setWordWrap(true);
+    reference->addWidget(m_kpStatus);
+    reference->addWidget(m_peerStatus);
+    clocks->addLayout(reference, 2);
+    main->addLayout(clocks);
+    auto *status = new QHBoxLayout;
+    status->addWidget(
+        statusChip(surface, QStringLiteral("Debug КАСУ"), &m_debugDot, &m_debugStatus));
+    status->addWidget(
+        statusChip(surface, QStringLiteral("Основной пиротестер"), &m_boardDot, &m_boardStatus));
+    status->addWidget(statusChip(surface, QStringLiteral("Разрешение"), &m_bcvmDot, &m_bcvmStatus));
+    m_phaseLabel = new QLabel(surface);
+    status->addWidget(m_phaseLabel, 1);
+    main->addLayout(status);
+    m_uploadStatus = new QLabel(surface);
+    m_mappingStatus = new QLabel(surface);
+    m_clockStatus = new QLabel(surface);
+    m_streamStatus = new QLabel(surface);
+    m_streamStatus->setObjectName("legacyStreamsStatus");
+    for (auto *label : {m_uploadStatus, m_mappingStatus, m_clockStatus, m_streamStatus}) {
+        label->setWordWrap(true);
+        label->setStyleSheet("color:#a6b3be;font-size:11px");
+        main->addWidget(label);
+    }
+    m_nextEventLabel = new QLabel(surface);
+    m_nextEventLabel->hide();
+    m_eventCaption = new QLabel(surface);
+    m_eventCaption->hide();
     m_timeline = new TimelineWidget(surface);
-    m_timeline->setObjectName(QStringLiteral("eventTimeline"));
-    m_timeline->setVisible(false);
+    m_timeline->setObjectName("eventTimeline");
+    m_timeline->setFixedHeight(48);
     main->addWidget(m_timeline);
-
-    m_eventCaption = new QLabel(QStringLiteral("ОТСЛЕЖИВАЕМЫЕ СОБЫТИЯ"), surface);
-    m_eventCaption->setStyleSheet(QStringLiteral(
-        "font-size:12px; letter-spacing:0.2em; color:#8b949e;"));
-    main->addWidget(m_eventCaption);
-
+    m_canvas = new EventCanvas(surface);
+    main->addWidget(m_canvas, 1);
+    // Retained as an internal presentation adapter for existing event/journal logic.
     m_eventTable = new QTableWidget(0, 7, surface);
-    m_eventTable->setObjectName(QStringLiteral("eventTable"));
-    m_eventTable->setHorizontalHeaderLabels({
-        QStringLiteral("#"), QStringLiteral("СОБЫТИЕ"),
-        QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
-        QStringLiteral("ФАКТ МС"), QStringLiteral("ОТКЛ МС"),
-        QStringLiteral("СТАТУС")});
-    auto *header = m_eventTable->horizontalHeader();
-    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    header->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int col = 2; col < 7; ++col)
-        header->setSectionResizeMode(col, QHeaderView::ResizeToContents);
-    m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_eventTable->setAlternatingRowColors(true);
-    m_eventTable->verticalHeader()->setDefaultSectionSize(28);
-    m_eventTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    header->setSectionResizeMode(2, QHeaderView::Fixed);
-    header->resizeSection(2, 180);
-    header->setSectionResizeMode(6, QHeaderView::Fixed);
-    header->resizeSection(6, 185);
-    m_eventTable->verticalHeader()->hide();
-    m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_eventTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_eventTable->setFocusPolicy(Qt::NoFocus);
-    main->addWidget(m_eventTable, 1);
-
-    auto *summary = new QFrame(surface);
-    summary->setStyleSheet(QStringLiteral(
-        "QFrame { background:#161b22; border-top:2px solid #30363d; }"));
-    auto *summaryLay = new QHBoxLayout(summary);
-    summaryLay->setContentsMargins(14, 8, 14, 8);
-    m_summaryLabel = new QLabel(summary);
-    m_summaryLabel->setStyleSheet(QStringLiteral(
-        "color:#e6edf3; font-size:12px; font-weight:600; border:0;"));
-    summaryLay->addWidget(m_summaryLabel);
-    main->addWidget(summary);
-
-    auto *journalCaption = new QLabel(QStringLiteral("ЖУРНАЛ СЕССИИ"), surface);
-    journalCaption->setObjectName(QStringLiteral("journalCaption"));
-    journalCaption->setStyleSheet(QStringLiteral(
-        "font-size:11px; font-weight:600; color:#8b949e;"));
-    main->addWidget(journalCaption);
-
-    m_eventLog = new QTextEdit(surface);
-    m_eventLog->setObjectName(QStringLiteral("eventJournal"));
+    m_eventTable->setObjectName("eventTable");
+    m_eventTable->setHorizontalHeaderLabels(
+        {"#", QStringLiteral("СОБЫТИЕ"), QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
+         QStringLiteral("ФАКТ МС"), QStringLiteral("ОТКЛ МС"), QStringLiteral("СТАТУС")});
+    m_eventTable->hide();
+    m_summaryLabel = new QLabel(surface);
+    m_summaryLabel->setWordWrap(true);
+    m_summaryLabel->setStyleSheet("font-size:12px;color:#e8edf1");
+    main->addWidget(m_summaryLabel);
+    auto *note =
+        new QLabel(QStringLiteral("Аппаратный тик: мкс · план / факт / Δ: мс · ≈ — расчёт без "
+                                  "подтверждения допуска · плавные часы: индикация ПК"),
+                   surface);
+    note->setStyleSheet("font-size:11px;color:#a6b3be");
+    main->addWidget(note);
+    auto *journal = new QDialog(this);
+    journal->setWindowTitle(QStringLiteral("Журнал сессии"));
+    journal->resize(900, 500);
+    auto *jl = new QVBoxLayout(journal);
+    auto *caption = new QLabel(QStringLiteral("ЖУРНАЛ СЕССИИ"), journal);
+    caption->setObjectName("journalCaption");
+    jl->addWidget(caption);
+    m_eventLog = new QTextEdit(journal);
+    m_eventLog->setObjectName("eventJournal");
     m_eventLog->setReadOnly(true);
-    m_eventLog->setMinimumHeight(70);
-    m_eventLog->setMaximumHeight(100);
-    m_eventLog->setStyleSheet(QStringLiteral(
-        "QTextEdit { background:#161b22; border:1px solid #30363d; border-radius:4px;"
-        "color:#c8d0dc; font-size:11px; font-family:'JetBrains Mono'; padding:4px 8px; }"));
-    main->addWidget(m_eventLog);
+    jl->addWidget(m_eventLog);
+    connect(log, &QPushButton::clicked, journal, &QDialog::show);
+    connect(map, &QPushButton::clicked, this, &IntegrationWindow::configureTester);
+    connect(m_resetButton, &QPushButton::clicked, this, [this] {
+        if (QMessageBox::question(
+                this, QStringLiteral("Новый сбор"),
+                QStringLiteral(
+                    "Очистить измерения всех выбранных источников? Новая плата получит команду "
+                    "сброса; старый COM начнёт новый сбор. Требуются неактивные входы.")) ==
+            QMessageBox::Yes) {
+            m_session.resetBoard();
+            if (m_peer)
+                m_peer->resetBoard();
+            m_visualAnchor.reset();
+        }
+    });
+    connect(save, &QPushButton::clicked, this, [this] {
+        auto path = QFileDialog::getSaveFileName(this, QStringLiteral("Отчёт испытания"),
+                                                 "pyro_stand_report.json", "JSON (*.json)");
+        if (path.isEmpty())
+            return;
+        QString error;
+        if (!m_session.saveReport(path, &error)) {
+            QMessageBox::warning(this, QStringLiteral("Отчёт"), error);
+            return;
+        }
+        if (m_peer) {
+            const QFileInfo info(path);
+            const QString peerPath =
+                info.absolutePath() + "/" + info.completeBaseName() + ".legacy.json";
+            if (!m_peer->saveReport(peerPath, &error)) {
+                QMessageBox::warning(this, QStringLiteral("Отчёт старой платы"), error);
+                return;
+            }
+        }
+        appendMessage(
+            QStringLiteral("Отчёты сохранены с отдельными аппаратными шкалами: %1").arg(path));
+    });
+}
+
+void IntegrationWindow::configurePeer() {
+    m_peer.reset();
+    const auto &options = m_session.options();
+    if (options.comparisonLegacyPort.isEmpty() ||
+        options.boardTransport == IntegrationSession::BoardTransport::LegacySerial)
+        return;
+    auto legacy = options;
+    legacy.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    legacy.serialPort = options.comparisonLegacyPort;
+    legacy.secondLegacySerialPort.clear();
+    legacy.comparisonLegacyPort.clear();
+    legacy.legacySecondStage = options.comparisonLegacySecondStage;
+    m_peer = std::make_unique<IntegrationSession>(legacy, this);
+    connect(m_peer.get(), &IntegrationSession::changed, this, [this] {
+        if (!m_refreshTimer.isActive())
+            m_refreshTimer.start();
+    });
+    connect(m_peer.get(), &IntegrationSession::message, this, [this](const QString &text) {
+        appendMessage(QStringLiteral("Старый пиротестер: ") + text);
+    });
+    m_peer->start();
+}
+
+IntegrationSession &IntegrationWindow::clockSession() {
+    if (m_peer && m_session.mapping().actions.isEmpty() && !m_peer->mapping().actions.isEmpty())
+        return *m_peer;
+    return m_session;
+}
+
+void IntegrationWindow::refreshCanvas() {
+    m_forecastPosition.reset();
+    QVector<CanvasEvent> groups;
+    int measured = 0, estimate = 0, bad = 0, total = 0;
+    const auto add = [&](IntegrationSession &session, const QString &source) {
+        const int begin = groups.size();
+        const bool legacy =
+            session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
+        QVector<QVector<double>> points(legacy ? 2 : 1);
+        const auto median = [](QVector<double> v) {
+            std::sort(v.begin(), v.end());
+            return v.size() % 2 ? v[v.size() / 2] : (v[v.size() / 2 - 1] + v[v.size() / 2]) / 2;
+        };
+        // Forecast only from unambiguous, armed, permitted observations awaiting physical KP.
+        for (const auto &action : session.plan().actions) {
+            if (action.key == "LIFT_OFF_CONTACT")
+                continue;
+            auto eval = session.measureAction(action);
+            if (eval.state != ActionMeasurement::State::WaitingForKp)
+                continue;
+            auto map = session.mapping().actions.value(action.key);
+            QVector<double> candidates;
+            int stream = -1;
+            for (const auto &in : map.inputs) {
+                const auto &r = session.boardFrame().channels[size_t(in.index)];
+                int st = legacy ? in.index / 8 : 0;
+                if (stream >= 0 && stream != st) {
+                    candidates.clear();
+                    break;
+                }
+                stream = st;
+                if (in.falling ? r.fallUs == 0 : (!r.triggered || r.riseUs == 0)) {
+                    candidates.clear();
+                    break;
+                }
+                candidates.append(double(in.falling ? r.fallUs : r.riseUs) -
+                                  double(action.offsetMs) * 1000);
+            }
+            if (!candidates.isEmpty() && stream < points.size() &&
+                *std::max_element(candidates.cbegin(), candidates.cend()) -
+                        *std::min_element(candidates.cbegin(), candidates.cend()) <
+                    2147483648.0)
+                points[stream].append(median(candidates));
+        }
+        for (auto &values : points)
+            if (!values.isEmpty() && *std::max_element(values.cbegin(), values.cend()) -
+                                             *std::min_element(values.cbegin(), values.cend()) >=
+                                         2147483648.0)
+                values.clear();
+        if (&session == &clockSession() && !points[0].isEmpty()) {
+            const double zero = median(points[0]);
+            double last = -std::numeric_limits<double>::infinity();
+            for (const auto &action : session.plan().actions) {
+                if (session.measureAction(action).state != ActionMeasurement::State::WaitingForKp)
+                    continue;
+                for (const auto &in : session.mapping().actions.value(action.key).inputs) {
+                    if (legacy && in.index >= 8)
+                        continue;
+                    const auto &r = session.boardFrame().channels[size_t(in.index)];
+                    if (r.triggered)
+                        last = std::max(last, double(in.falling ? r.fallUs : r.riseUs));
+                }
+            }
+            if (std::isfinite(last))
+                m_forecastPosition = (last - zero) / 1000;
+            const auto limits = std::minmax_element(points[0].cbegin(), points[0].cend());
+            m_kpStatus->setText(
+                QStringLiteral("КП ≈ %1 мкс · %2 пунктов · разброс %3 мс\nРасчётная опора; разброс "
+                               "не определяет точность")
+                    .arg(zero, 0, 'f', 0)
+                    .arg(points[0].size())
+                    .arg((*limits.second - *limits.first) / 1000, 0, 'f', 3));
+        }
+        for (const auto &action : session.plan().actions) {
+            if (action.key == "LIFT_OFF_CONTACT" || !session.mapping().actions.contains(action.key))
+                continue;
+            const auto map = session.mapping().actions.value(action.key);
+            auto eval = session.measureAction(action);
+            CanvasEvent g;
+            g.id = QString::number(action.ordinal);
+            g.title = eventName(action.key);
+            g.title.replace(QStringLiteral(" двигателей 9–12"), "");
+            g.source = source;
+            g.offsetMs = action.offsetMs;
+            g.plan = QStringLiteral("ПЛАН %1").arg(action.offsetMs);
+            if (legacy && !session.options().secondLegacySerialPort.isEmpty() &&
+                !map.inputs.isEmpty() && map.inputs.first().index >= 8)
+                g.source = QStringLiteral("Старый · ") + session.options().secondLegacySerialPort;
+            static const QStringList roles = {
+                QStringLiteral("Свеча камеры"),        QStringLiteral("Свеча газогенератора"),
+                QStringLiteral("Патрон пуск. камеры"), QStringLiteral("Пусковой клапан Г"),
+                QStringLiteral("Пусковой клапан О"),   QStringLiteral("Отсечной клапан Г"),
+                QStringLiteral("Отсечной клапан О"),   QStringLiteral("Контакт подъёма")};
+            for (const auto &in : map.inputs) {
+                CanvasChannel row;
+                row.input =
+                    legacy ? QString::number(in.index % 8 + 1)
+                           : QStringLiteral("%1:%2").arg(in.index / 8 + 1).arg(in.index % 8 + 1);
+                row.role = roles[in.index % 8];
+                row.color = kDim;
+                row.actual = row.delta = row.rawTick = QStringLiteral("—");
+                row.status = QStringLiteral("ожидание");
+                const auto &raw = session.boardFrame().channels[size_t(in.index)];
+                if (raw.triggered)
+                    row.rawTick = QString::number(in.falling ? raw.fallUs : raw.riseUs);
+                for (const auto &sample : eval.channels)
+                    if (sample.input.index == in.index && sample.input.falling == in.falling &&
+                        sample.actualMs) {
+                        row.actual = QString::number(*sample.actualMs, 'f', 3);
+                        row.delta = signedMs(*sample.deviationMs);
+                        row.status = QStringLiteral("измерено");
+                        row.color = kNeutral;
+                        ++measured;
+                        if (eval.toleranceMs) {
+                            bool ok = std::abs(*sample.deviationMs) <= *eval.toleranceMs;
+                            row.status =
+                                ok ? QStringLiteral("в допуске") : QStringLiteral("отклонение");
+                            row.color = ok ? kGreen : kRed;
+                            if (!ok)
+                                ++bad;
+                        }
+                    }
+                int stream = legacy ? in.index / 8 : 0;
+                if (row.actual == QStringLiteral("—") && raw.triggered &&
+                    eval.state == ActionMeasurement::State::WaitingForKp &&
+                    stream < points.size() && !points[stream].isEmpty()) {
+                    double actual =
+                        (double(in.falling ? raw.fallUs : raw.riseUs) - median(points[stream])) /
+                        1000;
+                    row.actual = QStringLiteral("≈") + QString::number(actual, 'f', 3);
+                    row.delta = QStringLiteral("≈") + signedMs(actual - action.offsetMs);
+                    row.status = QStringLiteral("расчёт");
+                    row.color = kAmber;
+                    ++estimate;
+                }
+                if (row.actual == QStringLiteral("—") &&
+                    eval.state != ActionMeasurement::State::WaitingForInputs &&
+                    eval.state != ActionMeasurement::State::Partial) {
+                    row.status = QStringLiteral("без оценки");
+                    row.color = kAmber;
+                }
+                g.channels.append(row);
+                ++total;
+            }
+            groups.append(g);
+        }
+        const int kp = session.mapping().kp.index;
+        if (kp >= 0) {
+            const auto &raw = session.boardFrame().channels[size_t(kp)];
+            const bool confirmed = session.measurementEligible() && session.kpTimeUs().has_value();
+            CanvasEvent g;
+            g.id = QStringLiteral("КП");
+            g.title = QStringLiteral("Контакт подъёма");
+            g.source = source;
+            g.plan = QStringLiteral("ПЛАН 0");
+            g.channels.append({"8", QStringLiteral("Опорный ноль"),
+                               raw.triggered ? QString::number(raw.riseUs) : QStringLiteral("—"),
+                               confirmed ? QStringLiteral("0.000") : QStringLiteral("—"),
+                               QStringLiteral("—"),
+                               confirmed ? QStringLiteral("КП") : QStringLiteral("нет КП"),
+                               confirmed ? kGreen : kAmber});
+            groups.append(g);
+            if (legacy && !session.options().secondLegacySerialPort.isEmpty()) {
+                const auto &other = session.boardFrame().channels[15];
+                const bool otherKnown =
+                    session.measurementEligible() && session.legacyStreamKpObserved(1);
+                g.source = QStringLiteral("Старый · ") + session.options().secondLegacySerialPort;
+                g.channels[0] = {"8",
+                                 QStringLiteral("КП8 БКД-Б"),
+                                 other.triggered ? QString::number(other.riseUs)
+                                                 : QStringLiteral("—"),
+                                 otherKnown ? QStringLiteral("0.000") : QStringLiteral("—"),
+                                 QStringLiteral("—"),
+                                 otherKnown ? QStringLiteral("КП") : QStringLiteral("нет КП"),
+                                 otherKnown ? kGreen : kAmber};
+                groups.append(g);
+            }
+        }
+        std::stable_sort(groups.begin() + begin, groups.end(),
+                         [](const auto &a, const auto &b) { return a.offsetMs < b.offsetMs; });
+    };
+    add(m_session,
+        m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial
+            ? QStringLiteral("Старый · ") + m_session.options().serialPort
+            : QStringLiteral("Новый пиротестер"));
+    if (m_peer) {
+        add(*m_peer, QStringLiteral("Старый · ") + m_peer->options().serialPort);
+        m_peerStatus->setText(
+            QStringLiteral("%1 · COM: %2 · Debug: %3 · план: %4 · КП8: %5")
+                .arg(m_peer->options().serialPort,
+                     m_peer->boardReceiving() ? QStringLiteral("данные идут")
+                                              : QStringLiteral("нет потока"),
+                     m_peer->debugConnected() ? QStringLiteral("связь есть")
+                                              : QStringLiteral("нет связи"),
+                     m_peer->hasPlan() ? QStringLiteral("получен") : QStringLiteral("ожидание"),
+                     m_peer->legacyStreamKpObserved(0) ? QStringLiteral("есть")
+                                                       : QStringLiteral("нет")));
+    } else
+        m_peerStatus->clear();
+    if (&clockSession() != &m_session) {
+        auto &source = clockSession();
+        QVector<EventRow> timeline;
+        for (const auto &action : source.plan().actions) {
+            if (!source.mapping().actions.contains(action.key) || action.key == "LIFT_OFF_CONTACT")
+                continue;
+            EventRow row;
+            row.id = action.ordinal;
+            row.key = action.key;
+            row.time_ms = action.offsetMs;
+            row.hasChannels = true;
+            timeline.append(row);
+        }
+        if (source.mapping().kp.index >= 0) {
+            EventRow row;
+            row.id = 0;
+            row.key = "LIFT_OFF_CONTACT";
+            row.time_ms = 0;
+            row.hasChannels = true;
+            timeline.append(row);
+        }
+        m_timeline->setEvents(timeline);
+        for (const auto &action : source.plan().actions) {
+            auto result = source.measureAction(action);
+            if (result.state != ActionMeasurement::State::Measured)
+                continue;
+            bool good = result.toleranceMs.has_value();
+            for (const auto &row : result.channels)
+                if (row.deviationMs && result.toleranceMs &&
+                    std::abs(*row.deviationMs) > *result.toleranceMs)
+                    good = false;
+            m_timeline->markEventFired(action.ordinal, good                 ? "ok"
+                                                       : result.toleranceMs ? "fail"
+                                                                            : "");
+        }
+        m_timeline->markEventFired(0,
+                                   source.measurementEligible() && source.kpTimeUs() ? "ok" : "");
+        m_timeline->setVisible(!timeline.isEmpty());
+        if (source.measurementEligible() && source.kpTimeUs())
+            m_kpStatus->setText(
+                QStringLiteral("КП старого %1: %2 мкс · собственная аппаратная опора")
+                    .arg(source.options().serialPort)
+                    .arg(*source.kpTimeUs()));
+    }
+    m_canvas->setEvents(std::move(groups));
+    m_summaryLabel->setText(QStringLiteral("КАНАЛЫ · измерено %1/%2 · вне допуска %3 · расчётных "
+                                           "%4 · допуск расчётом не подтверждается")
+                                .arg(measured)
+                                .arg(total)
+                                .arg(bad)
+                                .arg(estimate));
 }
 
 void IntegrationWindow::appendJournal(const QString &level, const QString &message,
                                       const QString &color) {
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
     // Qt rich text has no reliable border-left; use the spec's visible ▌ glyph.
-    m_eventLog->append(QStringLiteral(
-        "<span style=\"color:%1;\">▌</span>  "
-        "<span style=\"color:#8b949e;\">%2</span>  "
-        "<span style=\"color:%1; font-weight:600;\">%3</span>  "
-        "<span style=\"color:#c8d0dc;\">%4</span>")
-        .arg(color, stamp.toHtmlEscaped(), level.toHtmlEscaped(), message.toHtmlEscaped()));
+    m_eventLog->append(
+        QStringLiteral("<span style=\"color:%1;\">▌</span>  "
+                       "<span style=\"color:#8b949e;\">%2</span>  "
+                       "<span style=\"color:%1; font-weight:600;\">%3</span>  "
+                       "<span style=\"color:#c8d0dc;\">%4</span>")
+            .arg(color, stamp.toHtmlEscaped(), level.toHtmlEscaped(), message.toHtmlEscaped()));
 }
 
 void IntegrationWindow::appendMessage(const QString &message) {
@@ -405,62 +634,66 @@ void IntegrationWindow::appendMessage(const QString &message) {
 }
 
 void IntegrationWindow::updatePlannedClock() {
-    const auto measured = m_session.measuredPositionMs();
-    if (measured) {
-        const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
-        m_clockCaption->setText(legacy ? (m_session.options().secondLegacySerialPort.isEmpty()
-                ? QStringLiteral("ПОСЛЕ КП · СЧЁТЧИК COM")
-                : QStringLiteral("ПОСЛЕ КП БКД-А-1 · СЧЁТЧИК COM"))
-                                      : QStringLiteral("ПОСЛЕДНЯЯ ОТМЕТКА ПЛАТЫ · КП"));
-        const qint64 elapsed = qint64(*measured);
-        const qint64 seconds = elapsed / 1000;
-        const QString minutesSeconds = QStringLiteral("%1:%2.%3")
-            .arg((seconds / 60) % 60, 2, 10, QChar('0'))
-            .arg(seconds % 60, 2, 10, QChar('0')).arg((elapsed % 1000) / 100);
-        m_timerLabel->setText(seconds >= 3600
-            ? QStringLiteral("%1:").arg(seconds / 3600, 2, 10, QChar('0')) + minutesSeconds
-            : minutesSeconds);
-        m_timerLabel->setStyleSheet(QStringLiteral(
-            "font-size:52px; font-weight:600; font-family:'JetBrains Mono'; color:#3fb950;"));
-        m_timerLabel->setToolTip(legacy
-            ? QStringLiteral("Индекс последнего принятого байта минус индекс КП8 того же COM; один байт = 1 мс")
-            : QStringLiteral("Последняя известная отметка сопоставленного входа относительно КП. Между событиями часы ПК её не продвигают."));
-        m_timeline->setPlayheadMs(qint64(*measured));
+    auto &source = clockSession();
+    if (!source.hasPlan()) {
+        m_timerLabel->setText("--:--");
+        m_firstClock->setText(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"));
+        m_clockCaption->setText(QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ"));
+        m_clockSource->clear();
+        m_visualAnchor.reset();
         return;
     }
-    m_timeline->setPlayheadMs(INT64_MIN);
-    if (!m_session.hasPlan() || !m_session.plan().t0Utc.isValid()) {
-        m_timerLabel->setText(QStringLiteral("--:--"));
-        m_timerLabel->setStyleSheet(QStringLiteral(
-            "font-size:52px; font-weight:600; color:#484f58; font-family:'JetBrains Mono';"));
-        m_clockCaption->setText(QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)"));
-        return;
+    const QString collection =
+        source.collectionId() + "|" + QString::number(source.measurementEligible());
+    if (collection != m_visualCollection) {
+        m_visualCollection = collection;
+        m_visualAnchor.reset();
     }
-    // This PC UTC clock is not the tester's physical microsecond counter.
-    const qint64 deltaMs = QDateTime::currentDateTimeUtc().msecsTo(m_session.plan().t0Utc);
-    const bool before = deltaMs > 0;
-    const bool kpConfirmed = m_session.measurementEligible() &&
-                             m_session.kpTimeUs().has_value();
-    m_clockCaption->setText(before ? QStringLiteral("ДО ЗАПУСКА · ЧАСЫ ПК (UTC)")
-        : QStringLiteral("ПОСЛЕ ПЛАНОВОГО T0 · ЧАСЫ ПК (UTC)"));
-    const qint64 seconds = qAbs(deltaMs) / 1000;
-    const QString display = seconds >= 3600
-        ? QStringLiteral("%1:%2:%3")
-            .arg(seconds / 3600, 2, 10, QChar('0'))
-            .arg((seconds / 60) % 60, 2, 10, QChar('0'))
-            .arg(seconds % 60, 2, 10, QChar('0'))
-        : QStringLiteral("%1:%2")
-            .arg(seconds / 60, 2, 10, QChar('0'))
-            .arg(seconds % 60, 2, 10, QChar('0'));
-    m_timerLabel->setText(display);
-    const QString color = kpConfirmed ? QStringLiteral("#3fb950")
-        : (before && m_session.uploadState() == QStringLiteral("CONFIRMED")
-           ? QStringLiteral("#e3b341") : QStringLiteral("#8b949e"));
-    m_timerLabel->setStyleSheet(QStringLiteral(
-        "font-size:52px; font-weight:600; font-family:'JetBrains Mono'; color:%1;").arg(color));
-    m_timerLabel->setToolTip(QStringLiteral(
-        "Время до/после планового T0 UTC по часам ПК. "
-        "Зелёный подтверждает наличие КП, но не означает синхронизацию ПК с платой."));
+    const auto measured = source.measuredPositionMs();
+    double position = double(source.plan().t0Utc.msecsTo(QDateTime::currentDateTimeUtc()));
+    const auto anchor = measured ? measured : m_forecastPosition;
+    if (anchor) {
+        if (!m_visualAnchor || *m_visualAnchor != *anchor) {
+            m_visualAnchor = *anchor;
+            m_visualElapsed.restart();
+            m_lastVisualPosition = *anchor;
+        }
+        position =
+            source.boardReceiving() ? *anchor + m_visualElapsed.elapsed() : m_lastVisualPosition;
+        m_lastVisualPosition = position;
+    } else
+        m_visualAnchor.reset();
+    const auto show = [](double value) {
+        const qint64 ms = qint64(std::abs(value));
+        return QStringLiteral("%1%2:%3.%4")
+            .arg(value < 0 ? QStringLiteral("−") : QStringLiteral("+"))
+            .arg(ms / 60000, 2, 10, QChar('0'))
+            .arg((ms / 1000) % 60, 2, 10, QChar('0'))
+            .arg((ms % 1000) / 100);
+    };
+    m_timerLabel->setText(show(position));
+    m_timerLabel->setStyleSheet(
+        QStringLiteral("font:28px 'Consolas';color:%1").arg(measured ? "#81b6d0" : "#e5bd78"));
+    m_clockCaption->setText(measured ? QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП")
+                            : position < 0
+                                ? (m_forecastPosition ? QStringLiteral("ДО РАСЧЁТНОГО КП")
+                                                      : QStringLiteral("ДО ПЛАНОВОГО КП"))
+                                : QStringLiteral("ПОСЛЕ ПЛАНОВОГО КП"));
+    m_clockSource->setText(
+        measured ? QStringLiteral("Опора платы + индикация ПК; факты не интерполируются")
+        : m_forecastPosition ? QStringLiteral("Прогноз КП по отметкам + ПК · неточный")
+                             : QStringLiteral("Расчёт по UTC / часам ПК · неточный"));
+    double first = std::numeric_limits<double>::infinity();
+    for (const auto &a : source.plan().actions)
+        if (source.mapping().actions.contains(a.key))
+            first = std::min(first, double(a.offsetMs));
+    m_firstClock->setText(std::isfinite(first)
+                              ? QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n%1")
+                                    .arg(position < first
+                                             ? show(first - position)
+                                             : QStringLiteral("первое событие пройдено"))
+                              : QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\nнет назначений"));
+    m_timeline->setPlayheadMs(qint64(position));
 }
 
 void IntegrationWindow::configureTester() {
@@ -482,6 +715,12 @@ void IntegrationWindow::configureTester() {
     secondPort->addItem(QStringLiteral(""));
     for (const auto &info : QSerialPortInfo::availablePorts()) secondPort->addItem(info.portName());
     secondPort->setCurrentText(options.secondLegacySerialPort);
+    auto *comparison = new QComboBox(&dialog);comparison->setEditable(true);comparison->addItem("");
+    for(const auto &info:QSerialPortInfo::availablePorts())comparison->addItem(info.portName());
+    comparison->setCurrentText(options.comparisonLegacyPort);
+    auto *comparisonBlock=new QComboBox(&dialog);comparisonBlock->addItem(QStringLiteral("БКД-А-1"),false);comparisonBlock->addItem(QStringLiteral("БКД-Б"),true);comparisonBlock->setCurrentIndex(options.comparisonLegacySecondStage?1:0);
+    layout->addRow(QStringLiteral("Одновременно старый COM (пусто = выключен)"),comparison);
+    layout->addRow(QStringLiteral("БКД дополнительного старого COM"),comparisonBlock);
     auto *address = new QLineEdit(options.boardIp.toString(), &dialog);
     auto *first = new QComboBox(&dialog);
     auto *second = new QComboBox(&dialog);
@@ -516,6 +755,7 @@ void IntegrationWindow::configureTester() {
     const auto update = [=] {
         const auto value = IntegrationSession::BoardTransport(transport->currentData().toInt());
         const bool legacy = value == IntegrationSession::BoardTransport::LegacySerial;
+        comparison->setEnabled(!legacy);comparisonBlock->setEnabled(!legacy);
         port->setEnabled(value != IntegrationSession::BoardTransport::Udp);
         address->setEnabled(!legacy);
         first->setEnabled(!legacy); second->setEnabled(!legacy); kp->setEnabled(!legacy);
@@ -530,13 +770,16 @@ void IntegrationWindow::configureTester() {
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
         options.boardTransport = IntegrationSession::BoardTransport(transport->currentData().toInt());
         options.serialPort = port->currentText().trimmed();
+        options.comparisonLegacyPort = options.boardTransport==IntegrationSession::BoardTransport::LegacySerial?QString():comparison->currentText().trimmed();
+        options.comparisonLegacySecondStage=comparisonBlock->currentData().toBool();
         options.secondLegacySerialPort = secondPort->currentText().trimmed();
         options.firstStageYps = first->currentData().toInt();
         options.secondStageYps = second->currentData().toInt();
         options.kpYps = kp->currentData().toInt();
         options.legacySecondStage = block->currentData().toBool();
         const bool legacy = options.boardTransport == IntegrationSession::BoardTransport::LegacySerial;
-        if ((options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) ||
+        if ((!options.comparisonLegacyPort.isEmpty() && options.boardTransport==IntegrationSession::BoardTransport::Serial && options.comparisonLegacyPort.compare(options.serialPort,Qt::CaseInsensitive)==0) ||
+            (options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) ||
             (!legacy && !options.boardIp.setAddress(address->text().trimmed())) ||
             (!legacy && options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) ||
             (legacy && !options.secondLegacySerialPort.isEmpty() && options.serialPort.compare(options.secondLegacySerialPort, Qt::CaseInsensitive) == 0)) {
@@ -548,6 +791,8 @@ void IntegrationWindow::configureTester() {
     });
     if (dialog.exec() != QDialog::Accepted) return;
     QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    settings.setValue("tester/comparisonLegacyPort",options.comparisonLegacyPort);
+    settings.setValue("tester/comparisonLegacySecondStage",options.comparisonLegacySecondStage);
     settings.setValue(QStringLiteral("tester/transport"), int(options.boardTransport));
     settings.setValue(QStringLiteral("tester/serial"), options.serialPort);
     settings.setValue(QStringLiteral("tester/secondSerial"), options.secondLegacySerialPort);
@@ -559,7 +804,11 @@ void IntegrationWindow::configureTester() {
     m_loggedStates.clear();
     m_timelineSignature.clear();
     m_eventLog->clear();
+    m_peer.reset();
+    m_visualAnchor.reset();
     m_session.configureBoard(options);
+    configurePeer();
+    refresh();
 }
 
 void IntegrationWindow::refresh() {
@@ -928,5 +1177,6 @@ void IntegrationWindow::refresh() {
     m_timeline->setPlayheadMs(kpKnown && std::isfinite(latestMeasuredMs)
         ? int64_t(std::llround(latestMeasuredMs))
         : std::numeric_limits<int64_t>::min());
+    refreshCanvas();
     updatePlannedClock();
 }

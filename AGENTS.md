@@ -15,13 +15,18 @@
 
 ## Operator GUI contract
 
-- Preserve the original summer `MainWindow` **visual hierarchy**: large timing
-  block, connection/status card, event timeline, operator event table,
-  summary strip, and event/system journals. Current implementation is
-  `IntegrationWindow`; old `Stand` is only a UX reference, not the backend.
-- The primary table displays events from the built-in БКД-А-1 / БКД-Б configuration.
-  Never require an external JSON wiring file. Multichannel actions may have indented
-  per-input subrows. **Never add a 96-channel diagnostic table**, tab, or panel.
+- Owner accepted the V3 dark UI on 2026-10-14: events and per-input times are
+  primary. `EventCanvas` shows every assigned input (role, raw hardware tick,
+  relative fact, signed delta, result), grouped chronologically into additional
+  columns when required. Do not restore the superseded large clock/table hierarchy.
+  Capacity limits must be visible; essential rows must not be hidden by scroll areas.
+- Keep the built-in БКД-А-1 / БКД-Б mapping; no external JSON wiring file.
+  Never add the Python tester's raw 96-channel diagnostics to the operator HMI.
+- Smooth clocks/timeline are presentation only: hardware anchor plus monotonic PC
+  interpolation, or explicitly approximate PC/forecast time when KP is absent.
+  Forecasts must not change `IntegrationSession` measured results or report acceptance.
+- Combined new + old mode uses independent IntegrationSessions, KP references,
+  collection boundaries and reports. Do not merge unrelated hardware counters.
 - Planned T0 UTC originates from the cyclogram published by KASU PP.
   PC UTC countdown is only a planning indication; it is not measured T0.
 - Support both testers: new AA55/CRC8 frames over UDP or RS-485, and old

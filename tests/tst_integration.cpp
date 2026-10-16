@@ -75,6 +75,9 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void annotatedWiring();
+    void invalidAnnotations_data();
+    void invalidAnnotations();
     void workingTxtProvenanceAndReordering();
     void kpTimeVectors_data();
     void kpTimeVectors();
@@ -103,6 +106,95 @@ private slots:
     void actual33ActionCyclogramHasUnambiguousChannels();
     void completedActionStateIsFrozenAcrossLateDebugChanges();
 };
+
+void IntegrationTest::annotatedWiring() {
+    const QByteArray source="START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8000 # Ignition ## board=NEW; link=ETH; bkd=A1; yps=9; out=1,2; in=3,4; edge=rise\n"
+        "LIFT_OFF_CONTACT=0 # KP ## board=NEW; link=ETH; bkd=A1; yps=9; out=8; in=8; edge=rise; role=kp\n"
+        "IGNITE_PYRO_CANDLE=100 # B ## board=OLD; link=COM9; bkd=B; yps=none; out=1,2; in=2,1; edge=fall\n";
+    CyclogramPlan plan;QString error;
+    QVERIFY2(StandProtocol::parseCyclogram(source,&plan,&error),qPrintable(error));
+    QCOMPARE(plan.sourceBytes,source);QCOMPARE(plan.actions[0].comment.trimmed(),QString("Ignition"));
+    QCOMPARE(plan.actions[0].wiring.size(),1);
+    QCOMPARE(plan.actions[0].wiring[0].ypsIndex,8);
+    QCOMPARE(plan.actions[0].wiring[0].inputs,QVector<int>({2,3}));
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    IntegrationSession session(options);session.m_plan=plan;session.m_hasPlan=true;session.updateBenchMapping();
+    const auto mapped=session.mapping().forAction(plan.actions[0]);
+    QCOMPARE(mapped.inputs.size(),2);QCOMPARE(mapped.inputs[0].index,66);
+    QVERIFY(!mapped.definitionConfirmed); // Аннотация не доказывает разводку.
+    QCOMPARE(session.mapping().kp.index,71);
+    QTemporaryFile profile;QVERIFY(profile.open());
+    profile.write(R"({"schema":"pyro.signal-wiring.v2","version":"conflicting","kp":null,"bindings":[]})");
+    profile.flush();
+    QVERIFY(!session.loadMapping(profile.fileName()));
+    QCOMPARE(session.mapping().kp.index,71);
+    QTemporaryDir directory;QVERIFY(directory.isValid());
+    session.m_cyclogramBytes=source;session.m_cyclogramSha=plan.sha256;
+    const auto reportPath=directory.filePath("annotated.json");
+    QVERIFY2(session.saveReport(reportPath,&error),qPrintable(error));
+    QFile report(reportPath);QVERIFY(report.open(QIODevice::ReadOnly));
+    const auto evidence=QJsonDocument::fromJson(report.readAll()).object();
+    QCOMPARE(QByteArray::fromBase64(evidence["cyclogram_base64"].toString().toLatin1()),source);
+    const auto wiring=evidence["actions"].toArray()[0].toObject()["wiring_annotations"].toArray();
+    QCOMPARE(wiring.size(),1);QCOMPARE(wiring[0].toObject()["in"].toArray()[0].toInt(),3);
+    QVERIFY(!wiring[0].toObject()["wiring_confirmed"].toBool());
+    QVERIFY(!session.mapping().hasAction(plan.actions[2]));
+    options.boardTransport=IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort="COM9";options.legacySecondStage=true;options.legacyHasKp=false;
+    session.m_options=options;session.updateBenchMapping();
+    QCOMPARE(session.mapping().forAction(plan.actions[2]).inputs[0].index,1);
+    QCOMPARE(session.mapping().kp.index,-1);
+    session.m_options.wiringProfilePath="profile.json";session.updateBenchMapping();
+    QVERIFY(session.mapping().actions.isEmpty());QVERIFY(!session.mapping().warnings.isEmpty());
+    const auto noComment=QByteArray(source).replace("# Ignition ##","##");
+    QVERIFY(StandProtocol::parseCyclogram(noComment,&plan,&error));
+    QVERIFY(plan.actions[0].comment.isEmpty());QCOMPARE(plan.actions[0].wiring.size(),1);
+    const auto multi=QByteArray(source).replace("in=3,4; edge=rise\n",
+        "in=3,4; edge=rise ## board=OLD; link=COM9; bkd=A1; yps=none; out=1,2; in=1,2; edge=rise\n");
+    QVERIFY2(StandProtocol::parseCyclogram(multi,&plan,&error),qPrintable(error));
+    QCOMPARE(plan.actions[0].wiring.size(),2);
+    const auto ambiguousKp=QByteArray(source).replace("edge=rise; role=kp\n",
+        "edge=rise; role=kp ## board=NEW; link=ETH; bkd=A1; yps=10; out=8; in=8; edge=rise; role=kp\n");
+    QVERIFY(!StandProtocol::parseCyclogram(ambiguousKp,&plan,&error));
+    const QByteArray dualKp="START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0 ## board=OLD; link=COM1; bkd=A1; yps=none; out=8; in=8; edge=rise; role=kp"
+        " ## board=OLD; link=COM2; bkd=A1; yps=none; out=8; in=8; edge=rise; role=kp\n";
+    QVERIFY(StandProtocol::parseCyclogram(dualKp,&plan,&error));
+    session.m_plan=plan;session.m_options.wiringProfilePath.clear();
+    session.m_options.serialPort="COM1";session.m_options.secondLegacySerialPort="COM2";
+    session.m_options.legacySecondStage=false;session.m_options.legacyHasKp=true;
+    session.updateBenchMapping();QCOMPARE(session.mapping().kp.index,7);
+    session.m_boardArmed=true;session.m_hasBoardFrame=true;
+    session.m_boardFrame.channels[7]={true,false,1000,0};
+    session.m_boardFrame.channels[15]={true,false,99000,0};
+    QVERIFY(session.kpTimeUs().has_value());
+    QCOMPARE(session.kpTimeUs().value(),quint32(1000));
+}
+
+void IntegrationTest::invalidAnnotations_data() {
+    QTest::addColumn<QByteArray>("annotation");
+    const QByteArray valid="board=NEW; link=ETH; bkd=A1; yps=9; out=1,2; in=1,2; edge=rise";
+    QTest::newRow("missing")<<QByteArray("board=NEW");
+    QTest::newRow("unknown")<<(valid+"; foo=1");
+    QTest::newRow("duplicate-field")<<(valid+"; yps=9");
+    QTest::newRow("zero-yps")<<QByteArray(valid).replace("yps=9","yps=0");
+    QTest::newRow("input-range")<<QByteArray(valid).replace("in=1,2","in=1,9");
+    QTest::newRow("mismatch")<<QByteArray(valid).replace("in=1,2","in=1");
+    QTest::newRow("duplicate-input")<<QByteArray(valid).replace("in=1,2","in=1,1");
+    QTest::newRow("edge")<<QByteArray(valid).replace("edge=rise","edge=both");
+    QTest::newRow("wrong-mask")<<QByteArray(valid).replace("out=1,2","out=3,4");
+    QTest::newRow("wrong-block")<<QByteArray(valid).replace("bkd=A1","bkd=B");
+    QTest::newRow("role")<<(valid+"; role=kp");
+    QTest::newRow("duplicate-source")<<(valid+" ## "+valid);
+}
+
+void IntegrationTest::invalidAnnotations() {
+    QFETCH(QByteArray,annotation);CyclogramPlan plan;QString error;
+    const auto source=QByteArray("START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=0 # Comment ## ")+annotation+'\n';
+    QVERIFY(!StandProtocol::parseCyclogram(source,&plan,&error));QVERIFY(!error.isEmpty());
+}
 
 
 void IntegrationTest::workingTxtProvenanceAndReordering() {

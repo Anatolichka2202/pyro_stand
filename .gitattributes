@@ -1,2 +1,3 @@
 # Exact BCVM source evidence; preserve CRLF and the recorded SHA-256 on every OS.
 tests/data/working_20261014.txt -text whitespace=cr-at-eol
+cyclogram.txt -text whitespace=cr-at-eol

@@ -18,6 +18,15 @@
 #include <array>
 #include <optional>
 
+struct WiringAnnotation {
+    QString board, link, bkd;
+    int ypsIndex = -1; // ЯПС 1..12 преобразуется в 0..11 при разборе; OLD: -1.
+    QVector<int> outputs, inputs; // Номера 1..8 преобразованы в индексы 0..7.
+    bool falling = false;
+    bool kp = false;
+    QString raw;
+};
+
 struct PlannedAction {
     QString key;
     qint32 offsetMs = 0;
@@ -27,6 +36,7 @@ struct PlannedAction {
     QString rawValue;
     QString comment;
     QByteArray rawLine;
+    QVector<WiringAnnotation> wiring;
 };
 
 struct CyclogramPlan {
@@ -67,6 +77,13 @@ struct StandMapping {
     QHash<QString, ActionMapping> actions;
     QHash<QString, InputRef> signalBindings;
     QString kpActionKey = QStringLiteral("LIFT_OFF_CONTACT");
+    bool occurrenceBased = false;
+    ActionMapping forAction(const PlannedAction &action) const {
+        return actions.value(occurrenceBased ? action.actionId : action.key);
+    }
+    bool hasAction(const PlannedAction &action) const {
+        return actions.contains(occurrenceBased ? action.actionId : action.key);
+    }
 };
 
 // Old tester: one eight-bit state mask per hardware millisecond.

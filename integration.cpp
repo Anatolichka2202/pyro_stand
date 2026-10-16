@@ -26,6 +26,47 @@ bool fail(QString *error, const QString &reason) {
     return false;
 }
 
+bool parseWiring(const QString &text, WiringAnnotation *result, QString *error) {
+    WiringAnnotation parsed;parsed.raw=text.trimmed();
+    QHash<QString,QString> fields;
+    const QStringList required{"board","link","bkd","yps","out","in","edge"};
+    for(const auto &part:text.split(u';')) {
+        const auto pair=part.trimmed().split(u'=');
+        if(pair.size()!=2 || pair[1].trimmed().isEmpty() ||
+           (!required.contains(pair[0].trimmed()) && pair[0].trimmed()!="role") ||
+           fields.contains(pair[0].trimmed()))
+            return fail(error,QStringLiteral("Неверное, неизвестное или повторное поле ##"));
+        fields.insert(pair[0].trimmed(),pair[1].trimmed());
+    }
+    for(const auto &key:required) if(!fields.contains(key))
+        return fail(error,QStringLiteral("В ## отсутствует поле %1").arg(key));
+    parsed.board=fields["board"];parsed.link=fields["link"];parsed.bkd=fields["bkd"];
+    const QRegularExpression com(QStringLiteral("^COM[1-9][0-9]{0,3}$"));
+    const QRegularExpression yps(QStringLiteral("^(?:[1-9]|1[0-2])$"));
+    if((parsed.board!="NEW" && parsed.board!="OLD") ||
+       (parsed.link!="ETH" && !com.match(parsed.link).hasMatch()) ||
+       (parsed.board=="OLD" && parsed.link=="ETH") ||
+       (parsed.bkd!="A1" && parsed.bkd!="B") ||
+       (parsed.board=="OLD" ? fields["yps"]!="none" : !yps.match(fields["yps"]).hasMatch()) ||
+       (fields["edge"]!="rise" && fields["edge"]!="fall") ||
+       (fields.contains("role") && fields["role"]!="kp" && fields["role"]!="channel"))
+        return fail(error,QStringLiteral("Недопустимые board/link/bkd/yps/edge/role в ##"));
+    if(parsed.board=="NEW") parsed.ypsIndex=fields["yps"].toInt()-1;
+    parsed.falling=fields["edge"]=="fall";parsed.kp=fields.value("role")=="kp";
+    for(const auto &key:QStringList{"out","in"}) {
+        auto &indices=key=="out"?parsed.outputs:parsed.inputs;
+        for(const auto &token:fields[key].split(u',')) {
+            const auto number=token.trimmed();
+            if(number.size()!=1 || number[0]<u'1' || number[0]>u'8' || indices.contains(number.toInt()-1))
+                return fail(error,QStringLiteral("В ## %1 нужны уникальные номера 1..8").arg(key));
+            indices.append(number.toInt()-1);
+        }
+    }
+    if(parsed.outputs.size()!=parsed.inputs.size())
+        return fail(error,QStringLiteral("В ## out и in должны иметь одинаковую длину"));
+    *result=parsed;return true;
+}
+
 quint8 crc8(const QByteArray &bytes) {
     quint8 crc = 0;
     for (char byte : bytes) {
@@ -201,7 +242,38 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
             const QString tail = lines.at(i).mid(lines.at(i).indexOf(u'=') + 1);
             const int commentAt = tail.indexOf(u'#');
             action.rawValue = (commentAt >= 0 ? tail.left(commentAt) : tail).trimmed();
-            action.comment = commentAt >= 0 ? tail.mid(commentAt + 1) : QString();
+            action.comment = commentAt >= 0
+                ? tail.mid(commentAt + (tail.mid(commentAt,2)=="##"?0:1)) : QString();
+            const auto sections=action.comment.split(QStringLiteral("##"));
+            action.comment=sections.first();
+            QSet<QString> assigned;
+            QSet<QString> kpSources;
+            const auto *definition=findCommand(key);
+            for(int section=1;section<sections.size();++section) {
+                WiringAnnotation annotation;QString reason;
+                if(!parseWiring(sections[section],&annotation,&reason))
+                    return fail(error,QStringLiteral("Строка %1: %2").arg(i+1).arg(reason));
+                if(annotation.kp != (key=="LIFT_OFF_CONTACT") ||
+                   (definition && definition->mask &&
+                    annotation.bkd!=(QString::fromLatin1(definition->peer)=="bkhoa"?"A1":"B")))
+                    return fail(error,QStringLiteral("Строка %1: роль КП или БКД противоречит команде").arg(i+1));
+                if(annotation.kp) {
+                    const QString source=annotation.board+u'/'+annotation.link;
+                    if(kpSources.contains(source) || annotation.inputs.size()!=1 ||
+                       (annotation.board=="OLD" && (annotation.inputs[0]!=7 || annotation.falling)))
+                        return fail(error,QStringLiteral("Строка %1: неоднозначный КП; OLD поддерживает только вход 8, rise").arg(i+1));
+                    kpSources.insert(source);
+                }
+                for(int n=0;n<annotation.inputs.size();++n) {
+                    const auto identity=QStringLiteral("%1/%2/%3/%4/%5").arg(annotation.board,annotation.link)
+                        .arg(annotation.ypsIndex).arg(annotation.inputs[n]).arg(annotation.falling);
+                    if(assigned.contains(identity) ||
+                       (definition && definition->mask && !(definition->mask & (1u<<annotation.outputs[n]))))
+                        return fail(error,QStringLiteral("Строка %1: повторное назначение или выход вне маски БЦВМ").arg(i+1));
+                    assigned.insert(identity);
+                }
+                action.wiring.append(annotation);
+            }
             action.rawLine = lines.at(i).toUtf8();
             parsed.actions.append(action);
             if (parsed.actions.size() > 256)
@@ -383,6 +455,7 @@ QJsonObject StandProtocol::mappingSnapshot(const StandMapping &mapping) {
     return {{"schema", "pyro.stand-profile.v2"}, {"version", mapping.version},
             {"catalog_version", QLatin1String(kCommandCatalogVersion)}, {"kp", inputJson(mapping.kp)},
             {"kp_action_key", mapping.kpActionKey}, {"actions", actions},
+            {"action_identity", mapping.occurrenceBased ? "sha256:line" : "command_key"},
             {"wiring_verification", "operator selection; physical acceptance recorded separately"}};
 }
 
@@ -613,6 +686,54 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
 }
 
 void IntegrationSession::updateBenchMapping() {
+    const bool annotated=std::any_of(m_plan.actions.cbegin(),m_plan.actions.cend(),
+        [](const PlannedAction &action){return !action.wiring.isEmpty();});
+    if(annotated) {
+        m_mapping={};m_mapping.occurrenceBased=true;
+        m_mapping.version=QStringLiteral("Циклограмма ## v1 · разводка не подтверждена");
+        if(!m_mappingBytes.isEmpty() || !m_options.wiringProfilePath.isEmpty()) {
+            m_mapping.warnings << QStringLiteral("Конфликт: ## в ПЗ и JSON-профиль. Назначения отключены.");
+            return;
+        }
+        QHash<int,QString> occupied;
+        for(const auto &action:m_plan.actions) {
+            ActionMapping mapped;
+            for(const auto &annotation:action.wiring) {
+                const bool legacy=m_options.boardTransport==BoardTransport::LegacySerial;
+                int base=annotation.ypsIndex*8;
+                if(legacy) {
+                    if(annotation.board!="OLD") continue;
+                    if(annotation.link==m_options.serialPort &&
+                       (annotation.kp || annotation.bkd==(m_options.legacySecondStage?"B":"A1"))) base=0;
+                    else if(!m_options.secondLegacySerialPort.isEmpty() &&
+                            annotation.link==m_options.secondLegacySerialPort && (annotation.kp || annotation.bkd=="B")) base=8;
+                    else continue;
+                } else if(annotation.board!="NEW" ||
+                    annotation.link!=(m_options.boardTransport==BoardTransport::Udp?"ETH":m_options.serialPort)) continue;
+                const auto *definition=findCommand(action.key);
+                for(int i=0;i<annotation.inputs.size();++i) {
+                    const int index=base+annotation.inputs[i];
+                    const int edge=index*2+int(annotation.falling);
+                    if(occupied.contains(edge) && occupied.value(edge)!=action.actionId) {
+                        m_mapping.actions.clear();m_mapping.kp={};
+                        m_mapping.warnings << QStringLiteral("Конфликт ##: один вход/фронт назначен нескольким вхождениям");
+                        return;
+                    }
+                    occupied.insert(edge,action.actionId);
+                    const QString signal=definition && definition->mask
+                        ? QStringLiteral("%1.yps_bkd.0.bit.%2").arg(QLatin1String(definition->peer)).arg(annotation.outputs[i])
+                        : QStringLiteral("unconfirmed.%1.out.%2").arg(action.key).arg(annotation.outputs[i]+1);
+                    InputRef input{index,annotation.falling,signal};mapped.inputs.append(input);
+                    if(annotation.kp && (!legacy || (m_options.legacyHasKp && base==0)))
+                        m_mapping.kp=input;
+                }
+            }
+            // Само описание соединений не является актом проверки разводки.
+            if(!mapped.inputs.isEmpty()) m_mapping.actions.insert(action.actionId,mapped);
+        }
+        m_mapping.warnings << QStringLiteral("Источник назначений: ## исходного ПЗ; электрическая разводка не подтверждена");
+        return;
+    }
     if (!m_mappingBytes.isEmpty() || !m_options.wiringProfilePath.isEmpty()) return;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
         const bool dual = !m_options.secondLegacySerialPort.isEmpty();
@@ -986,6 +1107,11 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
 }
 
 bool IntegrationSession::loadMapping(const QString &path) {
+    if(std::any_of(m_plan.actions.cbegin(),m_plan.actions.cend(),
+        [](const PlannedAction &action){return !action.wiring.isEmpty();})) {
+        setError(QStringLiteral("Конфликт: ## в ПЗ и JSON-профиль. Профиль не применён."));
+        return false;
+    }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) { setError(QStringLiteral("Карта каналов: %1").arg(file.errorString())); return false; }
     const QByteArray bytes = file.readAll();
@@ -1144,7 +1270,7 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         result.reason = reason;
         return result;
     };
-    if (!m_mapping.actions.contains(action.key))
+    if (!m_mapping.hasAction(action))
         return blocked(State::Unmapped, QStringLiteral("Не сопоставлено"));
     if (!m_fileIdentityValid)
         return blocked(State::InvalidAssignment, QStringLiteral("Нарушена идентичность файла upload_id; требуется новая загрузка"));
@@ -1180,7 +1306,7 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
 
     if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
         return blocked(State::WaitingForClockAlignment, QStringLiteral("КП только на БКД-А; счётчик БКД-Б не привязан к общей опоре"));
-    const ActionMapping mapped = m_mapping.actions.value(action.key);
+    const ActionMapping mapped = m_mapping.forAction(action);
     if (mapped.inputs.isEmpty() || !mapped.definitionConfirmed || !findCommand(action.key))
         return blocked(State::InvalidAssignment, QStringLiteral("Назначение не подтверждено каталогом команд"));
     for (const auto &input : mapped.inputs) {
@@ -1190,7 +1316,7 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
             return blocked(State::InvalidAssignment, QStringLiteral("Вход вне диапазона выбранного источника"));
         for (const auto &other : m_plan.actions) {
             if (other.actionId == action.actionId && other.ordinal == action.ordinal) continue;
-            for (const auto &used : m_mapping.actions.value(other.key).inputs)
+            for (const auto &used : m_mapping.forAction(other).inputs)
                 if (used.index == input.index && used.falling == input.falling)
                     return blocked(State::InvalidAssignment, QStringLiteral("Одно наблюдение назначено нескольким вхождениям"));
         }
@@ -1437,6 +1563,18 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         item.insert(QStringLiteral("source_line"), action.sourceLine);
         item.insert(QStringLiteral("raw_value"), action.rawValue);
         item.insert(QStringLiteral("comment"), action.comment);
+        QJsonArray wiring;
+        for(const auto &annotation:action.wiring) {
+            QJsonArray outputs,inputs;
+            for(int index:annotation.outputs) outputs.append(index+1);
+            for(int index:annotation.inputs) inputs.append(index+1);
+            wiring.append(QJsonObject{{"board",annotation.board},{"link",annotation.link},{"bkd",annotation.bkd},
+                {"yps",annotation.ypsIndex<0?QJsonValue():QJsonValue(annotation.ypsIndex+1)},
+                {"out",outputs},{"in",inputs},{"edge",annotation.falling?"fall":"rise"},
+                {"role",annotation.kp?"kp":"channel"},{"raw",annotation.raw},
+                {"source","cyclogram ## v1"},{"wiring_confirmed",false}});
+        }
+        item.insert(QStringLiteral("wiring_annotations"),wiring);
         item.insert(QStringLiteral("offset_ms"), action.offsetMs);
         item.insert(QStringLiteral("result"), actionResult(action));
         const auto measurement = measureAction(action);

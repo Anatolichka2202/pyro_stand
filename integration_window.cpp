@@ -369,11 +369,11 @@ void IntegrationWindow::setupUi() {
     planDialog->setWindowTitle(QStringLiteral("Полный план полётного задания"));
     planDialog->resize(1100, 650);
     auto *planLayout = new QVBoxLayout(planDialog);
-    m_planTable = new QTableWidget(0, 8, planDialog);
+    m_planTable = new QTableWidget(0, 9, planDialog);
     m_planTable->setObjectName("fullPlanTable");
     m_planTable->setHorizontalHeaderLabels({"#", QStringLiteral("КЛЮЧ"), QStringLiteral("VALUE"),
         QStringLiteral("КОММЕНТАРИЙ"), QStringLiteral("КЛАСС"), QStringLiteral("ОСНОВНОЙ ИСТОЧНИК"),
-        QStringLiteral("ДОП. ИСТОЧНИК"), QStringLiteral("ID ВХОЖДЕНИЯ")});
+        QStringLiteral("ДОП. ИСТОЧНИК"), QStringLiteral("ID ВХОЖДЕНИЯ"), QStringLiteral("НАЗНАЧЕНИЕ / ИСТОЧНИК")});
     m_planTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_planTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -543,7 +543,7 @@ void IntegrationWindow::refreshCanvas() {
             auto eval = session.measureAction(action);
             if ((eval.state != ActionMeasurement::State::WaitingForKp && eval.state != ActionMeasurement::State::WaitingForClockAlignment))
                 continue;
-            auto map = session.mapping().actions.value(action.key);
+            auto map = session.mapping().forAction(action);
             QVector<double> candidates;
             int stream = -1;
             for (const auto &in : map.inputs) {
@@ -578,7 +578,7 @@ void IntegrationWindow::refreshCanvas() {
             for (const auto &action : session.plan().actions) {
                 if ((session.measureAction(action).state != ActionMeasurement::State::WaitingForKp && session.measureAction(action).state != ActionMeasurement::State::WaitingForClockAlignment))
                     continue;
-                for (const auto &in : session.mapping().actions.value(action.key).inputs) {
+                for (const auto &in : session.mapping().forAction(action).inputs) {
                     if (legacy && in.index >= 8)
                         continue;
                     const auto &r = session.boardFrame().channels[size_t(in.index)];
@@ -597,9 +597,9 @@ void IntegrationWindow::refreshCanvas() {
                     .arg((*limits.second - *limits.first) / 1000, 0, 'f', 3));
         }
         for (const auto &action : session.plan().actions) {
-            if (action.key == "LIFT_OFF_CONTACT" || !session.mapping().actions.contains(action.key))
+            if (action.key == "LIFT_OFF_CONTACT" || !session.mapping().hasAction(action))
                 continue;
-            const auto map = session.mapping().actions.value(action.key);
+            const auto map = session.mapping().forAction(action);
             auto eval = session.measureAction(action);
             CanvasEvent g;
             g.id = QString::number(action.ordinal);
@@ -678,8 +678,10 @@ void IntegrationWindow::refreshCanvas() {
             g.title = QStringLiteral("Контакт подъёма");
             g.source = source;
             g.plan = QStringLiteral("ПЛАН 0");
-            g.channels.append({"8", QStringLiteral("Опорный ноль"),
-                               raw.triggered ? QString::number(raw.riseUs) : QStringLiteral("—"),
+            const auto reference=session.mapping().kp;
+            const auto rawKp=reference.falling?raw.fallUs:raw.riseUs;
+            g.channels.append({QString::number(reference.index%8+1), QStringLiteral("Опорный ноль"),
+                               rawKp ? QString::number(rawKp) : QStringLiteral("—"),
                                confirmed ? QStringLiteral("0.000") : QStringLiteral("—"),
                                QStringLiteral("—"),
                                confirmed ? QStringLiteral("КП") : QStringLiteral("нет КП"),
@@ -845,7 +847,7 @@ void IntegrationWindow::updatePlannedClock() {
                              : QStringLiteral("Расчёт по UTC / часам ПК · неточный"));
     double first = std::numeric_limits<double>::infinity();
     for (const auto &a : source.plan().actions)
-        if (source.mapping().actions.contains(a.key))
+        if (source.mapping().hasAction(a))
             first = std::min(first, double(presentationOffset(source, a)));
     m_firstClock->setText(std::isfinite(first)
                               ? QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n%1")
@@ -1247,19 +1249,26 @@ void IntegrationWindow::refresh() {
     int planRow = 0;
     for (const auto &action : m_session.plan().actions) {
         const auto *definition = findCommand(action.key);
-        const bool assigned = m_session.mapping().actions.value(action.key).definitionConfirmed ||
-            (m_peer && m_peer->mapping().actions.value(action.key).definitionConfirmed);
+        const bool assigned = m_session.mapping().hasAction(action) ||
+            (m_peer && m_peer->mapping().hasAction(action));
         const QString classification = !definition ? QStringLiteral("НЕИЗВЕСТНА БЦВМ")
-            : assigned ? QStringLiteral("КОНТРОЛИРУЕМОЕ")
+            : assigned ? (action.wiring.isEmpty() ? QStringLiteral("КОНТРОЛИРУЕМОЕ")
+                : QStringLiteral("## · РАЗВОДКА НЕ ПОДТВЕРЖДЕНА"))
             : definition->mask ? QStringLiteral("ТРЕБУЕТ НАСТРОЙКИ")
                                : QStringLiteral("ИНФОРМАЦИОННОЕ (КОД)");
+        QStringList wiringDetails;
+        for(const auto &annotation:action.wiring) wiringDetails << annotation.raw;
+        const QString assignmentTip=action.wiring.isEmpty()
+            ? QStringLiteral("Источник: %1").arg(m_session.mapping().version)
+            : QStringLiteral("Источник: ## ПЗ; разводка не подтверждена\n%1").arg(wiringDetails.join('\n'));
         const QStringList values{QString::number(action.ordinal), action.key, action.rawValue,
             action.comment, classification, m_session.actionResult(action),
-            m_peer ? m_peer->actionResult(action) : QStringLiteral("—"), action.actionId};
+            m_peer ? m_peer->actionResult(action) : QStringLiteral("—"), action.actionId,
+            wiringDetails.isEmpty() ? assignmentTip : wiringDetails.join(QStringLiteral(" | "))};
         for (int col = 0; col < values.size(); ++col)
             cell(m_planTable, planRow, col, values[col], kNeutral, QColor(),
                  Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Строка %1; %2")
-                     .arg(action.sourceLine).arg(action.actionId));
+                     .arg(action.sourceLine).arg(action.actionId)+u'\n'+assignmentTip);
         ++planRow;
     }
 
@@ -1268,7 +1277,7 @@ void IntegrationWindow::refresh() {
     bool explicitKp = false;
     if (hasPlan) {
         for (const PlannedAction &action : m_session.plan().actions) {
-            if (!m_session.mapping().actions.contains(action.key)) continue;
+            if (!m_session.mapping().hasAction(action)) continue;
             rows.append({action, false});
             signatureParts << QStringLiteral("%1:%2:%3")
                 .arg(action.ordinal).arg(action.offsetMs).arg(action.key);
@@ -1296,8 +1305,8 @@ void IntegrationWindow::refresh() {
             event.key = action.key;
             event.description = eventName(action);
             event.time_ms = presentationOffset(m_session, action);
-            event.hasChannels = m_session.mapping().actions.contains(action.key) ||
-                (m_peer && m_peer->mapping().actions.contains(action.key));
+            event.hasChannels = m_session.mapping().hasAction(action) ||
+                (m_peer && m_peer->mapping().hasAction(action));
             events.append(event);
         }
         m_timeline->setEvents(events);
@@ -1316,7 +1325,7 @@ void IntegrationWindow::refresh() {
     for (const auto &row : rows) {
         ++displayCount;
         if (!row.physicalKp) {
-            const auto mapped = m_session.mapping().actions.value(row.plan.key);
+            const auto mapped = m_session.mapping().forAction(row.plan);
             if (mapped.inputs.size() > 1)
                 displayCount += mapped.inputs.size();
         }
@@ -1361,7 +1370,7 @@ void IntegrationWindow::refresh() {
         } else {
             evaluation = m_session.measureAction(action);
             if (evaluation.channels.isEmpty()) {
-                const auto mapped = m_session.mapping().actions.value(action.key);
+                const auto mapped = m_session.mapping().forAction(action);
                 for (const auto &input : mapped.inputs)
                     evaluation.channels.append({input, std::nullopt, std::nullopt});
             }
@@ -1468,7 +1477,7 @@ void IntegrationWindow::refresh() {
              kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 2,
              row.physicalKp ? compactInput(m_session.mapping().kp, legacy, secondOnly)
-                 : inputNames(m_session.mapping().actions.value(action.key), legacy, secondOnly),
+                 : inputNames(m_session.mapping().forAction(action), legacy, secondOnly),
              kDim, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 3, QString::number(row.physicalKp ? 0 : presentationOffset(m_session, action)),
              kDim, bg, Qt::AlignRight | Qt::AlignVCenter);

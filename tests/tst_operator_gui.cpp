@@ -28,6 +28,7 @@ private slots:
 #endif
     }
     void fullWorkingPlanVisible();
+    void channelLabelsUseSourceComments();
     void nonzeroPlannedKpUsesOneScale();
     void historicalPresetClearsExternalProfiles();
     void invalidIpShowsSpecificError_data();
@@ -123,6 +124,31 @@ void OperatorGuiTest::nonzeroPlannedKpUsesOneScale() {
         for(const auto &row:group.channels) {QCOMPARE(row.actual,QString("20.000"));QCOMPARE(row.delta,QString("0.000"));}
     }
     QVERIFY(found);QCOMPARE(window.m_eventTable->item(1,3)->text(),QString("20"));
+}
+
+void OperatorGuiTest::channelLabelsUseSourceComments() {
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost;options.bindIp=QHostAddress::LocalHost;
+    options.firstStageYps=9;options.secondStageYps=1;options.kpYps=9;
+    IntegrationWindow window(options);auto &session=window.m_session;QString error;
+    const auto comment=QStringLiteral("Зажигание по комментарию ПЗ");
+    const auto source=QStringLiteral("START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8000 #   %1  \n"
+        "IGNITE_PYRO_CANDLE=159800\nLIFT_OFF_CONTACT=0\n").arg(comment).toUtf8();
+    QVERIFY(StandProtocol::parseCyclogram(source,&session.m_plan,&error));
+    session.m_hasPlan=true;session.updateBenchMapping();window.refresh();
+    int commented=0,fallback=0;
+    for(const auto &group:window.m_canvas->events()) {
+        for(const auto &row:group.channels) {
+            QVERIFY(!row.role.contains(".yps_bkd."));
+            if(group.id=="1") {QCOMPARE(row.role,comment);++commented;}
+            if(group.id=="2") {QCOMPARE(row.role,QStringLiteral("Зажигание пиросвечей"));++fallback;}
+        }
+    }
+    QCOMPARE(commented,2);QCOMPARE(fallback,2);
+    // Presentation trims whitespace without modifying the source or matching identity.
+    QCOMPARE(session.m_plan.sourceBytes,source);
+    QVERIFY(session.m_plan.actions[0].comment.contains(comment));
 }
 
 void OperatorGuiTest::fullWorkingPlanVisible() {

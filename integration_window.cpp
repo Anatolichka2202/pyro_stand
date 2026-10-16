@@ -47,9 +47,9 @@ QString signedMs(double value) {
 
 QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = false) {
     if (legacy)
-        return QStringLiteral("%1 / %2 · %3")
+        return QStringLiteral("%1 / %2")
             .arg(input.index >= 8 || secondOnly ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"))
-            .arg(input.index % 8 + 1).arg(input.signalId);
+            .arg(input.index % 8 + 1);
     return QStringLiteral("ЯПС %1 / %2 %3")
         .arg(input.index / 8)
         .arg(input.index % 8 + 1)
@@ -78,8 +78,7 @@ QString inputNames(const ActionMapping &mapping, bool legacy = false, bool secon
     return names.join(QStringLiteral(", "));
 }
 
-// The debug contract supplies event keys, not the legacy INI descriptions.
-// Only the four labels confirmed by the operator design are expanded.
+// Operator-facing fallback when the source action has no comment.
 QString eventName(const QString &key) {
     if (key == QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"))
         return QStringLiteral("Зажигание пиросвечей двигателей 9–12");
@@ -486,7 +485,8 @@ void IntegrationWindow::refreshCanvas() {
                 row.input =
                     legacy ? QString::number(in.index % 8 + 1)
                            : QStringLiteral("%1:%2").arg(in.index / 8).arg(in.index % 8 + 1);
-                row.role = in.signalId.isEmpty() ? QStringLiteral("Назначенный сигнал") : in.signalId;
+                row.role = action.comment.trimmed().isEmpty()
+                    ? g.title : action.comment.trimmed();
                 row.color = kDim;
                 row.actual = row.delta = row.rawTick = QStringLiteral("—");
                 row.status = QStringLiteral("ожидание");

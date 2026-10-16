@@ -14,6 +14,8 @@
 
 class TimelineWidget;
 class QPushButton;
+class QDialog;
+class QComboBox;
 
 // Event-oriented operator HMI accepted in V3; data comes from
 // IntegrationSession, never from the legacy Stand/serial transfer path.
@@ -32,6 +34,7 @@ private:
     void updatePlannedClock();
     void appendMessage(const QString &text);
     void configureTester();
+    void refreshLive();
     void appendJournal(const QString &level, const QString &message, const QString &color);
 
     IntegrationSession m_session;
@@ -48,6 +51,11 @@ private:
     QTimer m_refreshTimer;
     QTimer m_clockTimer;
 
+    // Состояния живых входов не зависят от циклограммы и допуска.
+    QDialog *m_liveDialog = nullptr;
+    QComboBox *m_liveSource = nullptr;
+    QTableWidget *m_liveTable = nullptr;
+    QLabel *m_liveStatus = nullptr;
     QLabel *m_clockCaption = nullptr;
     QLabel *m_timerLabel = nullptr;
     QLabel *m_phaseLabel = nullptr;

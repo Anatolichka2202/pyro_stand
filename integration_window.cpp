@@ -95,6 +95,17 @@ QString eventName(const QString &key) {
     return key;
 }
 
+QString eventName(const PlannedAction &action) {
+    // Комментарий циклограммы — исходное описание оператора.
+    // Добавленные краткие примечания оставляем после основного названия.
+    const QString comment = action.comment.trimmed();
+    if (!comment.isEmpty()) {
+        const QString description = comment.section(QStringLiteral(" · "), 0, 0).trimmed();
+        if (!description.isEmpty()) return description;
+    }
+    return eventName(action);
+}
+
 void cell(QTableWidget *table, int row, int col, const QString &value,
           const QColor &foreground = kNeutral, const QColor &background = QColor(),
           Qt::Alignment alignment = Qt::AlignLeft | Qt::AlignVCenter,
@@ -172,6 +183,11 @@ IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
     connect(&m_session, &IntegrationSession::message, this, &IntegrationWindow::appendMessage);
     m_clockTimer.setInterval(33);
     connect(&m_clockTimer, &QTimer::timeout, this, &IntegrationWindow::updatePlannedClock);
+    connect(&m_clockTimer, &QTimer::timeout, this, [this] {
+        if (m_liveDialog && m_liveDialog->isVisible()) refreshLive();
+        // Автоматическое завершение обрабатывается отдельно в IntegrationSession.
+        if (m_session.collectionFinished() && !m_refreshTimer.isActive()) m_refreshTimer.start();
+    });
     m_clockTimer.start();
 
     m_session.start();
@@ -210,13 +226,17 @@ void IntegrationWindow::setupUi() {
     map->setObjectName("testerConfigurationBtn");
     m_resetButton = new QPushButton(QStringLiteral("Новый сбор"), surface);
     m_resetButton->setObjectName("resetBtn");
+    auto *finish = new QPushButton(QStringLiteral("Завершить сбор"), surface);
+    finish->setObjectName("finishCollectionBtn");
+    auto *live = new QPushButton(QStringLiteral("Живые каналы"), surface);
+    live->setObjectName("liveChannelsBtn");
     auto *save = new QPushButton(QStringLiteral("Отчёт"), surface);
     save->setObjectName("reportBtn");
     auto *log = new QPushButton(QStringLiteral("Журнал"), surface);
     log->setObjectName("journalBtn");
     auto *planButton = new QPushButton(QStringLiteral("Полный план"), surface);
     planButton->setObjectName("fullPlanBtn");
-    for (auto *button : {map, m_resetButton, save, log, planButton})
+    for (auto *button : {map, m_resetButton, finish, live, save, log, planButton})
         header->addWidget(button);
     main->addLayout(header);
     auto *clocks = new QHBoxLayout;
@@ -302,6 +322,48 @@ void IntegrationWindow::setupUi() {
     m_eventLog->setReadOnly(true);
     jl->addWidget(m_eventLog);
     connect(log, &QPushButton::clicked, journal, &QDialog::show);
+    m_liveDialog = new QDialog(this);
+    m_liveDialog->setObjectName("liveChannelsDialog");
+    m_liveDialog->setWindowTitle(QStringLiteral("Живые каналы пиротестеров"));
+    m_liveDialog->resize(770, 440);
+    auto *liveLayout = new QVBoxLayout(m_liveDialog);
+    auto *liveNote = new QLabel(QStringLiteral(
+        "Сырые входы прибора: не зависят от КП, разрешения БЦВМ и оценки циклограммы."),
+        m_liveDialog);
+    liveNote->setWordWrap(true);
+    liveLayout->addWidget(liveNote);
+    m_liveSource = new QComboBox(m_liveDialog);
+    m_liveSource->setObjectName("liveSourceChoice");
+    liveLayout->addWidget(m_liveSource);
+    m_liveStatus = new QLabel(m_liveDialog);
+    m_liveStatus->setObjectName("liveTransportStatus");
+    m_liveStatus->setWordWrap(true);
+    liveLayout->addWidget(m_liveStatus);
+    m_liveTable = new QTableWidget(8, 6, m_liveDialog);
+    m_liveTable->setObjectName("liveChannelsTable");
+    m_liveTable->setHorizontalHeaderLabels({QStringLiteral("Канал"),
+        QStringLiteral("Сейчас"), QStringLiteral("Был фронт"),
+        QStringLiteral("Подъём, мс"), QStringLiteral("Спад, мс"),
+        QStringLiteral("Длительность, мс")});
+    m_liveTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_liveTable->verticalHeader()->hide();
+    m_liveTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    liveLayout->addWidget(m_liveTable);
+    connect(m_liveSource, &QComboBox::currentIndexChanged, this, [this] { refreshLive(); });
+    connect(live, &QPushButton::clicked, this, [this] {
+        refreshLive();
+        m_liveDialog->show();
+        m_liveDialog->raise();
+    });
+    connect(finish, &QPushButton::clicked, this, [this] {
+        if (QMessageBox::question(this, QStringLiteral("Завершение наблюдения"),
+            QStringLiteral("Завершить сбор и зафиксировать измерения?\n"
+                           "Команды остановки или управления БЦВМ отправлены НЕ будут.")) != QMessageBox::Yes)
+            return;
+        m_session.finishCollection();
+        if (m_peer) m_peer->finishCollection();
+        refresh();
+    });
     auto *planDialog = new QDialog(this);
     planDialog->setObjectName("fullPlanDialog");
     planDialog->setWindowTitle(QStringLiteral("Полный план полётного задания"));
@@ -390,6 +452,76 @@ IntegrationSession &IntegrationWindow::clockSession() {
     return m_session;
 }
 
+void IntegrationWindow::refreshLive() {
+    if (!m_liveSource || !m_liveTable || !m_liveStatus) return;
+    const QString previous = m_liveSource->currentData().toString();
+    QStringList sources;
+    struct Choice { QString id; QString title; };
+    QVector<Choice> choices;
+    const auto addSources = [&](const IntegrationSession &session, const QString &prefix,
+                                const QString &name) {
+        const auto &options = session.options();
+        if (options.boardTransport == IntegrationSession::BoardTransport::LegacySerial) {
+            choices.append({prefix + QStringLiteral(":0"), name + QStringLiteral(" · COM ") + options.serialPort});
+            if (!options.secondLegacySerialPort.isEmpty())
+                choices.append({prefix + QStringLiteral(":8"), name + QStringLiteral(" · COM ") + options.secondLegacySerialPort});
+        } else {
+            for (int group = 0; group < 12; ++group)
+                choices.append({prefix + QStringLiteral(":") + QString::number(group * 8),
+                    name + QStringLiteral(" · ЯПС ") + QString::number(group)});
+        }
+    };
+    addSources(m_session, QStringLiteral("main"), QStringLiteral("Основной"));
+    if (m_peer) addSources(*m_peer, QStringLiteral("peer"), QStringLiteral("Дополнительный"));
+    for (const auto &choice : choices) sources.append(choice.id);
+    bool rebuild = m_liveSource->count() != choices.size();
+    if (!rebuild)
+        for (int i = 0; i < choices.size(); ++i)
+            if (m_liveSource->itemData(i).toString() != choices[i].id) { rebuild = true; break; }
+    if (rebuild) {
+        m_liveSource->blockSignals(true);
+        m_liveSource->clear();
+        for (const auto &choice : choices) m_liveSource->addItem(choice.title, choice.id);
+        int selected = m_liveSource->findData(previous);
+        if (selected < 0 && m_session.options().firstStageYps > 0 &&
+            m_session.options().boardTransport != IntegrationSession::BoardTransport::LegacySerial)
+            selected = m_liveSource->findData(
+                QStringLiteral("main:%1").arg((m_session.options().firstStageYps - 1) * 8));
+        m_liveSource->setCurrentIndex(selected < 0 ? 0 : selected);
+        m_liveSource->blockSignals(false);
+    }
+    const QString id = m_liveSource->currentData().toString();
+    const bool peer = id.startsWith(QStringLiteral("peer:"));
+    const auto &session = peer && m_peer ? *m_peer : m_session;
+    const int start = id.section(u':', 1, 1).toInt();
+    const BoardFrame &frame = session.liveFrame();
+    const auto formatTick = [](quint32 tick) {
+        return tick == 0 ? QStringLiteral("—") : QString::number(double(tick) / 1000.0, 'f', 3);
+    };
+    for (int channel = 0; channel < 8; ++channel) {
+        const auto &raw = frame.channels[size_t(start + channel)];
+        const QColor highlight = raw.ready ? kGreen : raw.triggered ? kAmber : kDim;
+        cell(m_liveTable, channel, 0, QString::number(channel + 1));
+        cell(m_liveTable, channel, 1,
+             raw.ready ? QStringLiteral("АКТИВЕН") : QStringLiteral("не активен"), highlight);
+        cell(m_liveTable, channel, 2,
+             raw.triggered ? QStringLiteral("ДА") : QStringLiteral("нет"),
+             raw.triggered ? kGreen : kDim);
+        cell(m_liveTable, channel, 3, formatTick(raw.riseUs));
+        cell(m_liveTable, channel, 4, formatTick(raw.fallUs));
+        const bool hasDuration = raw.triggered && raw.fallUs != 0;
+        cell(m_liveTable, channel, 5,
+             hasDuration ? QString::number(double(quint32(raw.fallUs - raw.riseUs)) / 1000.0, 'f', 3)
+                         : QStringLiteral("—"));
+    }
+    m_liveStatus->setText(
+        QStringLiteral("Приём: %1 · валидных: %2 · ошибок кадров: %3 · отброшено по IP: %4 · адрес последнего UDP: %5")
+            .arg(session.boardReceiving() ? QStringLiteral("есть поток") : QStringLiteral("нет потока"))
+            .arg(session.acceptedFrames()).arg(session.rejectedFrames())
+            .arg(session.discardedUdpSenders())
+            .arg(session.lastUdpSender().isEmpty() ? QStringLiteral("—") : session.lastUdpSender()));
+}
+
 void IntegrationWindow::refreshCanvas() {
     m_forecastPosition.reset();
     QVector<CanvasEvent> groups;
@@ -471,7 +603,7 @@ void IntegrationWindow::refreshCanvas() {
             auto eval = session.measureAction(action);
             CanvasEvent g;
             g.id = QString::number(action.ordinal);
-            g.title = eventName(action.key);
+            g.title = eventName(action);
             g.title.replace(QStringLiteral(" двигателей 9–12"), "");
             g.source = source;
             g.offsetMs = presentationOffset(session, action);
@@ -1010,7 +1142,11 @@ void IntegrationWindow::refresh() {
 
     QString phaseText;
     QString phaseColor = QStringLiteral("#8b949e");
-    if (!hasPlan) {
+    if (m_session.collectionFinished()) {
+        phaseText = QStringLiteral("СБОР ЗАВЕРШЁН");
+        phaseColor = QStringLiteral("#81b6d0");
+        m_phaseLabel->setToolTip(m_session.finishReason());
+    } else if (!hasPlan) {
         phaseText = QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ");
     } else if (!uploaded) {
         phaseText = QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА");
@@ -1143,24 +1279,29 @@ void IntegrationWindow::refresh() {
             return a.plan.offsetMs < b.plan.offsetMs;
         });
     }
+    // Общая шкала содержит ВСЁ полётное задание. Пироканалы лишь отмечают
+    // те пункты, которые действительно наблюдаются на одном из источников.
     const QString signature = m_session.uploadId() + QStringLiteral("|") +
         m_session.mapping().version + QStringLiteral("|") +
-        signatureParts.join(QStringLiteral("|")) + QStringLiteral("|kp:") +
-        QString::number(int(m_session.mapping().kp.index >= 0 && !explicitKp));
+        (m_peer ? m_peer->mapping().version : QString()) +
+        QString::number(m_session.plan().actions.size()) +
+        signatureParts.join(QStringLiteral("|"));
     if (signature != m_timelineSignature) {
         m_timelineSignature = signature;
         QVector<EventRow> events;
-        for (const auto &row : rows) {
+        for (const auto &action : m_session.plan().actions) {
             EventRow event;
-            event.id = row.plan.ordinal;
-            event.key = row.plan.key;
-            event.time_ms = row.physicalKp ? 0 : presentationOffset(m_session, row.plan);
-            event.hasChannels = true;
+            event.id = action.ordinal;
+            event.key = action.key;
+            event.description = eventName(action);
+            event.time_ms = presentationOffset(m_session, action);
+            event.hasChannels = m_session.mapping().actions.contains(action.key) ||
+                (m_peer && m_peer->mapping().actions.contains(action.key));
             events.append(event);
         }
         m_timeline->setEvents(events);
     }
-    m_timeline->setVisible(!rows.isEmpty());
+    m_timeline->setVisible(hasPlan);
     m_eventCaption->setText(QStringLiteral("ОТСЛЕЖИВАЕМЫЕ СОБЫТИЯ · %1")
         .arg(rows.size()));
     if (rows.isEmpty()) {
@@ -1266,7 +1407,7 @@ void IntegrationWindow::refresh() {
                 if (m_loggedStates.value(stateKey) != logValue) {
                     appendJournal(QStringLiteral("СОБЫТ."),
                                   QStringLiteral("%1 · %2 · факт %3 мс · Δ %4 мс")
-                                      .arg(eventName(action.key), status, facts, delta),
+                                      .arg(eventName(action), status, facts, delta),
                                   statusColor.name());
                 }
                 m_loggedStates.insert(stateKey, logValue);
@@ -1288,7 +1429,7 @@ void IntegrationWindow::refresh() {
                     if (sample.actualMs)
                         latestMeasuredMs = std::max(latestMeasuredMs, *sample.actualMs);
                 if (!foundAwaited) {
-                    m_nextEventLabel->setText(QStringLiteral("Без факта: ") + eventName(action.key));
+                    m_nextEventLabel->setText(QStringLiteral("Без факта: ") + eventName(action));
                     nextPending = true;
                     foundAwaited = true;
                 }
@@ -1314,7 +1455,7 @@ void IntegrationWindow::refresh() {
              nextPending ? QColor("#0d1117") : kDim,
              nextPending ? QColor("#58a6ff") : bg, Qt::AlignCenter);
         cell(m_eventTable, tableRow, 1,
-             row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : eventName(action.key),
+             row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : eventName(action),
              kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
         cell(m_eventTable, tableRow, 2,
              row.physicalKp ? compactInput(m_session.mapping().kp, legacy, secondOnly)

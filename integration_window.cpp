@@ -662,6 +662,7 @@ void IntegrationWindow::refreshCanvas() {
                         eval.state == ActionMeasurement::State::PartialAfterFinish;
                     row.status = missed ? QStringLiteral("НЕ СРАБОТАЛ") : QStringLiteral("без оценки");
                     row.color = missed ? kRed : kAmber;
+                    if (missed) ++bad;
                 }
                 g.channels.append(row);
                 ++total;
@@ -724,26 +725,7 @@ void IntegrationWindow::refreshCanvas() {
         m_peerStatus->clear();
     if (&clockSession() != &m_session) {
         auto &source = clockSession();
-        QVector<EventRow> timeline;
-        for (const auto &action : source.plan().actions) {
-            if (!source.mapping().actions.contains(action.key) || action.key == "LIFT_OFF_CONTACT")
-                continue;
-            EventRow row;
-            row.id = action.ordinal;
-            row.key = action.key;
-            row.time_ms = presentationOffset(source, action);
-            row.hasChannels = true;
-            timeline.append(row);
-        }
-        if (source.mapping().kp.index >= 0) {
-            EventRow row;
-            row.id = 0;
-            row.key = "LIFT_OFF_CONTACT";
-            row.time_ms = 0;
-            row.hasChannels = true;
-            timeline.append(row);
-        }
-        m_timeline->setEvents(timeline);
+        // Не подменяем полную шкалу сокращённым списком при выборе второго источника.
         for (const auto &action : source.plan().actions) {
             auto result = source.measureAction(action);
             if (result.state != ActionMeasurement::State::Measured)
@@ -757,9 +739,13 @@ void IntegrationWindow::refreshCanvas() {
                                                        : result.toleranceMs ? "fail"
                                                                             : "");
         }
-        m_timeline->markEventFired(0,
-                                   source.measurementEligible() && source.kpTimeUs() ? "ok" : "");
-        m_timeline->setVisible(!timeline.isEmpty());
+        const auto kpAction = std::find_if(source.plan().actions.cbegin(),
+            source.plan().actions.cend(), [](const PlannedAction &action) {
+                return action.key == QStringLiteral("LIFT_OFF_CONTACT");
+            });
+        if (kpAction != source.plan().actions.cend() &&
+            source.measurementEligible() && source.kpTimeUs())
+            m_timeline->markEventFired(kpAction->ordinal, QStringLiteral("ok"));
         if (source.measurementEligible() && source.kpTimeUs())
             m_kpStatus->setText(
                 QStringLiteral("КП старого %1: %2 мкс · собственная аппаратная опора")
@@ -1419,7 +1405,15 @@ void IntegrationWindow::refresh() {
                 m_loggedStates.insert(stateKey, logValue);
             } else {
                 m_timeline->markEventFired(action.ordinal, QString());
-                if (evaluation.state == State::Partial) {
+                if (evaluation.state == State::MissingAfterFinish ||
+                    evaluation.state == State::PartialAfterFinish) {
+                    status = evaluation.state == State::MissingAfterFinish
+                        ? QStringLiteral("НЕ СРАБОТАЛО") : QStringLiteral("НЕ ВСЕ ВХОДЫ СРАБОТАЛИ");
+                    statusColor = kRed;
+                    bg = QColor("#3d1515");
+                    ++deviations;
+                    m_timeline->markEventFired(action.ordinal, QStringLiteral("fail"));
+                } else if (evaluation.state == State::Partial) {
                     status = QStringLiteral("ЧАСТЬ ВХОДОВ");
                     statusColor = kAmber;
                     ++waiting;
@@ -1488,6 +1482,11 @@ void IntegrationWindow::refresh() {
                     const bool good = std::abs(*sample.deviationMs) <= *evaluation.toleranceMs;
                     measuredColor = good ? kGreen : kRed;
                     subStatus = good ? QStringLiteral("В ДОПУСКЕ") : QStringLiteral("ОТКЛОНЕНИЕ");
+                } else if (!hasValue &&
+                           (evaluation.state == ActionMeasurement::State::MissingAfterFinish ||
+                            evaluation.state == ActionMeasurement::State::PartialAfterFinish)) {
+                    measuredColor = kRed;
+                    subStatus = QStringLiteral("НЕ СРАБОТАЛ");
                 }
                 cell(m_eventTable, tableRow, 0, QString(), kDim, subBg);
                 cell(m_eventTable, tableRow, 1, QStringLiteral("    ↳ ") + inputName(sample.input, legacy, secondOnly),
@@ -1510,7 +1509,7 @@ void IntegrationWindow::refresh() {
     if (!foundAwaited && !rows.isEmpty())
         m_nextEventLabel->setText(QStringLiteral("Назначенные события: %1").arg(rows.size()));
     m_summaryLabel->setText(QStringLiteral(
-        "РЕЗУЛЬТАТ · ИЗМЕРЕНО: %1 / %2  ·  ВНЕ ДОПУСКА: %3  ·  "
+        "РЕЗУЛЬТАТ · ИЗМЕРЕНО: %1 / %2  ·  ОТКЛ./НЕСРАБОТ.: %3  ·  "
         "ОЖИДАНИЕ: %4  ·  БЕЗ ОЦЕНКИ: %5  ·  МАКС. |Δ|: %6 мс")
         .arg(completed).arg(std::count_if(rows.cbegin(), rows.cend(),
             [](const DisplayAction &row) { return !row.physicalKp; }))

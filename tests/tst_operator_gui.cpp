@@ -41,6 +41,7 @@ private slots:
     void commonKpOnlyOnNewBoard();
     void rawChannelsAreVisibleWithoutFlightPermission();
     void timelineShowsFullPlan();
+    void peerClockDoesNotTruncateTimeline();
 };
 
 
@@ -443,6 +444,39 @@ void OperatorGuiTest::timelineShowsFullPlan() {
     window.m_session.finishCollection();
     window.refresh();
     QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("ЗАВЕРШЁН")));
+}
+
+
+void OperatorGuiTest::peerClockDoesNotTruncateTimeline() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.firstStageYps = 0;
+    options.kpYps = 0;
+    options.comparisonLegacyPort = "NONEXISTENT_TEST_PEER";
+    options.comparisonLegacySecondStage = false;
+    options.comparisonLegacyHasKp = true;
+    IntegrationWindow window(options);
+    window.show();
+    QVERIFY(window.m_peer);
+    const QByteArray file =
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "START_HELIUM_PURGE_A=-10000\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8000\n"
+        "LIFT_OFF_CONTACT=0\nPITCH_PROGRAM_BEGIN=5000\n";
+    for (auto *session : {&window.m_session, window.m_peer.get()}) {
+        QString error;
+        QVERIFY(StandProtocol::parseCyclogram(file, &session->m_plan, &error));
+        session->m_hasPlan = true;
+        session->updateBenchMapping();
+    }
+    QVERIFY(window.m_session.mapping().actions.isEmpty());
+    QVERIFY(!window.m_peer->mapping().actions.isEmpty());
+    QCOMPARE(&window.clockSession(), window.m_peer.get());
+    window.refresh();
+    // Ранее refreshCanvas оставлял только назначенные действия и КП.
+    QCOMPARE(window.m_timeline->eventCount(), 4);
+    QVERIFY(window.m_timeline->isVisible());
 }
 
 QTEST_MAIN(OperatorGuiTest)

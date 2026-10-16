@@ -33,7 +33,7 @@ jobs:
 
       - name: Configure Pyro-stand
         shell: pwsh
-        run: cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI_TESTS=ON
+        run: cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI_TESTS=ON -DBUILD_HARDWARE_PROBE=ON
 
       - name: Build Pyro-stand and all test targets
         shell: pwsh

@@ -29,8 +29,13 @@ int main(int argc, char **argv) {
                      [&](const QString &s) { messages.append("old: " + s); });
     QMap<int,BoardChannel> modernSeen,legacySeen;
     const auto observe=[](IntegrationSession &session,QMap<int,BoardChannel> &seen){
-        if(!session.hasBoardFrame())return;
-        for(int i=0;i<96;++i){const auto &c=session.boardFrame().channels[size_t(i)];if(c.triggered||c.ready||c.riseUs||c.fallUs)seen.insert(i,c);}
+        // Пассивная диагностика читает сырые входы без требования сброса, КП или разрешения БЦВМ.
+        if (!session.hasBoardFrame()) return;
+        for (int i = 0; i < 96; ++i) {
+            const auto &channel = session.liveFrame().channels[size_t(i)];
+            if (channel.triggered || channel.ready || channel.riseUs || channel.fallUs)
+                seen.insert(i, channel);
+        }
     };
     QObject::connect(&modern,&IntegrationSession::changed,&app,[&]{observe(modern,modernSeen);});
     QObject::connect(&legacy,&IntegrationSession::changed,&app,[&]{observe(legacy,legacySeen);});

@@ -24,7 +24,7 @@ jobs:
             ninja-build
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_HARDWARE_PROBE=ON
 
       - name: Build all targets
         run: cmake --build build

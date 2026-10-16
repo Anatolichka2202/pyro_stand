@@ -96,7 +96,7 @@ struct ActionMeasurement {
         BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
         WaitingForClockAlignment, WaitingForInputs, Partial, Measured,
         PlanReferenceUnknown, InvalidAssignment,
-        MissingAfterFinish, PartialAfterFinish
+        MissingAfterFinish, PartialAfterFinish, StoppedEarly
     };
     State state = State::Unmapped;
     QString reason;
@@ -181,7 +181,9 @@ public:
     QString lastUdpSender() const { return m_lastUdpSender; }
     bool collectionFinished() const { return m_collectionFinished; }
     QString finishReason() const { return m_finishReason; }
-    void finishCollection(const QString &reason = QStringLiteral("Сбор завершён оператором"));
+    bool plannedWindowComplete() const { return m_plannedWindowComplete; }
+    void finishCollection(const QString &reason = QStringLiteral("Сбор завершён оператором"),
+                          bool plannedWindowComplete = false);
     void checkCompletion();
     bool measurementEligible() const {
         return m_fileIdentityValid && m_uploadState == QStringLiteral("CONFIRMED") && m_executionObserved &&
@@ -228,6 +230,7 @@ private:
     QElapsedTimer m_kpSeenOnPc;
     std::array<quint64, 2> m_samplesAtFinish{};
     bool m_collectionFinished = false;
+    bool m_plannedWindowComplete = false;
     QString m_finishReason;
     quint64 m_discardedUdpSenders = 0;
     // Счётчики завершённого сбора не меняются при последующем live-приёме.

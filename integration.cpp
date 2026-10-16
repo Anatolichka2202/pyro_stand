@@ -533,6 +533,7 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_liveFrame = {};
     m_kpSeenOnPc.invalidate();
     m_collectionFinished = false;
+    m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_serialBuffer.clear();
     for (auto &decoder : m_legacy) decoder.reset();
@@ -595,6 +596,7 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
     m_collectionFinished = false;
+    m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_samplesAtFinish = {};
     m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
@@ -1019,6 +1021,7 @@ bool IntegrationSession::resetBoard() {
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         m_collectionElapsed.start();
         m_collectionFinished = false;
+        m_plannedWindowComplete = false;
         m_finishReason.clear();
         m_samplesAtFinish = {};
         m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
@@ -1055,6 +1058,7 @@ bool IntegrationSession::resetBoard() {
     m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
     m_collectionFinished = false;
+    m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_samplesAtFinish = {};
     m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
@@ -1194,15 +1198,20 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         result.channels.append(sample);
     }
     if (observed == 0) {
-        result.state = m_collectionFinished ? State::MissingAfterFinish : State::WaitingForInputs;
-        result.reason = m_collectionFinished
-            ? QStringLiteral("Не сработало за время завершённого испытания")
-            : QStringLiteral("Нет отметок сопоставленных входов");
+        result.state = !m_collectionFinished ? State::WaitingForInputs
+            : m_plannedWindowComplete ? State::MissingAfterFinish : State::StoppedEarly;
+        result.reason = !m_collectionFinished
+            ? QStringLiteral("Нет отметок сопоставленных входов")
+            : m_plannedWindowComplete
+                ? QStringLiteral("Не сработало за время завершённого испытания")
+                : QStringLiteral("Сбор прерван до конца окна; отсутствие срабатывания не оценивается");
     } else if (observed != mapped.inputs.size()) {
-        result.state = m_collectionFinished ? State::PartialAfterFinish : State::Partial;
-        result.reason = m_collectionFinished
-            ? QStringLiteral("После завершения часть входов не сработала")
-            : QStringLiteral("Часть входов без отметки");
+        result.state = m_collectionFinished && m_plannedWindowComplete
+            ? State::PartialAfterFinish : State::Partial;
+        result.reason = !m_collectionFinished ? QStringLiteral("Часть входов без отметки")
+            : m_plannedWindowComplete
+                ? QStringLiteral("После завершения часть входов не сработала")
+                : QStringLiteral("Сбор прерван до конца окна; часть входов без оценки");
     } else {
         result.state = State::Measured;
     }
@@ -1239,9 +1248,10 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
 }
 
 
-void IntegrationSession::finishCollection(const QString &reason) {
+void IntegrationSession::finishCollection(const QString &reason, bool plannedWindowComplete) {
     if (m_collectionFinished || !m_hasPlan) return;
     m_collectionFinished = true;
+    m_plannedWindowComplete = plannedWindowComplete;
     m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
     m_acceptedAtFinish = m_acceptedFrames;
     m_rejectedAtFinish = m_rejectedFrames;
@@ -1251,6 +1261,7 @@ void IntegrationSession::finishCollection(const QString &reason) {
         {"type", "COLLECTION_FINISHED"},
         {"collection_id", m_collectionId},
         {"reason", reason},
+        {"planned_window_complete", plannedWindowComplete},
         {"at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}
     });
     emit message(QStringLiteral("Сбор завершён: %1").arg(reason));
@@ -1280,14 +1291,14 @@ void IntegrationSession::checkCompletion() {
             const qint64 secondElapsedUs = qint64(m_legacy[1].sampleCount()) * 1000 - qint64(*secondKp);
             if (secondElapsedUs < limitUs) return;
         }
-        finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"));
+        finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"), true);
         return;
     }
     // Новая плата не передаёт текущий тик, только запомненные фронты.
     // Таймер ПК ограничивает окно ожидания, но никогда не оценивает точность импульса.
     if (!m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
     if (m_kpSeenOnPc.elapsed() >= lastOffset + kAfterLastActionMs)
-        finishCollection(QStringLiteral("Плановое окно закончилось после регистрации КП (таймер ПК)"));
+        finishCollection(QStringLiteral("Плановое окно закончилось после регистрации КП (таймер ПК)"), true);
 }
 
 bool IntegrationSession::saveReport(const QString &path, QString *error) {
@@ -1321,6 +1332,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("saved_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     report.insert(QStringLiteral("run_id"), m_runId);
     report.insert(QStringLiteral("collection_finished"), m_collectionFinished);
+    report.insert(QStringLiteral("planned_window_complete"), m_plannedWindowComplete);
     report.insert(QStringLiteral("finish_reason"), m_finishReason);
     report.insert(QStringLiteral("udp_discarded_sender_packets"),
                   QString::number(m_collectionFinished ? m_discardedUdpAtFinish : m_discardedUdpSenders));

@@ -99,6 +99,7 @@ private slots:
     void finishedLegacyCollectIsImmutable();
     void missingInputsTurnIntoFailureAfterFinish();
     void dualLegacyWaitsForBothCounters();
+    void manualEarlyFinishNeverClaimsMissedPulse();
 };
 
 
@@ -895,7 +896,7 @@ void IntegrationTest::missingInputsTurnIntoFailureAfterFinish() {
     session.processLegacyBytes(QByteArray(1, char(0x80)), 0);
     QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
              ActionMeasurement::State::WaitingForInputs);
-    session.finishCollection();
+    session.finishCollection(QStringLiteral("Окно завершено"), true);
     QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
              ActionMeasurement::State::MissingAfterFinish);
     QVERIFY(session.actionResult(session.m_plan.actions[1]).contains(QStringLiteral("Не сработало")));
@@ -930,5 +931,31 @@ void IntegrationTest::dualLegacyWaitsForBothCounters() {
     session.checkCompletion();
     QVERIFY(session.collectionFinished());
 }
+
+void IntegrationTest::manualEarlyFinishNeverClaimsMissedPulse() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=30000\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+    session.m_legacyArmed[0] = true;
+    session.processLegacyBytes(QByteArray(2, char(0x80)), 0);
+    session.finishCollection();  // Оператор остановил испытание до 30 секунды.
+    QVERIFY(session.collectionFinished());
+    QVERIFY(!session.plannedWindowComplete());
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::StoppedEarly);
+    QVERIFY(!session.actionResult(session.m_plan.actions[1]).contains(QStringLiteral("Не сработало")));
+}
+
 QTEST_GUILESS_MAIN(IntegrationTest)
 #include "tst_integration.moc"

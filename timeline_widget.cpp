@@ -44,13 +44,14 @@ void TimelineWidget::setEvents(const QVector<EventRow> &events)
 
     int idx = 1;
     for (const auto &e : events) {
-        if (!e.hasChannels) continue;
+        // Показываем и информационные действия: полная шкала полётного задания.
         TimelineEvent te;
         te.id         = e.id;
         te.time_ms    = e.time_ms;
         te.status     = e.status;
-        te.isT0       = (e.time_ms == 0);
-        te.displayIdx = idx++;
+        te.isT0       = (e.key == QStringLiteral("LIFT_OFF_CONTACT"));
+        te.displayIdx = e.id > 0 ? e.id : idx;
+        ++idx;
         m_events.append(te);
     }
 

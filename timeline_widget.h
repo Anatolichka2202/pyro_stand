@@ -13,8 +13,9 @@ class TimelineWidget : public QWidget
 public:
     explicit TimelineWidget(QWidget *parent = nullptr);
 
-    // Задаёт набор событий после loadCyclogram.
+    // Выводит полное полётное задание, включая информационные команды.
     void setEvents(const QVector<EventRow> &events);
+    int eventCount() const { return m_events.size(); }
 
     // Перемещает плейхед. msFromT0 — миллисекунды относительно T0 (может быть < 0).
     void setPlayheadMs(int64_t msFromT0);

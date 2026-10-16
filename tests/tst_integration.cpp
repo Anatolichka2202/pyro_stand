@@ -903,9 +903,13 @@ void IntegrationTest::missingInputsTurnIntoFailureAfterFinish() {
              ActionMeasurement::State::MissingAfterFinish);
     QVERIFY(session.actionResult(session.m_plan.actions[1]).contains(QStringLiteral("Не сработало")));
 
-    // Внешний COM без собственного КП не получает ложный «отказ».
+    // После завершения изменение настроек не должно менять записанный отказ.
     session.m_options.legacyHasKp = false;
     session.updateBenchMapping();
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::MissingAfterFinish);
+    // При новом сборе без КП возвращается честный статус несвязанных шкал.
+    session.resetCollectionEvidence(false);
     QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
              ActionMeasurement::State::WaitingForClockAlignment);
 }

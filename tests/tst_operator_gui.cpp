@@ -87,6 +87,7 @@ void OperatorGuiTest::tableKeepsWorstChannelDeviation() {
     session.m_boardFrame.channels[0]={};window.refresh();
     QCOMPARE(table->item(group,6)->text(),QStringLiteral("Не все входы"));
     session.finishCollection();window.refresh();
+    QCOMPARE(table->item(group+1,6)->text(),QStringLiteral("не измерено"));
     QVERIFY(table->item(group,6)->foreground().color()!=QColor("#f85149"));
     window.grab().save(QCoreApplication::applicationDirPath()+"/operator-partial-early-finish.png");
 }
@@ -175,7 +176,7 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
             correctScheme=summary && transport && port &&
                 ip && ip->text()=="192.168.17.144" && summary->text().contains("192.168.17.144") &&
                 transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
-                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 8")) &&
+                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 9")) &&
                 summary->text().contains(QStringLiteral("БКД-Б · одна ЯПС · без КП"));
             dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-connection-bench.png");
         }
@@ -426,7 +427,7 @@ void OperatorGuiTest::combinedKeepsCountersSeparate(){
     auto &newFrame=window.m_session.m_boardFrame;newFrame.channels[7]={true,false,500000,0};newFrame.channels[0]={true,false,480000,0};newFrame.channels[1]={true,false,481000,0};
     auto &old=*window.m_peer;old.m_legacyArmed[0]=true;old.m_boardFrame.channels[7]={true,false,100000,0};old.m_boardFrame.channels[0]={true,false,80000,0};old.m_boardFrame.channels[1]={true,false,81000,0};
     window.refresh();QCOMPARE(window.m_canvas->channelCount(),6);QTRY_VERIFY(window.m_canvas->fits());
-    QStringList raw,facts;for(const auto &group:window.m_canvas->events())for(const auto &row:group.channels)if(row.input=="1" || row.input=="0:1"){raw<<row.rawTick;facts<<row.actual;}
+    QStringList raw,facts;for(const auto &group:window.m_canvas->events())for(const auto &row:group.channels)if(row.input=="1" || row.input=="1:1"){raw<<row.rawTick;facts<<row.actual;}
     QCOMPARE(raw,QStringList({"480000","80000"}));QCOMPARE(facts,QStringList({"-20.000","-20.000"}));
     old.m_boardFrame.channels[7]={};window.refresh();
     for(const auto &group:window.m_canvas->events())if(group.source.contains("NONEXISTENT_TEST_COMPARE"))for(const auto &row:group.channels)QVERIFY(row.status!=QStringLiteral("в допуске"));

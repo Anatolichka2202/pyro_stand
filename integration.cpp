@@ -20,6 +20,7 @@
 namespace {
 constexpr int kFrameSize = 2 + 96 * 10 + 1;
 constexpr int kMaxDebugLine = 4 * 1024 * 1024;
+constexpr qsizetype kMaxDebugEvidence = 16 * 1024 * 1024;
 
 bool fail(QString *error, const QString &reason) {
     if (error) *error = reason;
@@ -148,9 +149,9 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
                                        const CyclogramPlan &plan) {
     StandMapping result;
     result.version = QStringLiteral("historical-wiring.v2 · БКД-А-1/Б · А:ЯПС%1 · Б:ЯПС%2 · КП:ЯПС%3/8")
-        .arg(firstStageYps > 0 ? QString::number(firstStageYps - 1) : QStringLiteral("—"))
-        .arg(secondStageYps > 0 ? QString::number(secondStageYps - 1) : QStringLiteral("—"))
-        .arg(kpYps > 0 ? QString::number(kpYps - 1) : QStringLiteral("—"));
+        .arg(firstStageYps > 0 ? QString::number(firstStageYps) : QStringLiteral("—"))
+        .arg(secondStageYps > 0 ? QString::number(secondStageYps) : QStringLiteral("—"))
+        .arg(kpYps > 0 ? QString::number(kpYps) : QStringLiteral("—"));
     auto add = [&](const QString &key, int yps, std::initializer_list<int> channels) {
         if (yps < 1 || yps > 12) return;
         ActionMapping action;
@@ -470,6 +471,7 @@ QByteArray StandProtocol::resetCommand() {
 
 IntegrationSession::IntegrationSession(Options options, QObject *parent)
     : QObject(parent), m_options(std::move(options)) {
+    m_debug.setReadBufferSize(kMaxDebugLine+1);
     m_reconnect.setInterval(1000);
     m_completionTimer.setInterval(200);
     connect(&m_completionTimer, &QTimer::timeout, this, &IntegrationSession::checkCompletion);
@@ -669,7 +671,7 @@ bool IntegrationSession::discardPendingBoardData() {
 
 void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
     const bool inputCleared = discardPendingBoardData();
-    if (resetDebugEvidence) m_debugEvidence = QJsonArray{};
+    if (resetDebugEvidence) {m_debugEvidence = QJsonArray{};m_debugEvidenceBytes=0;}
     m_localEvidence = QJsonArray{};
     if (clearFrameEvidence())
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -736,7 +738,13 @@ void IntegrationSession::updateBenchMapping() {
         m_mapping.warnings << QStringLiteral("Источник назначений: ## исходного ПЗ; электрическая разводка не подтверждена");
         return;
     }
-    if (!m_mappingBytes.isEmpty() || !m_options.wiringProfilePath.isEmpty()) return;
+    if(!m_mappingBytes.isEmpty()) {
+        StandMapping restored;QString error;
+        if(StandProtocol::parseMapping(m_mappingBytes,&restored,&error)) m_mapping=restored;
+        else {m_mapping={};m_mapping.warnings << error;}
+        return;
+    }
+    if (!m_options.wiringProfilePath.isEmpty()) return;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
         const bool dual = !m_options.secondLegacySerialPort.isEmpty();
         m_mapping = StandProtocol::benchMapping(dual || !m_options.legacySecondStage ? 1 : 0,
@@ -829,7 +837,10 @@ void IntegrationSession::readDebug() {
         ++m_nextSeq;
         if (!m_runId.isEmpty() && run != m_runId) resetDebugState();
         m_runId = run;
-        m_debugEvidence.append(object);
+        // Новая загрузка сначала проходит проверку файла, затем сама начинает историю.
+        const bool newUpload=object.value("type").toString()=="CYCLOGRAM_AVAILABLE" &&
+            object.value("upload_id").toString()!=m_uploadId;
+        if(!newUpload && !appendDebugEvidence(object)) return;
         processDebug(object);
     }
 }
@@ -859,7 +870,7 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
             // New upload, even within the same KASU run: previous board frames
             // and evidence must never appear in the next flight report.
             resetCollectionEvidence(true);
-            m_debugEvidence.append(object);
+            if(!appendDebugEvidence(object)) return;
             m_boardFrame = {};
             m_hasBoardFrame = false;
             m_boardReceiving = false;
@@ -1298,8 +1309,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
         return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
-    if (!m_collectionFinished && m_collectionElapsed.isValid() &&
-        m_collectionElapsed.elapsed() * 1000 >= (qint64(1) << 31))
+    if (m_collectionElapsed.isValid() &&
+        (m_collectionFinished?m_durationAtFinishMs:m_collectionElapsed.elapsed()) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Окно сбора превысило половину оборота счётчика"));
     const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
     if (!kpOffset)
@@ -1404,13 +1415,14 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
 void IntegrationSession::finishCollection(const QString &reason, bool plannedWindowComplete) {
     if (m_collectionFinished || !m_hasPlan) return;
     m_collectionFinished = true;
+    m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
+    m_durationAtFinishMs=m_collectionElapsed.isValid()?m_collectionElapsed.elapsed():0;
     m_plannedWindowComplete = plannedWindowComplete;
     m_uploadStateAtFinish = m_uploadState;
     m_executionObservedAtFinish = m_executionObserved;
     m_finalActionMeasurements.clear();
     for (const auto &action : m_plan.actions)
         m_finalActionMeasurements.insert(action.actionId, measureAction(action));
-    m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
     m_acceptedAtFinish = m_acceptedFrames;
     m_rejectedAtFinish = m_rejectedFrames;
     m_discardedUdpAtFinish = m_discardedUdpSenders;
@@ -1619,4 +1631,17 @@ void IntegrationSession::setError(const QString &text) {
     m_lastError = text;
     emit message(text);
     emit changed();
+}
+
+bool IntegrationSession::appendDebugEvidence(const QJsonObject &object) {
+    if(m_collectionFinished) return true;
+    const auto size=QJsonDocument(object).toJson(QJsonDocument::Compact).size();
+    if(size>kMaxDebugEvidence-m_debugEvidenceBytes) {
+        // Не выбрасываем старые доказательства молча и не выдаём неполный архив за полный.
+        const auto reason=QStringLiteral("История Debug превысила 16 МиБ; сбор недостоверен, требуется новая загрузка задания");
+        m_boardArmed=false;m_executionObserved=false;
+        finishCollection(reason);m_evidenceValid=false;
+        m_debug.abort();setError(reason);return false;
+    }
+    m_debugEvidence.append(object);m_debugEvidenceBytes+=size;return true;
 }

@@ -482,7 +482,7 @@ void IntegrationWindow::refreshLive() {
         } else {
             for (int group = 0; group < 12; ++group)
                 choices.append({prefix + QStringLiteral(":") + QString::number(group * 8),
-                    name + QStringLiteral(" · ЯПС ") + QString::number(group)});
+                    name + QStringLiteral(" · ЯПС ") + QString::number(group+1)});
         }
     };
     addSources(m_session, QStringLiteral("main"), QStringLiteral("Основной"));
@@ -630,7 +630,7 @@ void IntegrationWindow::refreshCanvas() {
                 CanvasChannel row;
                 row.input =
                     legacy ? QString::number(in.index % 8 + 1)
-                           : QStringLiteral("%1:%2").arg(in.index / 8).arg(in.index % 8 + 1);
+                           : QStringLiteral("%1:%2").arg(in.index / 8+1).arg(in.index % 8 + 1);
                 row.role = action.comment.trimmed().isEmpty()
                     ? g.title : action.comment.trimmed();
                 row.color = kDim;
@@ -677,6 +677,11 @@ void IntegrationWindow::refreshCanvas() {
                     row.status = missed ? QStringLiteral("НЕ СРАБОТАЛ") : QStringLiteral("без оценки");
                     row.color = missed ? kRed : kAmber;
                     if (missed) ++bad;
+                }
+                if(session.collectionFinished() && row.actual==QStringLiteral("—") &&
+                   eval.state!=ActionMeasurement::State::MissingAfterFinish &&
+                   eval.state!=ActionMeasurement::State::PartialAfterFinish) {
+                    row.status=QStringLiteral("не измерено");row.color=kDim;
                 }
                 g.channels.append(row);
                 ++total;
@@ -920,7 +925,7 @@ void IntegrationWindow::configureTester() {
     dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
     dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
     auto *root = new QVBoxLayout(&dialog);
-    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 8 + COM9 БКД-Б"), &dialog);
+    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 9 + COM9 БКД-Б"), &dialog);
     preset->setObjectName(QStringLiteral("historicalPresetBtn"));
     preset->setMinimumHeight(40);
     root->addWidget(preset);
@@ -998,7 +1003,7 @@ void IntegrationWindow::configureTester() {
     for (auto *box : {first, second, kp}) {
         box->addItem(QStringLiteral("Не назначен"), 0);
         for (int yps = 1; yps <= 12; ++yps)
-            box->addItem(QStringLiteral("ЯПС %1").arg(yps - 1), yps);
+            box->addItem(QStringLiteral("ЯПС %1").arg(yps), yps);
     }
     first->setCurrentIndex(first->findData(options.firstStageYps));
     second->setCurrentIndex(second->findData(options.secondStageYps));
@@ -1280,7 +1285,7 @@ void IntegrationWindow::refresh() {
         connection.comparisonLegacyPort.compare(QStringLiteral("COM9"), Qt::CaseInsensitive) == 0 &&
         connection.comparisonLegacySecondStage && !connection.comparisonLegacyHasKp &&
         connection.wiringProfilePath.isEmpty() && connection.comparisonWiringProfilePath.isEmpty())
-        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
+        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 9, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
             .arg(connection.boardIp.toString()));
     if (!m_session.mapping().warnings.isEmpty())
         m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · КАРТА ТРЕБУЕТ ПРОВЕРКИ"));

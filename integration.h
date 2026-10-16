@@ -238,6 +238,7 @@ private:
     void applyFrame(const BoardFrame &frame);
     void recordFrame(const QByteArray &raw, const QString &error = {});
     void setError(const QString &text);
+    bool appendDebugEvidence(const QJsonObject &object);
 
     Options m_options;
     QLocalSocket m_debug;
@@ -248,6 +249,7 @@ private:
     QTimer m_completionTimer;
     QElapsedTimer m_kpSeenOnPc;
     std::array<quint64, 2> m_samplesAtFinish{};
+    qint64 m_durationAtFinishMs = 0;
     bool m_collectionFinished = false;
     bool m_plannedWindowComplete = false;
     QString m_finishReason;
@@ -301,6 +303,7 @@ private:
     quint64 m_rejectedFrames = 0;
     bool m_evidenceValid = true;
     QJsonArray m_debugEvidence;
+    qsizetype m_debugEvidenceBytes = 0;
     QJsonArray m_localEvidence;
     QTemporaryFile m_frameEvidence;
 };

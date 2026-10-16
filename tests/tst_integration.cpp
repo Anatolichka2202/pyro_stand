@@ -75,6 +75,8 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void finishKeepsCounterAmbiguity();
+    void debugHistoryHasExplicitBound();
     void annotatedWiring();
     void invalidAnnotations_data();
     void invalidAnnotations();
@@ -106,6 +108,54 @@ private slots:
     void actual33ActionCyclogramHasUnambiguousChannels();
     void completedActionStateIsFrozenAcrossLateDebugChanges();
 };
+
+void IntegrationTest::debugHistoryHasExplicitBound() {
+    IntegrationSession::Options options;options.debugSocket.clear();IntegrationSession session(options);
+    QString error;QVERIFY(StandProtocol::parseCyclogram(cyclogram(),&session.m_plan,&error));session.m_hasPlan=true;
+    const QJsonObject large{{"type","BCVM_STATE"},{"padding",QString(1024*1024,u'x')}};
+    int recorded=0;
+    while(!session.collectionFinished() && recorded<20) {
+        if(session.appendDebugEvidence(large)) ++recorded;
+    }
+    QVERIFY(recorded>0 && recorded<20);QVERIFY(session.collectionFinished());
+    QVERIFY(session.m_debugEvidenceBytes<=16*1024*1024);
+    QCOMPARE(session.m_debugEvidence.size(),recorded);QVERIFY(!session.m_evidenceValid);
+    QVERIFY(!session.saveReport("not-written.json",&error));
+    session.resetCollectionEvidence(true);QCOMPARE(session.m_debugEvidenceBytes,qsizetype(0));
+    QVERIFY(session.appendDebugEvidence(large));
+    QLocalServer server;const auto name=QStringLiteral("history-recovery-")+QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QVERIFY(server.listen(name));options.debugSocket=name;options.telemetryPort=0;
+    options.bindIp=QHostAddress::LocalHost;options.boardIp=QHostAddress::LocalHost;
+    IntegrationSession unplanned(options);unplanned.m_debugEvidenceBytes=16*1024*1024;
+    QVERIFY(!unplanned.appendDebugEvidence(large));unplanned.start();QTRY_VERIFY(server.hasPendingConnections());
+    auto *client=server.nextPendingConnection();QVERIFY(client);
+    auto available=contract("CYCLOGRAM_AVAILABLE",1,"recovery-run","recovery-stream");
+    available["upload_id"]="new-upload";available["byte_count"]=cyclogram().size();
+    available["content_base64"]=QString::fromLatin1(cyclogram().toBase64());
+    available["sha256_hex"]=QString::fromLatin1(QCryptographicHash::hash(cyclogram(),QCryptographicHash::Sha256).toHex());
+    send(client,available);QTRY_VERIFY_WITH_TIMEOUT(unplanned.hasPlan(),1000);
+    QVERIFY(unplanned.m_evidenceValid);QVERIFY(unplanned.m_debugEvidenceBytes<16*1024*1024);
+}
+
+void IntegrationTest::finishKeepsCounterAmbiguity() {
+    IntegrationSession::Options options;options.boardTransport=IntegrationSession::BoardTransport::LegacySerial;
+    options.debugSocket.clear();options.firstStageYps=1;options.kpYps=1;
+    IntegrationSession session(options);QString error;
+    QVERIFY(StandProtocol::parseCyclogram(cyclogram(),&session.m_plan,&error));
+    session.m_hasPlan=true;session.updateBenchMapping();session.m_boardArmed=true;session.m_hasBoardFrame=true;
+    session.m_uploadState="CONFIRMED";session.m_executionObserved=true;
+    session.m_boardFrame.channels[7]={true,false,1000000,0};
+    session.m_boardFrame.channels[0]=session.m_boardFrame.channels[1]={true,false,1020000,0};
+    for(int i=0;i<2147484;++i) session.m_legacy[0].append(0);
+    const auto action=session.plan().actions[1];
+    QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::AmbiguousInterval);
+    session.finishCollection();
+    QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::AmbiguousInterval);
+    session.m_options.boardTransport=IntegrationSession::BoardTransport::Udp;
+    session.m_collectionElapsed.start();session.m_durationAtFinishMs=2147484;
+    session.m_finalActionMeasurements.clear();
+    QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::AmbiguousInterval);
+}
 
 void IntegrationTest::annotatedWiring() {
     const QByteArray source="START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
@@ -170,6 +220,10 @@ void IntegrationTest::annotatedWiring() {
     session.m_boardFrame.channels[15]={true,false,99000,0};
     QVERIFY(session.kpTimeUs().has_value());
     QCOMPARE(session.kpTimeUs().value(),quint32(1000));
+    session.m_mappingBytes=R"({"schema":"pyro.signal-wiring.v2","version":"restored-json","kp":null,"bindings":[]})";
+    session.updateBenchMapping();QVERIFY(session.mapping().actions.isEmpty());
+    QVERIFY(StandProtocol::parseCyclogram(cyclogram(),&session.m_plan,&error));
+    session.updateBenchMapping();QCOMPARE(session.mapping().version,QString("restored-json"));
 }
 
 void IntegrationTest::invalidAnnotations_data() {

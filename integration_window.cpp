@@ -571,14 +571,15 @@ void IntegrationWindow::refreshCanvas() {
     if (m_peer) {
         add(*m_peer, QStringLiteral("Старый · ") + m_peer->options().serialPort);
         m_peerStatus->setText(
-            QStringLiteral("%1 · COM: %2 · Debug: %3 · план: %4 · КП8: %5")
+            QStringLiteral("%1 → %2 · одна ЯПС\nДанные: %3 · Debug: %4 · план: %5 · КП: %6")
                 .arg(m_peer->options().serialPort,
+                     m_peer->options().legacySecondStage ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А"),
                      m_peer->boardReceiving() ? QStringLiteral("данные идут")
                                               : QStringLiteral("нет потока"),
                      m_peer->debugConnected() ? QStringLiteral("связь есть")
                                               : QStringLiteral("нет связи"),
                      m_peer->hasPlan() ? QStringLiteral("получен") : QStringLiteral("ожидание"),
-                     !m_peer->options().legacyHasKp ? QStringLiteral("только БКД-А") : m_peer->legacyStreamKpObserved(0) ? QStringLiteral("есть")
+                     !m_peer->options().legacyHasKp ? QStringLiteral("нет на старой плате") : m_peer->legacyStreamKpObserved(0) ? QStringLiteral("есть")
                                                        : QStringLiteral("нет")));
     } else
         m_peerStatus->clear();
@@ -724,7 +725,30 @@ void IntegrationWindow::configureTester() {
     QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
     dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
-    auto *layout = new QFormLayout(&dialog);
+    auto *root = new QVBoxLayout(&dialog);
+    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 8 + COM9 БКД-Б"), &dialog);
+    preset->setObjectName(QStringLiteral("historicalPresetBtn"));
+    preset->setMinimumHeight(40);
+    root->addWidget(preset);
+    auto *summary = new QLabel(&dialog);
+    summary->setObjectName(QStringLiteral("testerConfigurationSummary"));
+    summary->setWordWrap(true);
+    summary->setMinimumWidth(530);
+    root->addWidget(summary);
+    auto *details = new QCheckBox(QStringLiteral("Другие подключения и профили"), &dialog);
+    details->setObjectName(QStringLiteral("advancedConnectionsToggle"));
+    details->setStyleSheet(QStringLiteral("color:#a6b3be;font-size:12px;"));
+    root->addWidget(details);
+    auto *advanced = new QWidget(&dialog);
+    advanced->setObjectName(QStringLiteral("advancedConnections"));
+    auto *layout = new QFormLayout(advanced);
+    layout->setContentsMargins(0, 0, 0, 0);
+    root->addWidget(advanced);
+    advanced->hide();
+    connect(details, &QCheckBox::toggled, &dialog, [&, advanced](bool visible) {
+        advanced->setVisible(visible);
+        dialog.adjustSize();
+    });
     auto options = m_session.options();
     const auto profileField = [&](const QString &title, const QString &path) {
         auto *container = new QWidget(&dialog);
@@ -746,6 +770,7 @@ void IntegrationWindow::configureTester() {
     profile->setObjectName(QStringLiteral("primaryWiringProfile"));
     comparisonProfile->setObjectName(QStringLiteral("comparisonWiringProfile"));
     auto *transport = new QComboBox(&dialog);
+    transport->setObjectName(QStringLiteral("testerTransportChoice"));
     transport->addItem(QStringLiteral("Новый — Ethernet"), int(IntegrationSession::BoardTransport::Udp));
     transport->addItem(QStringLiteral("Новый — RS-485"), int(IntegrationSession::BoardTransport::Serial));
     transport->addItem(QStringLiteral("Старый — COM, 1 байт = 1 мс"), int(IntegrationSession::BoardTransport::LegacySerial));
@@ -760,11 +785,12 @@ void IntegrationWindow::configureTester() {
     for (const auto &info : QSerialPortInfo::availablePorts()) secondPort->addItem(info.portName());
     secondPort->setCurrentText(options.secondLegacySerialPort);
     auto *comparison = new QComboBox(&dialog);comparison->setEditable(true);comparison->addItem("");
+    comparison->setObjectName(QStringLiteral("comparisonLegacyPortChoice"));
     for(const auto &info:QSerialPortInfo::availablePorts())comparison->addItem(info.portName());
     comparison->setCurrentText(options.comparisonLegacyPort);
     auto *comparisonBlock=new QComboBox(&dialog);comparisonBlock->addItem(QStringLiteral("БКД-А-1"),false);comparisonBlock->addItem(QStringLiteral("БКД-Б"),true);comparisonBlock->setCurrentIndex(options.comparisonLegacySecondStage?1:0);
     layout->addRow(QStringLiteral("Одновременно старый COM (пусто = выключен)"),comparison);
-    layout->addRow(QStringLiteral("БКД дополнительного старого COM"),comparisonBlock);
+    layout->addRow(QStringLiteral("БКД старого COM · одна ЯПС"),comparisonBlock);
     auto *comparisonKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старой платы"), &dialog);
     comparisonKp->setChecked(options.comparisonLegacyHasKp);
     layout->addRow(comparisonKp);
@@ -795,22 +821,20 @@ void IntegrationWindow::configureTester() {
     layout->addRow(QStringLiteral("БКД на старой плате"), block);
     layout->addRow(QStringLiteral("Второй COM · БКД-Б (необязательно)"), secondPort);
     layout->addRow(legacyKp);
-    auto *preset = new QPushButton(QStringLiteral("Схема стенда: новый А / ЯПС 8 + старый Б / COM9 · КП только А"), &dialog);
-    preset->setObjectName(QStringLiteral("historicalPresetBtn"));
-    layout->addRow(preset);
     connect(preset, &QPushButton::clicked, &dialog, [=] {
         profile->clear(); comparisonProfile->clear();
         transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
         first->setCurrentIndex(first->findData(9)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(9));
         comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
+        secondPort->setCurrentText(QString());
     });
     auto *note = new QLabel(QStringLiteral(
-        "1–2: пиросвечи; 3–5: пусковая группа; 6–7: отсечные клапаны.\n"
-        "Назначьте ЯПС по фактическому подключению. Времена берутся из циклограммы КАСУ ПП.\n"
-        "Два старых COM: первый — А-1, второй — Б; КП8 нужен в обоих потоках.\n"
-        "После изменения подключения начните новый сбор измерений."), &dialog);
+        "Выберите «Мой стенд» и нажмите «Применить». Настройка сохранится.\n"
+        "Циклограмму загружайте через КАСУПП — пиростенд получит её для обеих плат.\n"
+        "В этой схеме КП берём с новой платы. У COM9 своя шкала: без собственного КП\n"
+        "или подтверждённой связи часов точная дельта БКД-Б не оценивается."), &dialog);
     note->setWordWrap(true);
-    layout->addRow(note);
+    root->addWidget(note);
     const auto update = [=] {
         const auto value = IntegrationSession::BoardTransport(transport->currentData().toInt());
         const bool legacy = value == IntegrationSession::BoardTransport::LegacySerial;
@@ -820,11 +844,40 @@ void IntegrationWindow::configureTester() {
         first->setEnabled(!legacy); second->setEnabled(!legacy); kp->setEnabled(!legacy);
         block->setEnabled(legacy);
         secondPort->setEnabled(legacy);
+        QString text;
+        if (legacy) {
+            text = QStringLiteral("Старый тестер: %1 → %2; %3")
+                .arg(port->currentText(), block->currentText(), legacyKp->isChecked()
+                     ? QStringLiteral("КП на входе 8") : QStringLiteral("без КП"));
+            if (!secondPort->currentText().isEmpty())
+                text += QStringLiteral("\nВторой старый тестер: %1 → БКД-Б").arg(secondPort->currentText());
+        } else {
+            text = QStringLiteral("Новая плата: %1 → БКД-А, %2\nКП: %3, вход 8")
+                .arg(value == IntegrationSession::BoardTransport::Udp ? QStringLiteral("Ethernet") : QStringLiteral("RS-485"),
+                     first->currentText(), kp->currentText());
+            if (second->currentData().toInt() != 0)
+                text += QStringLiteral("\nБКД-Б на новой плате: %1").arg(second->currentText());
+            if (!comparison->currentText().isEmpty())
+                text += QStringLiteral("\nСтарый тестер: %1 → %2 · одна ЯПС · %3")
+                    .arg(comparison->currentText(), comparisonBlock->currentText(), comparisonKp->isChecked()
+                         ? QStringLiteral("КП на входе 8") : QStringLiteral("без КП"));
+        }
+        if (!profile->text().isEmpty() || !comparisonProfile->text().isEmpty())
+            text += QStringLiteral("\nНазначения входов переопределены внешним профилем.");
+        summary->setText(text);
     };
-    connect(transport, &QComboBox::currentIndexChanged, &dialog, update);
+    for (auto *choice : {transport, port, secondPort, comparison, comparisonBlock, first, second, kp, block})
+        connect(choice, &QComboBox::currentTextChanged, &dialog, update);
+    for (auto *check : {comparisonKp, legacyKp})
+        connect(check, &QCheckBox::toggled, &dialog, update);
+    for (auto *field : {profile, comparisonProfile})
+        connect(field, &QLineEdit::textChanged, &dialog, update);
+    connect(preset, &QPushButton::clicked, &dialog, update);
     update();
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addRow(buttons);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Применить"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
+    root->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
         for (const auto *field : {profile, comparisonProfile}) {
@@ -987,6 +1040,13 @@ void IntegrationWindow::refresh() {
     m_mappingStatus->setText(QStringLiteral("ПОДКЛЮЧЕНИЕ БКД · %1")
         .arg(m_session.mapping().version.isEmpty()
             ? QStringLiteral("не загружена") : m_session.mapping().version));
+    const auto &connection = m_session.options();
+    if (connection.boardTransport == IntegrationSession::BoardTransport::Udp &&
+        connection.firstStageYps == 9 && connection.secondStageYps == 0 && connection.kpYps == 9 &&
+        connection.comparisonLegacyPort.compare(QStringLiteral("COM9"), Qt::CaseInsensitive) == 0 &&
+        connection.comparisonLegacySecondStage && !connection.comparisonLegacyHasKp &&
+        connection.wiringProfilePath.isEmpty() && connection.comparisonWiringProfilePath.isEmpty())
+        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП"));
     if (!m_session.mapping().warnings.isEmpty())
         m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · НЕСООТВЕТСТВИЕ ПУНКТОВ"));
     m_mappingStatus->setToolTip(m_session.mapping().warnings.join('\n'));

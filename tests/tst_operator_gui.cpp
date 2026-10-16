@@ -14,6 +14,8 @@
 #include <QUuid>
 #include <QDialog>
 #include <QLineEdit>
+#include <QCheckBox>
+#include <QComboBox>
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
@@ -41,19 +43,29 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
     options.wiringProfilePath="NONEXISTENT_PROFILE_A";options.comparisonWiringProfilePath="NONEXISTENT_PROFILE_B";
     IntegrationWindow window(options);
-    bool cleared=false;
+    bool cleared=false, collapsed=false, correctScheme=false;
     QTimer::singleShot(0,&window,[&] {
         auto *dialog=window.findChild<QDialog*>("testerConfigurationDialog");
         if (!dialog) return;
         auto *preset=dialog->findChild<QPushButton*>("historicalPresetBtn");
         auto *primary=dialog->findChild<QLineEdit*>("primaryWiringProfile");
         auto *secondary=dialog->findChild<QLineEdit*>("comparisonWiringProfile");
+        auto *advanced=dialog->findChild<QWidget*>("advancedConnections");
+        collapsed=advanced && advanced->isHidden();
         if(preset && primary && secondary) {
             preset->click();cleared=primary->text().isEmpty() && secondary->text().isEmpty();
+            const auto *summary=dialog->findChild<QLabel*>("testerConfigurationSummary");
+            const auto *transport=dialog->findChild<QComboBox*>("testerTransportChoice");
+            const auto *port=dialog->findChild<QComboBox*>("comparisonLegacyPortChoice");
+            correctScheme=summary && transport && port &&
+                transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
+                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 8")) &&
+                summary->text().contains(QStringLiteral("БКД-Б · одна ЯПС · без КП"));
+            dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-connection-bench.png");
         }
         dialog->reject(); // Never apply COM9/YPS or access physical equipment in this test.
     });
-    window.configureTester();QVERIFY(cleared);
+    window.configureTester();QVERIFY(cleared);QVERIFY(collapsed);QVERIFY(correctScheme);
     QCOMPARE(window.m_session.options().wiringProfilePath,QString("NONEXISTENT_PROFILE_A"));
 }
 

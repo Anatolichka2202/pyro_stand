@@ -174,6 +174,14 @@ public:
     QString bcvmUtc() const { return m_bcvmUtc; }
     bool executionEnabled() const { return m_executionEnabled; }
     bool executionPermissionObserved() const { return m_executionObserved; }
+    // Достоверная оценка отделена от регистрации физических входов.
+    const BoardFrame &liveFrame() const { return m_liveFrame; }
+    quint64 discardedUdpSenders() const { return m_discardedUdpSenders; }
+    QString lastUdpSender() const { return m_lastUdpSender; }
+    bool collectionFinished() const { return m_collectionFinished; }
+    QString finishReason() const { return m_finishReason; }
+    void finishCollection(const QString &reason = QStringLiteral("Сбор завершён оператором"));
+    void checkCompletion();
     bool measurementEligible() const {
         return m_fileIdentityValid && m_uploadState == QStringLiteral("CONFIRMED") && m_executionObserved &&
                !m_prePermissionActivity && m_boardArmed;
@@ -215,6 +223,13 @@ private:
     QSerialPort m_serial;
     QSerialPort m_secondSerial;
     QTimer m_reconnect;
+    QTimer m_completionTimer;
+    QElapsedTimer m_kpSeenOnPc;
+    bool m_collectionFinished = false;
+    QString m_finishReason;
+    quint64 m_discardedUdpSenders = 0;
+    QString m_lastUdpSender;
+    BoardFrame m_liveFrame{};
     QTimer m_boardWatchdog;
     QTimer m_resetWatchdog;
     std::array<QTimer, 2> m_legacyWatchdog;

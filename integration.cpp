@@ -397,6 +397,9 @@ QByteArray StandProtocol::resetCommand() {
 IntegrationSession::IntegrationSession(Options options, QObject *parent)
     : QObject(parent), m_options(std::move(options)) {
     m_reconnect.setInterval(1000);
+    m_completionTimer.setInterval(200);
+    connect(&m_completionTimer, &QTimer::timeout, this, &IntegrationSession::checkCompletion);
+    m_completionTimer.start();
     connect(&m_reconnect, &QTimer::timeout, this, &IntegrationSession::connectDebug);
     connect(&m_debug, &QLocalSocket::readyRead, this, &IntegrationSession::readDebug);
     connect(&m_debug, &QLocalSocket::disconnected, this, [this] {
@@ -468,6 +471,7 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
 IntegrationSession::~IntegrationSession() {
     for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
     m_reconnect.stop();
+    m_completionTimer.stop();
     m_boardWatchdog.stop();
     m_resetWatchdog.stop();
     m_debug.disconnect(this);
@@ -519,6 +523,10 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_resetWatchdog.stop();
     m_options = options;
     m_boardFrame = {};
+    m_liveFrame = {};
+    m_kpSeenOnPc.invalidate();
+    m_collectionFinished = false;
+    m_finishReason.clear();
     m_serialBuffer.clear();
     for (auto &decoder : m_legacy) decoder.reset();
     m_legacyArmed = {};
@@ -579,6 +587,9 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
     if (clearFrameEvidence())
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
+    m_collectionFinished = false;
+    m_finishReason.clear();
+    m_kpSeenOnPc.invalidate();
     if (!inputCleared) m_evidenceValid = false;
 }
 
@@ -789,7 +800,15 @@ void IntegrationSession::receiveUdp() {
         raw.resize(int(m_udp.pendingDatagramSize()));
         QHostAddress sender;
         m_udp.readDatagram(raw.data(), raw.size(), &sender);
-        if (sender != m_options.boardIp) continue;
+        m_lastUdpSender = sender.toString();
+        if (sender != m_options.boardIp) {
+            ++m_discardedUdpSenders;
+            // Пакет физически получен, но не принадлежит выбранному прибору.
+            if (m_discardedUdpSenders == 1)
+                setError(QStringLiteral("UDP от %1 отброшен: выбран адрес платы %2")
+                    .arg(sender.toString(), m_options.boardIp.toString()));
+            continue;
+        }
         processFrame(raw);
     }
 }
@@ -833,7 +852,7 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
     }
     applyFrame(parsed);
     ++m_acceptedFrames;
-    recordFrame(raw);
+    if (!m_collectionFinished) recordFrame(raw);
     emit changed();
 }
 
@@ -849,7 +868,8 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
     evidence.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     evidence.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
     const QByteArray evidenceLine = QJsonDocument(evidence).toJson(QJsonDocument::Compact) + '\n';
-    if (!m_frameEvidence.isOpen() || m_frameEvidence.write(evidenceLine) != evidenceLine.size()) {
+    if (!m_collectionFinished &&
+        (!m_frameEvidence.isOpen() || m_frameEvidence.write(evidenceLine) != evidenceLine.size())) {
         m_evidenceValid = false;
         setError(QStringLiteral("Не удалось записать аппаратные маски в журнал доказательств"));
     }
@@ -858,8 +878,11 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
         auto &decoder = m_legacy[size_t(stream)];
         if (m_awaitReset && !m_legacyArmed[size_t(stream)]) decoder.reset();
         const BoardFrame frame = decoder.append(quint8(byte));
-        for (int ch = 0; ch < 8; ++ch)
-            m_boardFrame.channels[size_t(stream * 8 + ch)] = frame.channels[size_t(ch)];
+        for (int ch = 0; ch < 8; ++ch) {
+            m_liveFrame.channels[size_t(stream * 8 + ch)] = frame.channels[size_t(ch)];
+            if (!m_collectionFinished)
+                m_boardFrame.channels[size_t(stream * 8 + ch)] = frame.channels[size_t(ch)];
+        }
         if (m_awaitReset && !m_legacyArmed[size_t(stream)] && quint8(byte) == 0) {
             m_legacyArmed[size_t(stream)] = true;
             QJsonObject baseline;
@@ -891,10 +914,14 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
 }
 
 void IntegrationSession::applyFrame(const BoardFrame &parsed) {
-    m_boardFrame = parsed;
+    m_liveFrame = parsed;
+    // После окончания прогона свежие кадры доступны в live-окне,
+    // но не могут изменить зафиксированный результат испытания.
+    if (!m_collectionFinished) m_boardFrame = parsed;
     m_hasBoardFrame = true;
     m_boardReceiving = true;
     m_boardWatchdog.start();
+    if (m_collectionFinished) return;
     if (m_awaitReset && blankFrame(parsed)) {
         m_awaitReset = false;
         m_resetWatchdog.stop();
@@ -981,6 +1008,9 @@ bool IntegrationSession::resetBoard() {
         if (!clearFrameEvidence()) return false;
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         m_collectionElapsed.start();
+        m_collectionFinished = false;
+        m_finishReason.clear();
+        m_kpSeenOnPc.invalidate();
         m_localEvidence = QJsonArray{};
         for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
         for (auto &decoder : m_legacy) decoder.reset();
@@ -1012,6 +1042,9 @@ bool IntegrationSession::resetBoard() {
     if (!clearFrameEvidence()) return false;
     m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
+    m_collectionFinished = false;
+    m_finishReason.clear();
+    m_kpSeenOnPc.invalidate();
     m_localEvidence = QJsonArray{};
     m_boardArmed = false;
     m_boardFrame = {};
@@ -1182,6 +1215,46 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
     return lines.join(QStringLiteral("; "));
 }
 
+
+void IntegrationSession::finishCollection(const QString &reason) {
+    if (m_collectionFinished || !m_hasPlan) return;
+    m_collectionFinished = true;
+    m_finishReason = reason;
+    m_localEvidence.append(QJsonObject{
+        {"type", "COLLECTION_FINISHED"},
+        {"collection_id", m_collectionId},
+        {"reason", reason},
+        {"at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}
+    });
+    emit message(QStringLiteral("Сбор завершён: %1").arg(reason));
+    emit changed();
+}
+
+void IntegrationSession::checkCompletion() {
+    if (m_collectionFinished || !m_hasPlan || !m_boardArmed || !m_hasBoardFrame)
+        return;
+    const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
+    const auto kp = kpTimeUs();
+    if (!kpOffset || !kp) return;
+    qint64 lastOffset = std::numeric_limits<qint64>::min();
+    for (const auto &action : m_plan.actions)
+        lastOffset = std::max(lastOffset, qint64(action.offsetMs) - *kpOffset);
+    if (lastOffset < 0) return;
+    constexpr qint64 kAfterLastActionMs = 250;
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        // Старый прибор: время по числу принятых байтов, а не по таймеру ПК.
+        const qint64 elapsedUs = qint64(m_legacy[0].sampleCount()) * 1000 - qint64(*kp);
+        if (elapsedUs >= (lastOffset + kAfterLastActionMs) * 1000)
+            finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"));
+        return;
+    }
+    // Новая плата не передаёт текущий тик, только запомненные фронты.
+    // Таймер ПК ограничивает окно ожидания, но никогда не оценивает точность импульса.
+    if (!m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
+    if (m_kpSeenOnPc.elapsed() >= lastOffset + kAfterLastActionMs)
+        finishCollection(QStringLiteral("Плановое окно закончилось после регистрации КП (таймер ПК)"));
+}
+
 bool IntegrationSession::saveReport(const QString &path, QString *error) {
     if (!m_evidenceValid)
         return fail(error, QStringLiteral("Журнал доказательств неполон или недоступен; сохранять отчёт нельзя"));
@@ -1212,6 +1285,10 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("format"), QStringLiteral("pyro_stand.report.v1"));
     report.insert(QStringLiteral("saved_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     report.insert(QStringLiteral("run_id"), m_runId);
+    report.insert(QStringLiteral("collection_finished"), m_collectionFinished);
+    report.insert(QStringLiteral("finish_reason"), m_finishReason);
+    report.insert(QStringLiteral("udp_discarded_sender_packets"), QString::number(m_discardedUdpSenders));
+    report.insert(QStringLiteral("udp_last_sender"), m_lastUdpSender);
     report.insert(QStringLiteral("collection_id"), m_collectionId);
     report.insert(QStringLiteral("upload_id"), m_uploadId);
     report.insert(QStringLiteral("upload_state"), m_uploadState);

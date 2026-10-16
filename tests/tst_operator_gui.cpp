@@ -190,7 +190,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
 
     auto *table = window.findChild<QTableWidget *>(QStringLiteral("eventTable"));
     QVERIFY(table);
-    QCOMPARE(window.findChildren<QTableWidget *>().size(), 2);
+    QCOMPARE(window.findChildren<QTableWidget *>().size(), 3);
     QCOMPARE(window.findChildren<QTextEdit *>().size(), 1);
     QCOMPARE(table->columnCount(), 7);
     QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("КАНАЛЫ"));
@@ -242,7 +242,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
         QStringLiteral("Зажигание пиросвечей двигателей 9–12")));
     QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("КОНТАКТ ПОДЪЁМА")));
     QVERIFY(!names.join(QStringLiteral("|")).contains(QStringLiteral("CLOSE_MAIN_VALVES")));
-    QCOMPARE(window.findChildren<QTableWidget *>().size(), 2);
+    QCOMPARE(window.findChildren<QTableWidget *>().size(), 3);
 }
 
 void OperatorGuiTest::showsDualLegacyComStatuses() {
@@ -319,13 +319,16 @@ void OperatorGuiTest::kpClusterDoesNotHideFailure() {
     TimelineWidget timeline;
     timeline.resize(800, 72);
     EventRow kp;
-    kp.id = 1; kp.time_ms = 0; kp.hasChannels = true;
+    kp.id = 1; kp.key = "LIFT_OFF_CONTACT"; kp.time_ms = 0; kp.hasChannels = true;
     EventRow failed;
-    failed.id = 2; failed.time_ms = 1; failed.hasChannels = true;
+    failed.id = 2; failed.key = "OTHER"; failed.time_ms = 1; failed.hasChannels = true;
     timeline.setEvents({kp, failed});
     timeline.markEventFired(1, "ok");
     timeline.markEventFired(2, "fail");
+    timeline.show();
+    QCoreApplication::processEvents();
     const QImage image = timeline.grab().toImage();
+    QVERIFY(!image.isNull());
     // The rendered failure must remain visible even when its node shares KP.
     const QColor failure("#f85149");
     bool visibleFailure = false;

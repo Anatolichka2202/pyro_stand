@@ -186,7 +186,7 @@ IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
     connect(&m_clockTimer, &QTimer::timeout, this, [this] {
         if (m_liveDialog && m_liveDialog->isVisible()) refreshLive();
         // Автоматическое завершение обрабатывается отдельно в IntegrationSession.
-        if (m_session.collectionFinished() && !m_refreshTimer.isActive()) m_refreshTimer.start();
+        // Завершение уже вызывает changed() и не требует постоянного обновления.
     });
     m_clockTimer.start();
 
@@ -1111,6 +1111,9 @@ void IntegrationWindow::configureTester() {
 }
 
 void IntegrationWindow::refresh() {
+    if (m_peer && m_session.collectionFinished() && !m_peer->collectionFinished())
+        m_peer->finishCollection(QStringLiteral(
+            "Основной измеритель завершил окно наблюдения; точность связи часов не подтверждена"));
     const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
     const bool secondOnly = legacy && m_session.options().secondLegacySerialPort.isEmpty() && m_session.options().legacySecondStage;
     m_resetButton->setText(legacy ? QStringLiteral("↺  НАЧАТЬ НОВЫЙ СБОР")

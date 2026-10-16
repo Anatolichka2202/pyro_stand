@@ -330,12 +330,15 @@ void OperatorGuiTest::kpClusterDoesNotHideFailure() {
     const QImage image = timeline.grab().toImage();
     QVERIFY(!image.isNull());
     // The rendered failure must remain visible even when its node shares KP.
-    const QColor failure("#f85149");
     bool visibleFailure = false;
+    // Сравнение по доминирующему красному каналу устойчиво к сглаживанию Qt.
     for (int y = 0; y < image.height(); ++y)
-        for (int x = 0; x < image.width(); ++x)
-            visibleFailure |= image.pixelColor(x, y) == failure ||
-                              image.pixelColor(x, y) == failure.darker(130);
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            visibleFailure |= pixel.red() >= 140 &&
+                              pixel.red() > pixel.green() * 1.5 &&
+                              pixel.red() > pixel.blue() * 1.5;
+        }
     QVERIFY(visibleFailure);
 }
 

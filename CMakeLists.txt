@@ -69,3 +69,9 @@ if(BUILD_HARDWARE_PROBE)
     target_include_directories(live_io_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(live_io_probe PRIVATE Qt6::Core Qt6::Network Qt6::SerialPort)
 endif()
+
+# Виртуальная сквозная проверка: UDP + локальный Debug + QSerialPort через PTY.
+add_executable(tst_virtual_io tests/tst_virtual_io.cpp integration.cpp integration.h)
+target_include_directories(tst_virtual_io PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(tst_virtual_io PRIVATE Qt6::Core Qt6::Network Qt6::SerialPort Qt6::Test)
+add_test(NAME tst_virtual_io COMMAND tst_virtual_io)

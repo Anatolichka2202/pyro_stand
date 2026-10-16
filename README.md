@@ -86,3 +86,29 @@ pyro_stand.exe --legacy-serial COM7 --legacy-block B --legacy-no-kp
 доступна в истории Git: `bf13333` (17.08.2026). Технические решения и
 история интеграции хранятся в агентской сессии `Стенд` и офисном Docmost,
 а не дублируются в этом исходном репозитории.
+
+## Испытания без оборудования
+
+Генератор `tools/virtual_tester.py` создаёт реальные UDP-кадры `AA55` и
+миллисекундные байтовые маски старого прибора, умеет воспроизводить JSONL-трассы
+(`.frames.jsonl`) из отчёта и поддерживает `normal`, `missing-kp`,
+`bad-crc`, `loss`, `wrap`. Он отправляет UDP **только на localhost**
+и никогда не отправляет команды управления БЦВМ или сброса платы.
+
+```bash
+python3 tools/virtual_tester.py --mode udp --scenario normal --record test.jsonl
+python3 tools/virtual_tester.py --mode udp --scenario bad-crc
+python3 tools/virtual_tester.py --mode udp --replay test.jsonl
+python3 tools/virtual_tester.py --mode legacy-file --output old.raw
+```
+
+Для live-демонстрации запустите приложение с `--tester udp --board-ip
+127.0.0.1`, затем откройте «Живые каналы» и запустите симулятор. На Linux
+`--mode legacy-pty` создаёт виртуальный последовательный порт и выводит
+его имя (`/dev/pts/N`); приложение следует запустить на этом порте до подачи
+масок. Windows-драйвер виртуальных COM в комплект не входит.
+
+CI проверяет генератор и сквозной `tst_virtual_io`: Qt UDP-сокет, локальный
+Debug КАСУПП, QSerialPort/PTY и JSON-отчёт, включая неизменность завершённой
+сессии. Потери кадров без номера последовательности не обнаруживаются самим
+протоколом. Синтетические проверки не заменяют аппаратную приёмку.

@@ -204,6 +204,7 @@ signals:
 private:
     friend class IntegrationTest;
     friend class OperatorGuiTest;
+    friend class VirtualIoTest;
     void connectDebug();
     void readDebug();
     void processDebug(const QJsonObject &object);

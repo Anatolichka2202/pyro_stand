@@ -50,6 +50,55 @@ jobs:
         run: python -m unittest discover -s tests -p test_virtual_tester.py -v
 
 
+
+      - name: Configure release bundle
+        shell: pwsh
+        run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI_TESTS=OFF -DBUILD_HARDWARE_PROBE=OFF
+
+      - name: Build release application
+        shell: pwsh
+        run: cmake --build build-release --target pyro_stand --parallel 2
+
+      - name: Deploy Qt and package Pyro-stand
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist/PyroStand | Out-Null
+          Copy-Item build-release/pyro_stand.exe dist/PyroStand/pyro_stand.exe
+          Copy-Item README.md dist/PyroStand/README.md
+          & windeployqt --release --no-translations --dir dist/PyroStand dist/PyroStand/pyro_stand.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt: exit $LASTEXITCODE" }
+          @('[Paths]','Prefix=.','Plugins=.') | Set-Content dist/PyroStand/qt.conf -Encoding ascii
+          Compress-Archive -Path dist/PyroStand/* -DestinationPath dist/PyroStand-windows-x64.zip
+
+      - name: Smoke-test packaged EXE without Qt development environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path dist/PyroStand/pyro_stand.exe).Path
+          $savedPath = $env:Path
+          $env:Path = "$env:WINDIR\System32;$env:WINDIR"
+          $env:PYRO_STAND_SMOKE_TEST = '1'
+          try {
+            $p = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -ArgumentList @(
+              '--tester','udp','--board-ip','127.0.0.1',
+              '--bind-ip','127.0.0.1','--board-port','59131',
+              '--debug-socket','no-real-bcvm-in-ci'
+            ) -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Packaged Pyro-stand exit code: $($p.ExitCode)" }
+          } finally {
+            $env:Path = $savedPath
+            Remove-Item Env:PYRO_STAND_SMOKE_TEST -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload standalone Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyroStand-Windows-x64-${{ github.sha }}
+          path: dist/PyroStand-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
   kasu-contract:
     # GitHub Actions token одного private repo не имеет доступа ко второму.
     # Активируется только после явного подключения read-only KASU_READ_TOKEN

@@ -1,6 +1,8 @@
 #include "integration.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QLocalServer>
 #include <QTemporaryDir>
 #include <QTest>

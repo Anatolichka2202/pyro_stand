@@ -45,6 +45,7 @@ private slots:
     void kpClusterDoesNotHideFailure();
     void combinedKeepsCountersSeparate();
     void commonKpOnlyOnNewBoard();
+    void kpOnDifferentYpsIsShownAsMappingDiagnostic();
     void rawChannelsAreVisibleWithoutFlightPermission();
     void timelineShowsFullPlan();
     void peerClockDoesNotTruncateTimeline();
@@ -576,6 +577,38 @@ void OperatorGuiTest::finishWithoutKpFreezesVisualUtcClock() {
     window.updatePlannedClock();
     QCOMPARE(window.m_timerLabel->text(), frozen);
     QVERIFY(window.m_session.finishedAtUtc().isValid());
+}
+
+
+void OperatorGuiTest::kpOnDifferentYpsIsShownAsMappingDiagnostic() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.firstStageYps = 9;
+    options.kpYps = 9;
+    IntegrationWindow window(options);
+    QString error;
+    QVERIFY2(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\n", &window.m_session.m_plan, &error),
+        qPrintable(error));
+    window.m_session.m_hasPlan = true;
+    window.m_session.updateBenchMapping();
+    window.m_session.m_hasBoardFrame = true;
+    window.m_session.m_boardArmed = true;
+    // Сигнал есть на входе 8 ЯПС 8, но карта ## / опции ожидают ЯПС 9.
+    window.m_session.m_boardFrame.channels[63] = {true, false, 5'000'000, 0};
+    QVERIFY(!window.m_session.kpTimeUs().has_value());
+    window.refresh();
+    QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("ЯПС 9/8")));
+    QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("ЯПС 8/8")));
+    QVERIFY(!window.m_session.kpTimeUs().has_value());
+    // Сырой фронт на назначенном канале тоже должен быть виден оператору
+    // даже тогда, когда разрешение испытания ещё не подтверждено.
+    window.m_session.m_boardFrame.channels[71] = {true, false, 5'020'000, 0};
+    window.refresh();
+    QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("Сырой фронт КП")));
+    QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("не подтверждена загрузка")));
 }
 
 QTEST_MAIN(OperatorGuiTest)

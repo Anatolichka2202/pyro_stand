@@ -1075,9 +1075,22 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
 
 void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     m_liveFrame = parsed;
-    // После окончания прогона свежие кадры доступны в live-окне,
-    // но не могут изменить зафиксированный результат испытания.
-    if (!m_collectionFinished) m_boardFrame = parsed;
+    // UDP-кадр описывает наблюдаемое состояние; уже зарегистрированный фронт
+    // внутри одного сбора не должен исчезать из-за следующего кадра.
+    // Live показывает текущий пакет, снимок испытания удерживает ПЕРВУЮ
+    // аппаратную отметку каждого фронта. Сброс делается отдельно.
+    if (!m_collectionFinished) {
+        for (size_t i = 0; i < parsed.channels.size(); ++i) {
+            const BoardChannel &incoming = parsed.channels[i];
+            BoardChannel &stored = m_boardFrame.channels[i];
+            if (incoming.triggered) stored.triggered = true;
+            if (incoming.riseUs != 0 && stored.riseUs == 0)
+                stored.riseUs = incoming.riseUs;
+            if (incoming.fallUs != 0 && stored.fallUs == 0)
+                stored.fallUs = incoming.fallUs;
+            stored.ready = incoming.ready;
+        }
+    }
     m_hasBoardFrame = true;
     m_boardReceiving = true;
     m_boardWatchdog.start();

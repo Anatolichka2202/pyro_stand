@@ -107,6 +107,7 @@ private slots:
     void manualEarlyFinishNeverClaimsMissedPulse();
     void actual33ActionCyclogramHasUnambiguousChannels();
     void completedActionStateIsFrozenAcrossLateDebugChanges();
+    void transientKpRemainsAfterNextUdpFrame();
 };
 
 void IntegrationTest::debugHistoryHasExplicitBound() {
@@ -1198,6 +1199,62 @@ void IntegrationTest::completedActionStateIsFrozenAcrossLateDebugChanges() {
     QVERIFY(session.m_finalActionMeasurements.isEmpty());
     QVERIFY(!session.collectionFinished());
     QVERIFY(session.actionResult(action) != frozen);
+}
+
+
+void IntegrationTest::transientKpRemainsAfterNextUdpFrame() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.firstStageYps = 9;
+    options.kpYps = 9;
+    IntegrationSession session(options);
+    QString error;
+    const QByteArray cyclo =
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n"
+        "LIFT_OFF_CONTACT=0\n";
+    QVERIFY2(StandProtocol::parseCyclogram(cyclo, &session.m_plan, &error), qPrintable(error));
+    session.m_hasPlan = true;
+    session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+    session.updateBenchMapping();
+    QCOMPARE(session.m_mapping.kp.index, 71);
+
+    auto onePulse = [](int physicalIndex, quint32 riseUs) {
+        QByteArray raw(963, char(0));
+        raw[0] = char(0xAA); raw[1] = char(0x55);
+        const int at = 2 + physicalIndex * 10;
+        raw[at] = 1;
+        qToLittleEndian<quint32>(riseUs,
+            reinterpret_cast<uchar *>(raw.data() + at + 2));
+        quint8 crc = 0;
+        for (int i = 0; i < raw.size() - 1; ++i) {
+            crc ^= quint8(raw[i]);
+            for (int bit = 0; bit < 8; ++bit)
+                crc = (crc & 0x80) ? quint8((crc << 1) ^ 0x31) : quint8(crc << 1);
+        }
+        raw[962] = char(crc);
+        return raw;
+    };
+    // КП существует только в первом кадре: второй кадр содержит один новый
+    // фронт, но не повторяет прежний. Замена снимка целиком теряла опору.
+    session.processFrame(onePulse(71, 1'000'000));
+    QVERIFY(session.kpTimeUs().has_value());
+    QCOMPARE(*session.kpTimeUs(), quint32(1'000'000));
+    session.processFrame(onePulse(64, 1'020'000));
+    session.processFrame(onePulse(65, 1'020'000));
+    QCOMPARE(session.liveFrame().channels[71].triggered, false);
+    QVERIFY(session.boardFrame().channels[71].triggered);
+    QCOMPARE(session.boardFrame().channels[71].riseUs, quint32(1'000'000));
+    QCOMPARE(*session.kpTimeUs(), quint32(1'000'000));
+    QCOMPARE(session.measureAction(session.plan().actions[0]).state,
+             ActionMeasurement::State::Measured);
+    QCOMPARE(session.measureAction(session.plan().actions[0]).channels[0].actualMs.value(), 20.0);
+    session.processFrame(onePulse(64, 1'050'000));
+    QCOMPARE(session.boardFrame().channels[64].riseUs, quint32(1'020'000));
+    QCOMPARE(session.liveFrame().channels[64].riseUs, quint32(1'050'000));
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

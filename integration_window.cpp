@@ -816,6 +816,51 @@ void IntegrationWindow::refreshCanvas() {
                     .arg(*source.kpTimeUs()));
     }
     m_canvas->setEvents(std::move(groups));
+
+    // Показываем, почему реально полученный КП не стал измерительной опорой.
+    // Не подменяем его фронтом соседней ЯПС по эвристике.
+    if (m_session.options().boardTransport != IntegrationSession::BoardTransport::LegacySerial &&
+        m_session.hasBoardFrame() && m_session.mapping().kp.index >= 0) {
+        const int expectedIndex = m_session.mapping().kp.index;
+        const auto &expected = m_session.boardFrame().channels[size_t(expectedIndex)];
+        const bool physicallySeen = expected.triggered && expected.riseUs != 0;
+        if (!m_session.measurementEligible() && physicallySeen) {
+            QStringList restrictions;
+            if (!m_session.boardArmed()) restrictions << QStringLiteral("не подтверждён новый сбор/сброс");
+            if (m_session.uploadState() != QStringLiteral("CONFIRMED"))
+                restrictions << QStringLiteral("не подтверждена загрузка ПЗ");
+            if (!m_session.executionPermissionObserved())
+                restrictions << QStringLiteral("нет подтверждения исполнения БЦВМ");
+            if (m_session.boardArmed() && m_session.executionPermissionObserved() &&
+                m_session.uploadState() == QStringLiteral("CONFIRMED"))
+                restrictions << QStringLiteral("нарушены условия достоверности");
+            m_kpStatus->setText(QStringLiteral(
+                "Сырой фронт КП на ЯПС %1/8: %2 мкс. Опора не принята: %3")
+                .arg(expectedIndex / 8 + 1)
+                .arg(expected.riseUs)
+                .arg(restrictions.join(QStringLiteral("; "))));
+        } else if (!physicallySeen) {
+            QStringList possible;
+            for (int yps = 0; yps < 12; ++yps) {
+                const int index = yps * 8 + 7;
+                if (index == expectedIndex) continue;
+                const auto &candidate = m_session.boardFrame().channels[size_t(index)];
+                if (candidate.triggered && candidate.riseUs != 0)
+                    possible << QStringLiteral("ЯПС %1/8 (%2 мкс)")
+                                    .arg(yps + 1).arg(candidate.riseUs);
+            }
+            if (!possible.isEmpty())
+                m_kpStatus->setText(QStringLiteral(
+                    "КП отсутствует на назначенном ЯПС %1/8. Фронты других каналов 8: %2. "
+                    "Проверьте карту подключения; это только кандидаты, не подтверждённый КП.")
+                    .arg(expectedIndex / 8 + 1)
+                    .arg(possible.join(QStringLiteral(", "))));
+            else
+                m_kpStatus->setText(QStringLiteral(
+                    "КП не обнаружен на назначенном ЯПС %1/8; проверьте вход 8, карту ## и сырые данные.")
+                    .arg(expectedIndex / 8 + 1));
+        }
+    }
     m_summaryLabel->setText(QStringLiteral("КАНАЛЫ · измерено %1/%2 · вне допуска %3 · расчётных "
                                            "%4 · допуск расчётом не подтверждается")
                                 .arg(measured)

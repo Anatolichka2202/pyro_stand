@@ -233,6 +233,10 @@ private:
     bool m_collectionFinished = false;
     bool m_plannedWindowComplete = false;
     QString m_finishReason;
+    // Итог вычисляется один раз. Поздний Debug не пересчитывает историю.
+    QHash<QString, ActionMeasurement> m_finalActionMeasurements;
+    QString m_uploadStateAtFinish;
+    bool m_executionObservedAtFinish = false;
     quint64 m_discardedUdpSenders = 0;
     // Счётчики завершённого сбора не меняются при последующем live-приёме.
     quint64 m_acceptedAtFinish = 0;

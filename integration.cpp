@@ -533,6 +533,9 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_liveFrame = {};
     m_kpSeenOnPc.invalidate();
     m_collectionFinished = false;
+    m_finalActionMeasurements.clear();
+    m_uploadStateAtFinish.clear();
+    m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_serialBuffer.clear();
@@ -596,6 +599,9 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
     m_collectionFinished = false;
+    m_finalActionMeasurements.clear();
+    m_uploadStateAtFinish.clear();
+    m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_samplesAtFinish = {};
@@ -1021,6 +1027,9 @@ bool IntegrationSession::resetBoard() {
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         m_collectionElapsed.start();
         m_collectionFinished = false;
+        m_finalActionMeasurements.clear();
+        m_uploadStateAtFinish.clear();
+        m_executionObservedAtFinish = false;
         m_plannedWindowComplete = false;
         m_finishReason.clear();
         m_samplesAtFinish = {};
@@ -1058,6 +1067,9 @@ bool IntegrationSession::resetBoard() {
     m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_collectionElapsed.start();
     m_collectionFinished = false;
+    m_finalActionMeasurements.clear();
+    m_uploadStateAtFinish.clear();
+    m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
     m_samplesAtFinish = {};
@@ -1118,6 +1130,9 @@ std::optional<double> IntegrationSession::measuredPositionMs() const {
 }
 
 ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action) const {
+    // Результаты завершённого сбора не зависят от поздних событий КАСУПП.
+    if (m_collectionFinished && m_finalActionMeasurements.contains(action.actionId))
+        return m_finalActionMeasurements.value(action.actionId);
     using State = ActionMeasurement::State;
     ActionMeasurement result;
     const auto blocked = [&result](State state, const QString &reason) {
@@ -1252,6 +1267,11 @@ void IntegrationSession::finishCollection(const QString &reason, bool plannedWin
     if (m_collectionFinished || !m_hasPlan) return;
     m_collectionFinished = true;
     m_plannedWindowComplete = plannedWindowComplete;
+    m_uploadStateAtFinish = m_uploadState;
+    m_executionObservedAtFinish = m_executionObserved;
+    m_finalActionMeasurements.clear();
+    for (const auto &action : m_plan.actions)
+        m_finalActionMeasurements.insert(action.actionId, measureAction(action));
     m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
     m_acceptedAtFinish = m_acceptedFrames;
     m_rejectedAtFinish = m_rejectedFrames;
@@ -1333,6 +1353,9 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("run_id"), m_runId);
     report.insert(QStringLiteral("collection_finished"), m_collectionFinished);
     report.insert(QStringLiteral("planned_window_complete"), m_plannedWindowComplete);
+    report.insert(QStringLiteral("upload_state_at_finish"), m_uploadStateAtFinish);
+    report.insert(QStringLiteral("execution_permission_observed_at_finish"),
+                  m_executionObservedAtFinish);
     report.insert(QStringLiteral("finish_reason"), m_finishReason);
     report.insert(QStringLiteral("udp_discarded_sender_packets"),
                   QString::number(m_collectionFinished ? m_discardedUdpAtFinish : m_discardedUdpSenders));

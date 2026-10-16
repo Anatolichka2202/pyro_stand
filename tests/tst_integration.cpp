@@ -101,6 +101,7 @@ private slots:
     void dualLegacyWaitsForBothCounters();
     void manualEarlyFinishNeverClaimsMissedPulse();
     void actual33ActionCyclogramHasUnambiguousChannels();
+    void completedActionStateIsFrozenAcrossLateDebugChanges();
 };
 
 
@@ -1004,6 +1005,49 @@ void IntegrationTest::actual33ActionCyclogramHasUnambiguousChannels() {
              .inputs.first().index, 2);
     QCOMPARE(mapping.actions.value("SHUTDOWN_ENGINE_BLOCK_B")
              .inputs.first().index, 5);
+}
+
+
+void IntegrationTest::completedActionStateIsFrozenAcrossLateDebugChanges() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_uploadState = QStringLiteral("CONFIRMED");
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+    session.m_legacyArmed[0] = true;
+    session.processLegacyBytes(QByteArray(1, char(0x80)), 0);
+    session.processLegacyBytes(QByteArray(1, char(0x83)), 0);
+    const auto action = session.m_plan.actions[1];
+    QCOMPARE(session.measureAction(action).state, ActionMeasurement::State::Measured);
+    session.finishCollection(QStringLiteral("Завершённое окно"), true);
+    const auto frozen = session.actionResult(action);
+    const auto frozenAction = session.measureAction(action);
+
+    // БЦВМ могла заблокироваться после испытания; это не отменяет его результаты.
+    session.m_uploadState = QStringLiteral("FAILED");
+    session.m_executionObserved = false;
+    session.m_boardArmed = false;
+    session.m_fileIdentityValid = false;
+    QCOMPARE(session.measureAction(action).state, frozenAction.state);
+    QCOMPARE(session.actionResult(action), frozen);
+    QVERIFY(session.m_finalActionMeasurements.contains(action.actionId));
+    QCOMPARE(session.m_uploadStateAtFinish, QStringLiteral("CONFIRMED"));
+    QVERIFY(session.m_executionObservedAtFinish);
+
+    // Новый сбор обязательно сбрасывает все сохранённые оценки.
+    session.resetCollectionEvidence(false);
+    QVERIFY(session.m_finalActionMeasurements.isEmpty());
+    QVERIFY(!session.collectionFinished());
+    QVERIFY(session.actionResult(action) != frozen);
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

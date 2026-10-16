@@ -210,7 +210,7 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
     }
     if (!date.isValid() || !time.isValid() || parsed.actions.isEmpty())
         return fail(error, QStringLiteral("Нет START_UTC_DATE, START_UTC_TIME или действий"));
-    parsed.t0Utc = QDateTime(date, time, QTimeZone::UTC);
+    parsed.t0Utc = QDateTime(date, time, QTimeZone(QByteArrayLiteral("UTC")));
     std::stable_sort(parsed.actions.begin(), parsed.actions.end(),
                      [](const PlannedAction &a, const PlannedAction &b) { return a.offsetMs < b.offsetMs; });
     *plan = parsed;

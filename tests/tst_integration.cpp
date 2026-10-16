@@ -93,6 +93,9 @@ private slots:
     void evidenceIsolation();
     void resetDiscardsPartialSerialFrame();
     void failedExportPreservesEvidence();
+    void legacyTicksFinishCollection();
+    void liveFrameKeepsReceivingAfterCompletion();
+    void mismatchedUdpSenderIsCounted();
 };
 
 
@@ -762,6 +765,69 @@ void IntegrationTest::twoExternalStreams() {
     QCoreApplication::processEvents();
     QVERIFY(!session.executionEnabled());
     QVERIFY(changed.count() > 0);
+}
+
+
+void IntegrationTest::legacyTicksFinishCollection() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE = 2026-10-16\nSTART_UTC_TIME = 12:00:00\n"
+        "LIFT_OFF_CONTACT = 0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12 = 20\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_boardArmed = true;
+    session.m_hasBoardFrame = true;
+    QCOMPARE(session.m_mapping.kp.index, 7);
+    session.m_boardFrame.channels[7].triggered = true;
+    session.m_boardFrame.channels[7].riseUs = 1000;
+    // 300 байтов старого прибора — 300 аппаратных миллисекунд, независимо от Qt.
+    for (int i = 0; i < 300; ++i)
+        session.m_legacy[0].append(quint8(0x80));
+    session.checkCompletion();
+    QVERIFY(session.collectionFinished());
+    QVERIFY(session.finishReason().contains(QStringLiteral("тикам старой платы")));
+}
+
+void IntegrationTest::liveFrameKeepsReceivingAfterCompletion() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(cyclogram(), &session.m_plan, &error));
+    session.m_hasPlan = true;
+    BoardFrame first;
+    QVERIFY(StandProtocol::parseBoardFrame(frame(1000, 2000), &first, &error));
+    session.applyFrame(first);
+    QCOMPARE(session.boardFrame().channels[0].riseUs, quint32(1000));
+    session.finishCollection();
+    QVERIFY(session.collectionFinished());
+    BoardFrame second;
+    QVERIFY(StandProtocol::parseBoardFrame(frame(3000, 4000), &second, &error));
+    session.applyFrame(second);
+    QCOMPARE(session.boardFrame().channels[0].riseUs, quint32(1000));
+    QCOMPARE(session.liveFrame().channels[0].riseUs, quint32(3000));
+}
+
+void IntegrationTest::mismatchedUdpSenderIsCounted() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardIp = QHostAddress(QStringLiteral("192.168.17.144"));
+    options.bindIp = QHostAddress::LocalHost;
+    options.telemetryPort = 0;
+    IntegrationSession session(options);
+    session.start();
+    QVERIFY(session.m_udp.localPort() != 0);
+    QUdpSocket client;
+    QCOMPARE(client.writeDatagram(frame(), QHostAddress::LocalHost,
+                                  session.m_udp.localPort()), qint64(963));
+    QTRY_COMPARE(session.discardedUdpSenders(), quint64(1));
+    QCOMPARE(session.acceptedFrames(), quint64(0));
+    QVERIFY(session.lastError().contains(QStringLiteral("отброшен")));
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

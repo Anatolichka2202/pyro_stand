@@ -39,6 +39,8 @@ private slots:
     void kpClusterDoesNotHideFailure();
     void combinedKeepsCountersSeparate();
     void commonKpOnlyOnNewBoard();
+    void rawChannelsAreVisibleWithoutFlightPermission();
+    void timelineShowsFullPlan();
 };
 
 
@@ -391,6 +393,50 @@ void OperatorGuiTest::commonKpOnlyOnNewBoard() {
         }
     }
     QCOMPARE(kpRows,1);QTRY_VERIFY(window.m_canvas->fits());
+}
+
+
+void OperatorGuiTest::rawChannelsAreVisibleWithoutFlightPermission() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.firstStageYps = 1;
+    IntegrationWindow window(options);
+    window.show();
+    auto *button = window.findChild<QPushButton *>("liveChannelsBtn");
+    QVERIFY(button);
+    QTest::mouseClick(button, Qt::LeftButton);
+    auto *table = window.findChild<QTableWidget *>("liveChannelsTable");
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), 8);
+    // Без КАСУПП и КП факт фронта всё равно показывается в отдельном окне.
+    window.m_session.m_liveFrame.channels[0].triggered = true;
+    window.m_session.m_liveFrame.channels[0].riseUs = 1234000;
+    window.refreshLive();
+    QCOMPARE(table->item(0, 2)->text(), QStringLiteral("ДА"));
+    QCOMPARE(table->item(0, 3)->text(), QStringLiteral("1234.000"));
+    QVERIFY(!window.m_session.measurementEligible());
+    window.m_liveDialog->close();
+}
+
+void OperatorGuiTest::timelineShowsFullPlan() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.firstStageYps = 1;
+    options.kpYps = 1;
+    IntegrationWindow window(options);
+    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/working_20261014.txt"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(file.readAll(), &window.m_session.m_plan, &error));
+    window.m_session.m_hasPlan = true;
+    window.m_session.updateBenchMapping();
+    window.refresh();
+    QCOMPARE(window.m_timeline->eventCount(), 33);
+    window.m_session.finishCollection();
+    window.refresh();
+    QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("ЗАВЕРШЁН")));
 }
 
 QTEST_MAIN(OperatorGuiTest)

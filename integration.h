@@ -225,6 +225,7 @@ private:
     QTimer m_reconnect;
     QTimer m_completionTimer;
     QElapsedTimer m_kpSeenOnPc;
+    std::array<quint64, 2> m_samplesAtFinish{};
     bool m_collectionFinished = false;
     QString m_finishReason;
     quint64 m_discardedUdpSenders = 0;

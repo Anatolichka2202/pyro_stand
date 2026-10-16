@@ -820,7 +820,8 @@ void IntegrationWindow::updatePlannedClock() {
             m_lastVisualPosition = *anchor;
         }
         position =
-            source.boardReceiving() ? *anchor + m_visualElapsed.elapsed() : m_lastVisualPosition;
+            source.boardReceiving() && !source.collectionFinished()
+                ? *anchor + m_visualElapsed.elapsed() : *anchor;
         m_lastVisualPosition = position;
     } else
         m_visualAnchor.reset();

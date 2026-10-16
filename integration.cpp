@@ -1084,8 +1084,9 @@ std::optional<double> IntegrationSession::measuredPositionMs() const {
     const auto kp = kpTimeUs();
     if (!kp) return std::nullopt;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
-        if (m_legacy[0].sampleCount() * 1000 >= (quint64(1) << 31)) return std::nullopt;
-        return double(qint32(quint32(m_legacy[0].sampleCount() * 1000) - *kp)) / 1000.0;
+        const quint64 samples = m_collectionFinished ? m_samplesAtFinish[0] : m_legacy[0].sampleCount();
+        if (samples * 1000 >= (quint64(1) << 31)) return std::nullopt;
+        return double(qint32(quint32(samples * 1000) - *kp)) / 1000.0;
     }
     // New frames contain event timestamps, not a frame's current counter value.
     // Show only the latest known mapped event; never extrapolate with the PC clock.
@@ -1220,6 +1221,7 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
 void IntegrationSession::finishCollection(const QString &reason) {
     if (m_collectionFinished || !m_hasPlan) return;
     m_collectionFinished = true;
+    m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
     m_finishReason = reason;
     m_localEvidence.append(QJsonObject{
         {"type", "COLLECTION_FINISHED"},

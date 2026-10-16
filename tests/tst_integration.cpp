@@ -882,11 +882,15 @@ void IntegrationTest::twoExternalStreams() {
     QCOMPARE(report["frame_evidence_sha256"].toString(),QString::fromLatin1(QCryptographicHash::hash(evidenceBytes,QCryptographicHash::Sha256).toHex()));
     const QByteArray wrapped = frame(4294960000U, 20000U);
     QCOMPARE(board.writeDatagram(wrapped, QHostAddress::LocalHost, telemetryPort), qint64(wrapped.size()));
-    QTRY_VERIFY(session.actionResult(session.plan().actions[1]).contains("27.296"));
+    // Повторная телеметрия с другими отметками в том же сборе не должна
+    // переписать первые зарегистрированные фронты. Wrap проверяется отдельно.
+    QTRY_COMPARE(session.liveFrame().channels[0].riseUs, quint32(4294960000U));
     const ActionMeasurement late = session.measureAction(session.plan().actions[1]);
     QCOMPARE(int(late.state), int(ActionMeasurement::State::Measured));
-    QCOMPARE(late.channels[0].actualMs.value(), 27.296);
-    QVERIFY(qAbs(late.channels[0].deviationMs.value() - 7.296) < 1e-9);
+    QCOMPARE(late.channels[0].actualMs.value(), 20.0);
+    QCOMPARE(late.channels[0].deviationMs.value(), 0.0);
+    QCOMPARE(session.boardFrame().channels[0].riseUs, quint32(1000000));
+    QCOMPARE(session.boardFrame().channels[1].riseUs, quint32(1020000));
 
     QJsonObject stale = contract("BCVM_STATE", 4, run, stream);
     stale.insert("fresh", false);
@@ -1249,6 +1253,12 @@ void IntegrationTest::transientKpRemainsAfterNextUdpFrame() {
     QVERIFY(session.boardFrame().channels[71].triggered);
     QCOMPARE(session.boardFrame().channels[71].riseUs, quint32(1'000'000));
     QCOMPARE(*session.kpTimeUs(), quint32(1'000'000));
+    const ActionMapping mapped = session.mapping().forAction(session.plan().actions[0]);
+    QCOMPARE(mapped.inputs.size(), 2);
+    QCOMPARE(mapped.inputs[0].index, 64);
+    QCOMPARE(mapped.inputs[1].index, 65);
+    QCOMPARE(session.boardFrame().channels[64].riseUs, quint32(1'020'000));
+    QCOMPARE(session.boardFrame().channels[65].riseUs, quint32(1'020'000));
     QCOMPARE(session.measureAction(session.plan().actions[0]).state,
              ActionMeasurement::State::Measured);
     QCOMPARE(session.measureAction(session.plan().actions[0]).channels[0].actualMs.value(), 20.0);

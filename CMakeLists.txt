@@ -75,3 +75,12 @@ add_executable(tst_virtual_io tests/tst_virtual_io.cpp integration.cpp integrati
 target_include_directories(tst_virtual_io PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(tst_virtual_io PRIVATE Qt6::Core Qt6::Network Qt6::SerialPort Qt6::Test)
 add_test(NAME tst_virtual_io COMMAND tst_virtual_io)
+
+# Проверка запуска именно оконного исполняемого файла без аппаратуры.
+add_test(NAME stand_offscreen_startup
+         COMMAND pyro_stand --tester udp --board-ip 127.0.0.1
+                 --bind-ip 127.0.0.1 --board-port 59031
+                 --debug-socket pyro-ci-no-debug-server)
+set_tests_properties(stand_offscreen_startup PROPERTIES
+    TIMEOUT 15
+    ENVIRONMENT "PYRO_STAND_SMOKE_TEST=1;QT_QPA_PLATFORM=offscreen")

@@ -538,6 +538,7 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
+    m_finishedAtUtc = {};
     m_serialBuffer.clear();
     for (auto &decoder : m_legacy) decoder.reset();
     m_legacyArmed = {};
@@ -604,6 +605,7 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
     m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
+    m_finishedAtUtc = {};
     m_samplesAtFinish = {};
     m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
     m_kpSeenOnPc.invalidate();
@@ -1032,6 +1034,7 @@ bool IntegrationSession::resetBoard() {
         m_executionObservedAtFinish = false;
         m_plannedWindowComplete = false;
         m_finishReason.clear();
+        m_finishedAtUtc = {};
         m_samplesAtFinish = {};
         m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
         m_kpSeenOnPc.invalidate();
@@ -1072,6 +1075,7 @@ bool IntegrationSession::resetBoard() {
     m_executionObservedAtFinish = false;
     m_plannedWindowComplete = false;
     m_finishReason.clear();
+    m_finishedAtUtc = {};
     m_samplesAtFinish = {};
     m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
     m_kpSeenOnPc.invalidate();
@@ -1277,12 +1281,13 @@ void IntegrationSession::finishCollection(const QString &reason, bool plannedWin
     m_rejectedAtFinish = m_rejectedFrames;
     m_discardedUdpAtFinish = m_discardedUdpSenders;
     m_finishReason = reason;
+    m_finishedAtUtc = QDateTime::currentDateTimeUtc();
     m_localEvidence.append(QJsonObject{
         {"type", "COLLECTION_FINISHED"},
         {"collection_id", m_collectionId},
         {"reason", reason},
         {"planned_window_complete", plannedWindowComplete},
-        {"at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}
+        {"at_utc", m_finishedAtUtc.toString(Qt::ISODateWithMs)}
     });
     emit message(QStringLiteral("Сбор завершён: %1").arg(reason));
     emit changed();
@@ -1357,6 +1362,8 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("execution_permission_observed_at_finish"),
                   m_executionObservedAtFinish);
     report.insert(QStringLiteral("finish_reason"), m_finishReason);
+    report.insert(QStringLiteral("finished_at_utc"),
+                  m_finishedAtUtc.toString(Qt::ISODateWithMs));
     report.insert(QStringLiteral("udp_discarded_sender_packets"),
                   QString::number(m_collectionFinished ? m_discardedUdpAtFinish : m_discardedUdpSenders));
     report.insert(QStringLiteral("udp_last_sender"), m_lastUdpSender);

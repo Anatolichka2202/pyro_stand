@@ -799,7 +799,13 @@ void IntegrationWindow::updatePlannedClock() {
     }
     const auto measured = source.measuredPositionMs();
     const auto kpPlan = StandProtocol::plannedKpOffset(source.plan(), source.mapping());
-    double position = double(source.plan().t0Utc.msecsTo(QDateTime::currentDateTimeUtc())) - kpPlan.value_or(0);
+    // После завершения без КП часы ПК замораживаем на момент окончания.
+    // Это не измерение; привязка к физическому КП отсутствует.
+    const QDateTime indicatedUtc = source.collectionFinished() &&
+            source.finishedAtUtc().isValid()
+        ? source.finishedAtUtc() : QDateTime::currentDateTimeUtc();
+    double position = double(source.plan().t0Utc.msecsTo(indicatedUtc)) -
+        kpPlan.value_or(0);
     const auto anchor = measured ? measured : m_forecastPosition;
     if (anchor) {
         if (!m_visualAnchor || *m_visualAnchor != *anchor) {
@@ -824,7 +830,9 @@ void IntegrationWindow::updatePlannedClock() {
     m_timerLabel->setText(show(position));
     m_timerLabel->setStyleSheet(
         QStringLiteral("font:28px 'Consolas';color:%1").arg(measured ? "#81b6d0" : "#e5bd78"));
-    m_clockCaption->setText(measured ? QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП")
+    m_clockCaption->setText(source.collectionFinished() && !measured
+                                ? QStringLiteral("СБОР ЗАВЕРШЁН · ОПОРНОГО КП НЕТ")
+                                : measured ? QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП")
                             : !kpPlan ? QStringLiteral("ОТ ПЛАНОВОГО T0 · КП НЕ ОПРЕДЕЛЁН")
                             : position < 0
                                 ? (m_forecastPosition ? QStringLiteral("ДО РАСЧЁТНОГО КП")
@@ -832,6 +840,7 @@ void IntegrationWindow::updatePlannedClock() {
                                 : QStringLiteral("ПОСЛЕ ПЛАНОВОГО КП"));
     m_clockSource->setText(
         measured ? QStringLiteral("Опора платы + индикация ПК; факты не интерполируются")
+        : source.collectionFinished() ? QStringLiteral("Зафиксировано по часам ПК; это не измерение от КП")
         : m_forecastPosition ? QStringLiteral("Прогноз КП по отметкам + ПК · неточный")
                              : QStringLiteral("Расчёт по UTC / часам ПК · неточный"));
     double first = std::numeric_limits<double>::infinity();

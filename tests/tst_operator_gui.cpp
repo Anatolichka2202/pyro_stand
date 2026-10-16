@@ -42,6 +42,7 @@ private slots:
     void rawChannelsAreVisibleWithoutFlightPermission();
     void timelineShowsFullPlan();
     void peerClockDoesNotTruncateTimeline();
+    void finishWithoutKpFreezesVisualUtcClock();
 };
 
 
@@ -477,6 +478,31 @@ void OperatorGuiTest::peerClockDoesNotTruncateTimeline() {
     // Ранее refreshCanvas оставлял только назначенные действия и КП.
     QCOMPARE(window.m_timeline->eventCount(), 4);
     QVERIFY(window.m_timeline->isVisible());
+}
+
+
+void OperatorGuiTest::finishWithoutKpFreezesVisualUtcClock() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    IntegrationWindow window(options);
+    window.show();
+    QString error;
+    const QByteArray input =
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=1000\n";
+    QVERIFY2(StandProtocol::parseCyclogram(input, &window.m_session.m_plan, &error),
+             qPrintable(error));
+    window.m_session.m_hasPlan = true;
+    window.m_session.finishCollection();
+    window.refresh();
+    const QString frozen = window.m_timerLabel->text();
+    QVERIFY(window.m_clockSource->text().contains(QStringLiteral("Зафиксировано")));
+    QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("ЗАВЕРШЁН")));
+    QTest::qWait(240);
+    window.updatePlannedClock();
+    QCOMPARE(window.m_timerLabel->text(), frozen);
+    QVERIFY(window.m_session.finishedAtUtc().isValid());
 }
 
 QTEST_MAIN(OperatorGuiTest)

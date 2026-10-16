@@ -181,6 +181,7 @@ public:
     QString lastUdpSender() const { return m_lastUdpSender; }
     bool collectionFinished() const { return m_collectionFinished; }
     QString finishReason() const { return m_finishReason; }
+    QDateTime finishedAtUtc() const { return m_finishedAtUtc; }
     bool plannedWindowComplete() const { return m_plannedWindowComplete; }
     void finishCollection(const QString &reason = QStringLiteral("Сбор завершён оператором"),
                           bool plannedWindowComplete = false);
@@ -233,6 +234,7 @@ private:
     bool m_collectionFinished = false;
     bool m_plannedWindowComplete = false;
     QString m_finishReason;
+    QDateTime m_finishedAtUtc;
     // Итог вычисляется один раз. Поздний Debug не пересчитывает историю.
     QHash<QString, ActionMeasurement> m_finalActionMeasurements;
     QString m_uploadStateAtFinish;

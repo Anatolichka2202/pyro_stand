@@ -26,6 +26,8 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addOption({"debug-socket", "Имя локального сокета Debug КАСУ ПП", "name",
                       "kasupp-debug-events-v1"});
+    parser.addOption({"wiring-profile", "Профиль сигналов основного источника (необязательно)", "json"});
+    parser.addOption({"compare-wiring-profile", "Профиль сигналов дополнительного COM (необязательно)", "json"});
     parser.addOption({"board-ip", "IP платы пиротестера", "ip", "192.168.17.144"});
     parser.addOption({"bind-ip", "Локальный IP приёма UDP", "ip", "0.0.0.0"});
     parser.addOption({"board-port", "UDP-порт телеметрии платы", "port", "5000"});
@@ -49,6 +51,10 @@ int main(int argc, char *argv[])
 
     IntegrationSession::Options options;
     QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    options.wiringProfilePath = parser.isSet("wiring-profile") ? parser.value("wiring-profile")
+        : settings.value(QStringLiteral("tester/wiringProfile")).toString();
+    options.comparisonWiringProfilePath = parser.isSet("compare-wiring-profile") ? parser.value("compare-wiring-profile")
+        : settings.value(QStringLiteral("tester/comparisonWiringProfile")).toString();
     const int savedTransport = settings.value(QStringLiteral("tester/transport"), 0).toInt();
     if (savedTransport >= 0 && savedTransport <= 2)
         options.boardTransport = IntegrationSession::BoardTransport(savedTransport);

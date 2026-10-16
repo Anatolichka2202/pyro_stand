@@ -24,7 +24,7 @@ struct EventRow {
     int     id          = 0;
     QString key;
     QString description;
-    int     time_ms     = 0;
+    int64_t time_ms     = 0;
     QString channels;
     bool    hasChannels = false;
     int     firedTick   = -1;

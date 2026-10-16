@@ -34,7 +34,7 @@ protected:
 private:
     struct TimelineEvent {
         int     id        = 0;
-        int     time_ms   = 0;
+        int64_t time_ms   = 0;
         QString status;   // "" | "ok" | "fail"
         bool    isT0      = false;  // LIFT_OFF_CONTACT (time_ms == 0)
         int     displayIdx = 0;     // 1-based index among timeline events

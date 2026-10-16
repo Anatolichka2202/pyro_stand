@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
 #include <QHostAddress>
@@ -20,12 +21,19 @@
 struct PlannedAction {
     QString key;
     qint32 offsetMs = 0;
-    int ordinal = 0;
+    int ordinal = 0; // presentation only; never selects a hardware input
+    int sourceLine = 0;
+    QString actionId; // SHA256(raw file):physical line
+    QString rawValue;
+    QString comment;
+    QByteArray rawLine;
 };
 
 struct CyclogramPlan {
     QDateTime t0Utc;
     QVector<PlannedAction> actions;
+    QByteArray sourceBytes;
+    QString sha256;
 };
 
 struct BoardChannel {
@@ -42,18 +50,23 @@ struct BoardFrame {
 struct InputRef {
     int index = -1;
     bool falling = false;
+    QString signalId;
 };
 
 struct ActionMapping {
     QVector<InputRef> inputs;
     std::optional<double> toleranceMs;
+    bool definitionConfirmed = false; // complete expected-signal set from the catalogue
 };
 
 struct StandMapping {
     QString version;
     QStringList warnings;
     InputRef kp;
+    // Type -> expected signals -> inputs, independent of action occurrences.
     QHash<QString, ActionMapping> actions;
+    QHash<QString, InputRef> signalBindings;
+    QString kpActionKey = QStringLiteral("LIFT_OFF_CONTACT");
 };
 
 // Old tester: one eight-bit state mask per hardware millisecond.
@@ -81,10 +94,12 @@ struct ActionMeasurement {
     enum class State {
         Unmapped, UploadUnconfirmed, ExecutionUnconfirmed, PrematureActivity,
         BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
-        WaitingForClockAlignment, WaitingForInputs, Partial, Measured
+        WaitingForClockAlignment, WaitingForInputs, Partial, Measured,
+        PlanReferenceUnknown, InvalidAssignment
     };
     State state = State::Unmapped;
     QString reason;
+    std::optional<double> plannedMs;
     QVector<ChannelMeasurement> channels;
     std::optional<double> toleranceMs;
 };
@@ -96,6 +111,8 @@ bool parseMapping(const QByteArray &bytes, StandMapping *mapping, QString *error
 StandMapping benchMapping(int firstStageYps, int secondStageYps, int kpYps,
                           const CyclogramPlan &plan = {});
 QByteArray resetCommand();
+std::optional<qint32> plannedKpOffset(const CyclogramPlan &plan, const StandMapping &mapping);
+QJsonObject mappingSnapshot(const StandMapping &mapping);
 }
 
 class IntegrationSession : public QObject {
@@ -104,6 +121,8 @@ public:
     enum class BoardTransport { Udp, Serial, LegacySerial };
     struct Options {
         QString debugSocket = QStringLiteral("kasupp-debug-events-v1");
+        QString wiringProfilePath; // optional; empty selects the built-in historical variant
+        QString comparisonWiringProfilePath;
         BoardTransport boardTransport = BoardTransport::Udp;
         QString serialPort;
         QString comparisonLegacyPort; // independent legacy observer alongside a new tester
@@ -156,7 +175,7 @@ public:
     bool executionEnabled() const { return m_executionEnabled; }
     bool executionPermissionObserved() const { return m_executionObserved; }
     bool measurementEligible() const {
-        return m_uploadState == QStringLiteral("CONFIRMED") && m_executionObserved &&
+        return m_fileIdentityValid && m_uploadState == QStringLiteral("CONFIRMED") && m_executionObserved &&
                !m_prePermissionActivity && m_boardArmed;
     }
     QString lastError() const { return m_lastError; }
@@ -206,6 +225,7 @@ private:
     std::array<bool, 2> m_legacyReceiving{};
     QString m_runId;
     QString m_collectionId;
+    QElapsedTimer m_collectionElapsed;
     QString m_streamId;
     quint64 m_nextSeq = 0;
     QString m_uploadId;
@@ -214,6 +234,7 @@ private:
     QString m_bcvmUtc;
     bool m_executionEnabled = false;
     bool m_executionObserved = false;
+    bool m_fileIdentityValid = true;
     bool m_boardReceiving = false;
     bool m_boardArmed = false;
     bool m_prePermissionActivity = false;

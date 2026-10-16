@@ -8,7 +8,7 @@ struct CanvasChannel {
 };
 struct CanvasEvent {
     QString id, title, source, plan;
-    int offsetMs = 0;
+    qint64 offsetMs = 0;
     QVector<CanvasChannel> channels;
 };
 // All assigned inputs are always rendered; capacity is explicit, never hidden by scrolling.

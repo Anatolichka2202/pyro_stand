@@ -1,4 +1,5 @@
 #include "integration.h"
+#include "command_catalog.h"
 
 #include <QCryptographicHash>
 #include <QJsonDocument>
@@ -24,6 +25,7 @@ QByteArray frame(quint32 kp = 0, quint32 action = 0) {
     };
     setRise(0, kp);
     setRise(1, action);
+    setRise(2, action);
     quint8 crc = 0;
     for (int i = 0; i < bytes.size() - 1; ++i) {
         crc ^= quint8(bytes[i]);
@@ -36,7 +38,7 @@ QByteArray frame(quint32 kp = 0, quint32 action = 0) {
 
 QByteArray cyclogram() {
     return "START_UTC_DATE = 2026-10-03\nSTART_UTC_TIME = 12:00:00\n"
-           "IGNITE_PYRO_CANDLES_ENGINES_1_TO_8 = 20\n";
+           "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12 = 20\nLIFT_OFF_CONTACT = 0\n";
 }
 
 QJsonObject contract(QString type, quint64 seq, QString run, QString stream) {
@@ -73,6 +75,13 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void workingTxtProvenanceAndReordering();
+    void kpTimeVectors_data();
+    void kpTimeVectors();
+    void missingReferencesAndRepeatedActions();
+    void profileChangeInvalidatesEvidence();
+    void signalWiringAcrossGroups();
+    void conflictingFileIdentity();
     void boardFrameValidation();
     void cyclogramAndMapping();
     void twoExternalStreams();
@@ -85,6 +94,215 @@ private slots:
     void resetDiscardsPartialSerialFrame();
     void failedExportPreservesEvidence();
 };
+
+
+void IntegrationTest::workingTxtProvenanceAndReordering() {
+    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/working_20261014.txt"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray bytes = file.readAll();
+    CyclogramPlan plan;
+    QString error;
+    QVERIFY2(StandProtocol::parseCyclogram(bytes, &plan, &error), qPrintable(error));
+    QCOMPARE(plan.sourceBytes, bytes);
+    QCOMPARE(plan.sha256, QString("ef57e5c2ec5ed9de3ba443d6005173b24d4b954d29fc7449b5543484dcba459f"));
+    QCOMPARE(plan.actions.size(), 33);
+    QSet<QString> ids;
+    int pulseRequests = 0;
+    for (const auto &action : plan.actions) {
+        QVERIFY(findCommand(action.key));
+        pulseRequests += findCommand(action.key)->mask != 0;
+        QVERIFY(!ids.contains(action.actionId)); ids.insert(action.actionId);
+        QCOMPARE(action.actionId, plan.sha256 + ':' + QString::number(action.sourceLine));
+        QVERIFY(action.rawLine.contains(action.key.toUtf8()));
+    }
+    QCOMPARE(pulseRequests, 7);
+    const auto commented = std::find_if(plan.actions.cbegin(),plan.actions.cend(),[](const auto &a){return a.ordinal==4;});
+    QCOMPARE(commented->rawValue, QString("-7980"));
+    QCOMPARE(commented->comment, QString::fromUtf8(" Первое срабатывание БКД-А"));
+    // Reorder the physical file: mappings still refer to the same logical signals.
+    auto lines=bytes.split('\n');
+    std::swap(lines[2],lines[4]);
+    CyclogramPlan reordered;
+    QVERIFY(StandProtocol::parseCyclogram(lines.join('\n'),&reordered,&error));
+    const auto a=StandProtocol::benchMapping(9,1,9,plan);
+    const auto b=StandProtocol::benchMapping(9,1,9,reordered);
+    QCOMPARE(a.actions.keys().size(),7);
+    for(auto it=a.actions.cbegin();it!=a.actions.cend();++it) {
+        QCOMPARE(it->inputs.size(),b.actions.value(it.key()).inputs.size());
+        for(int i=0;i<it->inputs.size();++i) {
+            QCOMPARE(it->inputs[i].index,b.actions.value(it.key()).inputs[i].index);
+            QVERIFY(!it->inputs[i].signalId.isEmpty());
+        }
+    }
+    QVERIFY(plan.sha256 != reordered.sha256);
+    CyclogramPlan blank;
+    QVERIFY(StandProtocol::parseCyclogram("\nSTART_UTC_DATE=2026-10-16\n\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n",&blank,&error));
+    QCOMPARE(blank.actions.first().sourceLine,5);
+    QVERIFY(!StandProtocol::parseCyclogram(bytes+QByteArray(1,'\0'),&blank,&error));
+    QVERIFY(!StandProtocol::parseCyclogram(QByteArray("\xef\xbb\xbf")+bytes,&blank,&error));
+    QVERIFY(!StandProtocol::parseCyclogram(bytes+QByteArray(8192,' '),&blank,&error));
+    QVERIFY(!StandProtocol::parseCyclogram(bytes+QByteArray("#\xff"),&blank,&error));
+    StandMapping invalidMapping;
+    QVERIFY(!StandProtocol::parseMapping(R"({"version":"bad","kp":{"yps":1.5,"channel":8},"actions":[]})",&invalidMapping,&error));
+}
+
+void IntegrationTest::kpTimeVectors_data() {
+    QTest::addColumn<quint32>("kp"); QTest::addColumn<quint32>("tick");
+    QTest::addColumn<int>("kpPlan"); QTest::addColumn<int>("eventPlan");
+    QTest::addColumn<double>("actual"); QTest::addColumn<double>("deviation");
+    QTest::newRow("before") << quint32(1000000) << quint32(990000) << 5 << -5 << -10.0 << 0.0;
+    QTest::newRow("same") << quint32(1000000) << quint32(1000000) << 5 << 5 << 0.0 << 0.0;
+    QTest::newRow("after") << quint32(1000000) << quint32(1020000) << 5 << 25 << 20.0 << 0.0;
+    QTest::newRow("outside-tolerance") << quint32(1000000) << quint32(1022000) << 5 << 25 << 22.0 << 2.0;
+    QTest::newRow("wrap") << quint32(4294960000U) << quint32(20000) << 0 << 20 << 27.296 << 7.296;
+}
+
+void IntegrationTest::kpTimeVectors() {
+    QFETCH(quint32,kp);QFETCH(quint32,tick);QFETCH(int,kpPlan);QFETCH(int,eventPlan);
+    QFETCH(double,actual);QFETCH(double,deviation);
+    IntegrationSession::Options options;options.firstStageYps=1;options.kpYps=1;
+    IntegrationSession session(options);
+    const QByteArray source="START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT="+
+        QByteArray::number(kpPlan)+"\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12="+QByteArray::number(eventPlan)+"\n";
+    QString error;QVERIFY(StandProtocol::parseCyclogram(source,&session.m_plan,&error));
+    session.updateBenchMapping();session.m_hasPlan=true;session.m_uploadState="CONFIRMED";
+    session.m_executionObserved=true;session.m_boardArmed=true;session.m_hasBoardFrame=true;
+    const auto action=*std::find_if(session.plan().actions.cbegin(),session.plan().actions.cend(),[](const auto &a){return a.key.startsWith("IGNITE");});
+    session.m_boardFrame.channels[0]={true,false,tick,0};
+    // Pre-KP observations remain available for retrospective evaluation.
+    QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::WaitingForKp);
+    session.m_boardFrame.channels[7]={true,false,kp,0};
+    auto result=session.measureAction(action);
+    QCOMPARE(result.state,ActionMeasurement::State::Partial);
+    QCOMPARE(result.channels[0].actualMs.value(),actual);
+    QVERIFY(qAbs(result.channels[0].deviationMs.value()-deviation)<1e-9);
+    session.m_boardFrame.channels[1]={true,false,tick,0};
+    result=session.measureAction(action);QCOMPARE(result.state,ActionMeasurement::State::Measured);
+    QCOMPARE(result.plannedMs.value(),double(eventPlan-kpPlan));
+    QVERIFY(session.actionResult(action).contains(deviation==0?"в допуске":"вне допуска"));
+    session.m_boardFrame.channels[0].riseUs=kp+(quint32(1)<<31);
+    QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::AmbiguousInterval);
+}
+
+void IntegrationTest::missingReferencesAndRepeatedActions() {
+    IntegrationSession::Options options;options.firstStageYps=1;options.kpYps=1;
+    IntegrationSession session(options);
+    session.m_uploadState="CONFIRMED";session.m_executionObserved=true;
+    session.m_boardArmed=true;session.m_hasBoardFrame=true;
+    const QByteArray header="START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n";
+    const QByteArray ignition="IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=10\n";
+    QString error;
+    auto load=[&](const QByteArray &data){bool ok=StandProtocol::parseCyclogram(header+data,&session.m_plan,&error);session.updateBenchMapping();return ok;};
+    QVERIFY(load(ignition));
+    QCOMPARE(session.measureAction(session.plan().actions.first()).state,ActionMeasurement::State::PlanReferenceUnknown);
+    QVERIFY(load(ignition+"LIFT_OFF_CONTACT=0\nLIFT_OFF_CONTACT=1\n"));
+    QCOMPARE(session.measureAction(session.plan().actions.last()).state,ActionMeasurement::State::PlanReferenceUnknown);
+    QVERIFY(load(ignition+ignition+"LIFT_OFF_CONTACT=0\n"));
+    QCOMPARE(session.plan().actions.size(),3);
+    QVERIFY(session.plan().actions[1].actionId!=session.plan().actions[2].actionId);
+    QCOMPARE(session.measureAction(session.plan().actions.last()).state,ActionMeasurement::State::RepeatedAction);
+    QVERIFY(load("UNKNOWN_KEY=10\nLIFT_OFF_CONTACT=0\n"));
+    QVERIFY(!session.mapping().actions.contains("UNKNOWN_KEY"));
+    QCOMPARE(session.measureAction(session.plan().actions.last()).state,ActionMeasurement::State::Unmapped);
+    QVERIFY(load(ignition+"FIRE_STARTING_CHAMBER_ENGINES_9_TO_12=20\nLIFT_OFF_CONTACT=0\n"));
+    auto &other=session.m_mapping.actions["FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"];
+    other.inputs[0]=session.m_mapping.actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12").inputs[0];
+    QCOMPARE(session.measureAction(session.plan().actions[1]).state,ActionMeasurement::State::InvalidAssignment);
+}
+
+void IntegrationTest::profileChangeInvalidatesEvidence() {
+    IntegrationSession session(IntegrationSession::Options{});
+    session.m_boardArmed=true;session.m_hasBoardFrame=true;
+    session.processFrame(frame(1000000,1020000));
+    const auto before=session.collectionId();
+    QTemporaryFile profile;QVERIFY(profile.open());
+    profile.write(R"({"version":"changed","kp":{"yps":1,"channel":8},"actions":[]})");profile.flush();
+    QVERIFY(session.loadMapping(profile.fileName()));
+    QVERIFY(session.collectionId()!=before);QVERIFY(!session.boardArmed());QVERIFY(!session.hasBoardFrame());
+    QCOMPARE(session.acceptedFrames(),quint64(0));
+    IntegrationSession::Options selected;
+    selected.wiringProfilePath=profile.fileName();selected.firstStageYps=1;
+    IntegrationSession configured(selected);
+    QCOMPARE(configured.mapping().version,QString("changed"));
+    QVERIFY(configured.mapping().actions.isEmpty());
+    selected.wiringProfilePath=profile.fileName()+".missing";
+    IntegrationSession missing(selected);
+    QVERIFY(missing.mapping().actions.isEmpty());
+    QString parseError;QVERIFY(StandProtocol::parseCyclogram(benchCyclogram(),&missing.m_plan,&parseError));
+    missing.updateBenchMapping();QVERIFY(missing.mapping().actions.isEmpty());
+    QTemporaryDir dir;QString error;const auto path=dir.filePath("report.json");
+    QVERIFY(session.saveReport(path,&error));QFile report(path);QVERIFY(report.open(QIODevice::ReadOnly));
+    const auto json=QJsonDocument::fromJson(report.readAll()).object();
+    QCOMPARE(json["mapping_json"].toObject()["version"].toString(),QString("changed"));
+    QCOMPARE(json["mapping_sha256"].toString().size(),64);
+    QCOMPARE(json["catalog_version"].toString(),QString(kCommandCatalogVersion));
+    QFile evidence(path+".frames.jsonl");QVERIFY(evidence.open(QIODevice::ReadOnly));QVERIFY(evidence.readAll().isEmpty());
+}
+
+void IntegrationTest::signalWiringAcrossGroups() {
+    const QByteArray profile=R"({"schema":"pyro.signal-wiring.v2","version":"split-groups-1",
+        "kp":{"yps":2,"channel":8},"bindings":[
+        {"signal_id":"bkhoa.yps_bkd.0.bit.0","yps":1,"channel":2,"edge":"rise"},
+        {"signal_id":"bkhoa.yps_bkd.0.bit.1","yps":3,"channel":4,"edge":"fall"},
+        {"signal_id":"bkhoa.yps_bkd.0.bit.7","yps":2,"channel":8,"edge":"rise"}]})";
+    StandMapping mapping;QString error;
+    QVERIFY2(StandProtocol::parseMapping(profile,&mapping,&error),qPrintable(error));
+    const auto action=mapping.actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12");
+    QCOMPARE(action.inputs.size(),2);QCOMPARE(action.inputs[0].index,1);QCOMPARE(action.inputs[1].index,19);
+    QVERIFY(action.inputs[1].falling);
+    const auto incomplete=profile.mid(0); // remove one complete binding, leaving a valid but incomplete profile
+    auto json=QJsonDocument::fromJson(incomplete).object();auto bindings=json["bindings"].toArray();
+    bindings.removeAt(1);json["bindings"]=bindings;
+    QVERIFY(StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
+    QVERIFY(!mapping.actions.contains("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"));
+    json["bindings"]=QJsonArray{QJsonObject{{"signal_id","invented.output"},{"yps",1},{"channel",1}}};
+    QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
+    // A KP field without a matching physical reference signal must never grade.
+    json=QJsonDocument::fromJson(profile).object();bindings=json["bindings"].toArray();bindings.removeLast();json["bindings"]=bindings;
+    QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
+    json=QJsonDocument::fromJson(profile).object();bindings=json["bindings"].toArray();
+    auto kpCollision=bindings.last().toObject();kpCollision["yps"]=1;kpCollision["channel"]=2;bindings[2]=kpCollision;
+    json["bindings"]=bindings;json["kp"]=QJsonObject{{"yps",1},{"channel",2}};
+    QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
+    // Legacy positional maps are retained for inspection, but are not definitions.
+    const auto legacy=R"({"version":"legacy","kp":{"yps":1,"channel":8},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8","inputs":[{"yps":1,"channel":1}]}]})";
+    QVERIFY(StandProtocol::parseMapping(legacy,&mapping,&error));
+    QVERIFY(!mapping.actions.cbegin()->definitionConfirmed);
+    const auto partial=R"({"version":"partial","kp":{"yps":1,"channel":8},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12","inputs":[{"yps":1,"channel":1,"signal_id":"bkhoa.yps_bkd.0.bit.0"}]}]})";
+    QVERIFY(StandProtocol::parseMapping(partial,&mapping,&error));
+    QVERIFY(!mapping.actions.cbegin()->definitionConfirmed);
+    auto fakeKp=QJsonDocument::fromJson(partial).object();fakeKp["kp_action_key"]="START_HELIUM_PURGE_A";
+    QVERIFY(!StandProtocol::parseMapping(QJsonDocument(fakeKp).toJson(),&mapping,&error));
+    auto incompatible=QJsonDocument::fromJson(profile).object();incompatible["catalog_version"]="unverified-new-catalog";
+    QVERIFY(!StandProtocol::parseMapping(QJsonDocument(incompatible).toJson(),&mapping,&error));
+}
+
+void IntegrationTest::conflictingFileIdentity() {
+    IntegrationSession session(IntegrationSession::Options{});
+    auto event=contract("CYCLOGRAM_AVAILABLE",1,"run","stream");event["upload_id"]="same-id";
+    auto publish=[&](const QByteArray &bytes){
+        event["content_base64"]=QString::fromLatin1(bytes.toBase64());event["byte_count"]=bytes.size();
+        event["sha256_hex"]=QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex());
+        session.processDebug(event);
+    };
+    publish(cyclogram());QVERIFY(session.hasPlan());const auto hash=session.cyclogramSha256();
+    session.m_boardArmed=true;session.m_executionObserved=true;event["seq"]="2";
+    publish(cyclogram()+"LIFT_OFF_CONTACT=1\n");
+    QVERIFY(!session.boardArmed());QVERIFY(!session.executionPermissionObserved());
+    QCOMPARE(session.cyclogramSha256(),hash);QVERIFY(session.lastError().contains("upload_id"));
+    auto enabled=contract("BCVM_EXECUTION_ENABLED",3,"run","stream");enabled["upload_id"]="same-id";
+    session.processDebug(enabled);QVERIFY(!session.executionPermissionObserved());
+    auto upload=contract("CYCLOGRAM_UPLOAD_STATE",4,"run","stream");upload["upload_id"]="same-id";upload["upload_state"]="CONFIRMED";
+    session.processDebug(upload);enabled["seq"]="5";session.processDebug(enabled);
+    session.m_boardArmed=true; // even a fresh physical collection cannot repair corrupt file identity
+    QVERIFY(!session.measurementEligible());
+    event["seq"]="6";event["upload_id"]="new-id";publish(cyclogram());
+    QVERIFY(session.m_fileIdentityValid);QVERIFY(!session.boardArmed());
+    session.m_boardArmed=true;session.m_executionObserved=true;event["seq"]="7";event["upload_id"]="invalid-plan";
+    publish("not a valid plan");
+    QVERIFY(!session.hasPlan());QVERIFY(!session.boardArmed());QVERIFY(!session.measurementEligible());
+    QCOMPARE(session.uploadId(),QString("invalid-plan"));
+}
 
 void IntegrationTest::builtInBenchProfile() {
     CyclogramPlan plan;
@@ -106,7 +324,7 @@ void IntegrationTest::builtInBenchProfile() {
         if (action.ordinal == 24) action.key = "FAIRING_SEPARATION";
     const auto mismatch = StandProtocol::benchMapping(4, 9, 4, plan);
     QVERIFY(!mismatch.actions.contains("FAIRING_SEPARATION"));
-    QVERIFY(!mismatch.warnings.isEmpty());
+    QVERIFY(!mismatch.actions.contains("SHUTDOWN_ENGINE_BLOCK_B"));
 }
 
 void IntegrationTest::currentOwnerCyclogramMapping() {
@@ -379,6 +597,11 @@ void IntegrationTest::boardFrameValidation() {
     QString error;
     QByteArray valid = frame(1000000, 1020000);
     QVERIFY(StandProtocol::parseBoardFrame(valid, &parsed, &error));
+    QVERIFY(!StandProtocol::parseBoardFrame(valid.first(962), &parsed, &error));
+    QVERIFY(!StandProtocol::parseBoardFrame(valid + valid, &parsed, &error));
+    auto badHeader = valid;badHeader[0] = 0;
+    QVERIFY(!StandProtocol::parseBoardFrame(badHeader, &parsed, &error));
+    QVERIFY(error.contains(QStringLiteral("заголовок")));
     QCOMPARE(parsed.channels[0].riseUs, quint32(1000000));
     QCOMPARE(parsed.channels[1].riseUs, quint32(1020000));
     valid[12] = char(quint8(valid[12]) ^ 1);
@@ -391,8 +614,8 @@ void IntegrationTest::cyclogramAndMapping() {
     CyclogramPlan plan;
     QString error;
     QVERIFY(StandProtocol::parseCyclogram(cyclogram(), &plan, &error));
-    QCOMPARE(plan.actions.size(), 1);
-    QCOMPARE(plan.actions[0].offsetMs, 20);
+    QCOMPARE(plan.actions.size(), 2);
+    QCOMPARE(plan.actions[1].offsetMs, 20);
     QVERIFY(!StandProtocol::parseCyclogram("START_UTC_TIME = 12:00:00\nACTION = 0\n", &plan, &error));
     StandMapping mapping;
     const QByteArray config = R"({"version":"bench-1","kp":{"yps":1,"channel":1},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8","inputs":[{"yps":1,"channel":2}],"tolerance_ms":2}]})";
@@ -428,7 +651,7 @@ void IntegrationTest::twoExternalStreams() {
     QSignalSpy changed(&session, &IntegrationSession::changed);
     QTemporaryFile mappingFile;
     QVERIFY(mappingFile.open());
-    const QByteArray map = R"({"version":"bench-1","kp":{"yps":1,"channel":1},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8","inputs":[{"yps":1,"channel":2}],"tolerance_ms":2}]})";
+    const QByteArray map = R"({"version":"bench-1","kp":{"yps":1,"channel":1},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12","inputs":[{"yps":1,"channel":2,"signal_id":"bkhoa.yps_bkd.0.bit.0"},{"yps":1,"channel":3,"signal_id":"bkhoa.yps_bkd.0.bit.1"}],"tolerance_ms":2}]})";
     QCOMPARE(mappingFile.write(map), qint64(map.size()));
     mappingFile.flush();
     QVERIFY(session.loadMapping(mappingFile.fileName()));
@@ -473,10 +696,10 @@ void IntegrationTest::twoExternalStreams() {
     QCOMPARE(board.writeDatagram(measured, QHostAddress::LocalHost, telemetryPort), qint64(measured.size()));
     QTRY_VERIFY(session.kpTimeUs().has_value());
     QCOMPARE(*session.kpTimeUs(), quint32(1000000));
-    QVERIFY(session.actionResult(session.plan().actions[0]).contains("в допуске"));
-    const ActionMeasurement onTime = session.measureAction(session.plan().actions[0]);
+    QVERIFY(session.actionResult(session.plan().actions[1]).contains("в допуске"));
+    const ActionMeasurement onTime = session.measureAction(session.plan().actions[1]);
     QCOMPARE(int(onTime.state), int(ActionMeasurement::State::Measured));
-    QCOMPARE(onTime.channels.size(), 1);
+    QCOMPARE(onTime.channels.size(), 2);
     QCOMPARE(onTime.channels[0].actualMs.value(), 20.0);
     QCOMPARE(onTime.channels[0].deviationMs.value(), 0.0);
     QTemporaryDir reportDir;
@@ -489,14 +712,22 @@ void IntegrationTest::twoExternalStreams() {
     const QJsonObject report = QJsonDocument::fromJson(reportFile.readAll()).object();
     QCOMPARE(report.value("upload_id").toString(), id);
     QCOMPARE(report.value("mapping_version").toString(), QString("bench-1"));
-    QVERIFY(report.value("actions").toArray().at(0).toObject().value("result").toString().contains("в допуске"));
+    QVERIFY(report.value("actions").toArray().at(1).toObject().value("result").toString().contains("в допуске"));
+    const auto recorded=report["actions"].toArray().at(1).toObject();
+    QCOMPARE(recorded["action_id"].toString(), session.cyclogramSha256()+":3");
+    QCOMPARE(recorded["planned_from_kp_ms"].toDouble(),20.0);
+    QCOMPARE(recorded["channels"].toArray().first().toObject()["raw_tick_us"].toDouble(),1020000.0);
+    QVERIFY(!recorded["channels"].toArray().first().toObject()["signal_id"].toString().isEmpty());
+    QCOMPARE(report["mapping_sha256"].toString().size(),64);
     QFile evidence(reportPath + ".frames.jsonl");
     QVERIFY(evidence.open(QIODevice::ReadOnly));
-    QVERIFY(evidence.readAll().contains(measured.toBase64()));
+    const auto evidenceBytes=evidence.readAll();
+    QVERIFY(evidenceBytes.contains(measured.toBase64()));
+    QCOMPARE(report["frame_evidence_sha256"].toString(),QString::fromLatin1(QCryptographicHash::hash(evidenceBytes,QCryptographicHash::Sha256).toHex()));
     const QByteArray wrapped = frame(4294960000U, 20000U);
     QCOMPARE(board.writeDatagram(wrapped, QHostAddress::LocalHost, telemetryPort), qint64(wrapped.size()));
-    QTRY_VERIFY(session.actionResult(session.plan().actions[0]).contains("27.296"));
-    const ActionMeasurement late = session.measureAction(session.plan().actions[0]);
+    QTRY_VERIFY(session.actionResult(session.plan().actions[1]).contains("27.296"));
+    const ActionMeasurement late = session.measureAction(session.plan().actions[1]);
     QCOMPARE(int(late.state), int(ActionMeasurement::State::Measured));
     QCOMPARE(late.channels[0].actualMs.value(), 27.296);
     QVERIFY(qAbs(late.channels[0].deviationMs.value() - 7.296) < 1e-9);
@@ -524,7 +755,7 @@ void IntegrationTest::twoExternalStreams() {
     failed.insert("upload_state", "FAILED");
     send(client, failed);
     QTRY_COMPARE(session.uploadState(), QString("FAILED"));
-    QVERIFY(session.actionResult(session.plan().actions[0]).contains("не подтверждена"));
+    QVERIFY(session.actionResult(session.plan().actions[1]).contains("не подтверждена"));
     QJsonObject falseEnable = contract("BCVM_EXECUTION_ENABLED", 7, run, stream);
     falseEnable.insert("upload_id", id);
     send(client, falseEnable);

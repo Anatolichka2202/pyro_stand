@@ -11,10 +11,10 @@
 #include <cstdio>
 #include <functional>
 using namespace kasu;
-static bool wait(const std::function<bool()> &ready) {
+static bool wait(const std::function<bool()> &ready, int timeoutMs = 3000) {
     QElapsedTimer t;
     t.start();
-    while (t.elapsed() < 3000) {
+    while (t.elapsed() < timeoutMs) {
         QCoreApplication::processEvents();
         if (ready())
             return true;
@@ -55,7 +55,7 @@ class IntegrationTest {
         prepared.kind = KasuEventKind::CyclogramPrepared;
         prepared.cyclogramBytes =
             "START_UTC_DATE = 2026-10-14\nSTART_UTC_TIME = "
-            "12:00:00\nOTHER1=0\nOTHER2=1\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-20\n";
+            "12:00:00\nOTHER1=0\nOTHER2=1\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-20\nLIFT_OFF_CONTACT=0\n";
         bus.publish(prepared);
         if (!wait([&] { return modern.hasPlan() && old.hasPlan(); }))
             return 3;
@@ -79,6 +79,13 @@ class IntegrationTest {
         unlock.locked = false;
         unlock.bcvmPacket = 43;
         unlock.live.validFrames = 100;
+        bus.publish(unlock);
+        // A bare UNLOCK is deliberately insufficient in the current Debug contract.
+        if (wait([&] { return modern.executionPermissionObserved() || old.executionPermissionObserved(); }, 100))
+            return 10;
+        unlock.readbackVerified = true;
+        unlock.live.hasStatus = true;
+        unlock.live.status.flags = bcvm::status_flag::FILE_STORED | bcvm::status_flag::CYCLOGRAM_ACTUAL;
         bus.publish(unlock);
         if (!wait([&] {
                 return modern.executionPermissionObserved() && old.executionPermissionObserved();

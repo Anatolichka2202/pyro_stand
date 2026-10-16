@@ -216,7 +216,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
                 const auto it = std::find_if(m_events.cbegin(), m_events.cend(),
                                              [&cn](const TimelineEvent &e){ return e.displayIdx == cn.displayIdx; });
                 if (it != m_events.cend()) {
-                    const int ms = it->time_ms;
+                    const int64_t ms = it->time_ms;
                     timeLabel = (ms < 0)
                         ? QString("%1с").arg(ms / 1000)
                         : QString("+%1с").arg(ms / 1000);

@@ -1,4 +1,5 @@
 #include "integration_window.h"
+#include "command_catalog.h"
 #include "timeline_widget.h"
 
 #include <QAbstractItemView>
@@ -45,15 +46,10 @@ QString signedMs(double value) {
 }
 
 QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = false) {
-    static const QStringList labels = {
-        QStringLiteral("Пиросвеча камеры"), QStringLiteral("Пиросвеча газогенератора"),
-        QStringLiteral("Пиропатрон пусковой камеры"), QStringLiteral("Пусковой клапан Г"),
-        QStringLiteral("Пусковой клапан О"), QStringLiteral("Отсечной клапан Г"),
-        QStringLiteral("Отсечной клапан О"), QStringLiteral("КП")};
     if (legacy)
         return QStringLiteral("%1 / %2 · %3")
             .arg(input.index >= 8 || secondOnly ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"))
-            .arg(input.index % 8 + 1).arg(labels.at(input.index % 8));
+            .arg(input.index % 8 + 1).arg(input.signalId);
     return QStringLiteral("ЯПС %1 / %2 %3")
         .arg(input.index / 8)
         .arg(input.index % 8 + 1)
@@ -157,6 +153,11 @@ struct DisplayAction {
     bool physicalKp = false;
 };
 
+qint64 presentationOffset(const IntegrationSession &session, const PlannedAction &action) {
+    const auto kp = StandProtocol::plannedKpOffset(session.plan(), session.mapping());
+    return qint64(action.offsetMs) - kp.value_or(0);
+}
+
 } // namespace
 
 IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
@@ -209,7 +210,9 @@ void IntegrationWindow::setupUi() {
     save->setObjectName("reportBtn");
     auto *log = new QPushButton(QStringLiteral("Журнал"), surface);
     log->setObjectName("journalBtn");
-    for (auto *button : {map, m_resetButton, save, log})
+    auto *planButton = new QPushButton(QStringLiteral("Полный план"), surface);
+    planButton->setObjectName("fullPlanBtn");
+    for (auto *button : {map, m_resetButton, save, log, planButton})
         header->addWidget(button);
     main->addLayout(header);
     auto *clocks = new QHBoxLayout;
@@ -295,6 +298,24 @@ void IntegrationWindow::setupUi() {
     m_eventLog->setReadOnly(true);
     jl->addWidget(m_eventLog);
     connect(log, &QPushButton::clicked, journal, &QDialog::show);
+    auto *planDialog = new QDialog(this);
+    planDialog->setObjectName("fullPlanDialog");
+    planDialog->setWindowTitle(QStringLiteral("Полный план полётного задания"));
+    planDialog->resize(1100, 650);
+    auto *planLayout = new QVBoxLayout(planDialog);
+    m_planTable = new QTableWidget(0, 8, planDialog);
+    m_planTable->setObjectName("fullPlanTable");
+    m_planTable->setHorizontalHeaderLabels({"#", QStringLiteral("КЛЮЧ"), QStringLiteral("VALUE"),
+        QStringLiteral("КОММЕНТАРИЙ"), QStringLiteral("КЛАСС"), QStringLiteral("ОСНОВНОЙ ИСТОЧНИК"),
+        QStringLiteral("ДОП. ИСТОЧНИК"), QStringLiteral("ID ВХОЖДЕНИЯ")});
+    m_planTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_planTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_planTable->horizontalHeader()->setStretchLastSection(true);
+    m_planTable->setStyleSheet("QTableWidget{background:#10161c;color:#e8edf1;gridline-color:#35434f;} "
+        "QHeaderView::section{background:#19222b;color:#a6b3be;padding:5px;}");
+    planLayout->addWidget(m_planTable);
+    connect(planButton, &QPushButton::clicked, planDialog, &QDialog::show);
     connect(map, &QPushButton::clicked, this, &IntegrationWindow::configureTester);
     connect(m_resetButton, &QPushButton::clicked, this, [this] {
         if (QMessageBox::question(
@@ -344,6 +365,8 @@ void IntegrationWindow::configurePeer() {
     legacy.serialPort = options.comparisonLegacyPort;
     legacy.secondLegacySerialPort.clear();
     legacy.comparisonLegacyPort.clear();
+    legacy.wiringProfilePath = options.comparisonWiringProfilePath;
+    legacy.comparisonWiringProfilePath.clear();
     legacy.legacySecondStage = options.comparisonLegacySecondStage;
     legacy.legacyHasKp = options.comparisonLegacyHasKp;
     m_peer = std::make_unique<IntegrationSession>(legacy, this);
@@ -380,6 +403,7 @@ void IntegrationWindow::refreshCanvas() {
         for (const auto &action : session.plan().actions) {
             if (action.key == "LIFT_OFF_CONTACT")
                 continue;
+            if (!StandProtocol::plannedKpOffset(session.plan(), session.mapping())) continue;
             auto eval = session.measureAction(action);
             if ((eval.state != ActionMeasurement::State::WaitingForKp && eval.state != ActionMeasurement::State::WaitingForClockAlignment))
                 continue;
@@ -399,7 +423,7 @@ void IntegrationWindow::refreshCanvas() {
                     break;
                 }
                 candidates.append(double(in.falling ? r.fallUs : r.riseUs) -
-                                  double(action.offsetMs) * 1000);
+                                  double(presentationOffset(session, action)) * 1000);
             }
             if (!candidates.isEmpty() && stream < points.size() &&
                 *std::max_element(candidates.cbegin(), candidates.cend()) -
@@ -446,22 +470,18 @@ void IntegrationWindow::refreshCanvas() {
             g.title = eventName(action.key);
             g.title.replace(QStringLiteral(" двигателей 9–12"), "");
             g.source = source;
-            g.offsetMs = action.offsetMs;
-            g.plan = QStringLiteral("ПЛАН %1").arg(action.offsetMs);
+            g.offsetMs = presentationOffset(session, action);
+            g.plan = QStringLiteral("ПЛАН %1%2").arg(g.offsetMs).arg(
+                StandProtocol::plannedKpOffset(session.plan(), session.mapping()) ? QString() : QStringLiteral(" T0"));
             if (legacy && !session.options().secondLegacySerialPort.isEmpty() &&
                 !map.inputs.isEmpty() && map.inputs.first().index >= 8)
                 g.source = QStringLiteral("Старый · ") + session.options().secondLegacySerialPort;
-            static const QStringList roles = {
-                QStringLiteral("Свеча камеры"),        QStringLiteral("Свеча газогенератора"),
-                QStringLiteral("Патрон пуск. камеры"), QStringLiteral("Пусковой клапан Г"),
-                QStringLiteral("Пусковой клапан О"),   QStringLiteral("Отсечной клапан Г"),
-                QStringLiteral("Отсечной клапан О"),   QStringLiteral("Контакт подъёма")};
             for (const auto &in : map.inputs) {
                 CanvasChannel row;
                 row.input =
                     legacy ? QString::number(in.index % 8 + 1)
                            : QStringLiteral("%1:%2").arg(in.index / 8).arg(in.index % 8 + 1);
-                row.role = roles[in.index % 8];
+                row.role = in.signalId.isEmpty() ? QStringLiteral("Назначенный сигнал") : in.signalId;
                 row.color = kDim;
                 row.actual = row.delta = row.rawTick = QStringLiteral("—");
                 row.status = QStringLiteral("ожидание");
@@ -493,7 +513,7 @@ void IntegrationWindow::refreshCanvas() {
                         (double(in.falling ? raw.fallUs : raw.riseUs) - median(points[stream])) /
                         1000;
                     row.actual = QStringLiteral("≈") + QString::number(actual, 'f', 3);
-                    row.delta = QStringLiteral("≈") + signedMs(actual - action.offsetMs);
+                    row.delta = QStringLiteral("≈") + signedMs(actual - double(presentationOffset(session, action)));
                     row.status = QStringLiteral("расчёт");
                     row.color = kAmber;
                     ++estimate;
@@ -571,7 +591,7 @@ void IntegrationWindow::refreshCanvas() {
             EventRow row;
             row.id = action.ordinal;
             row.key = action.key;
-            row.time_ms = action.offsetMs;
+            row.time_ms = presentationOffset(source, action);
             row.hasChannels = true;
             timeline.append(row);
         }
@@ -652,7 +672,8 @@ void IntegrationWindow::updatePlannedClock() {
         m_visualAnchor.reset();
     }
     const auto measured = source.measuredPositionMs();
-    double position = double(source.plan().t0Utc.msecsTo(QDateTime::currentDateTimeUtc()));
+    const auto kpPlan = StandProtocol::plannedKpOffset(source.plan(), source.mapping());
+    double position = double(source.plan().t0Utc.msecsTo(QDateTime::currentDateTimeUtc())) - kpPlan.value_or(0);
     const auto anchor = measured ? measured : m_forecastPosition;
     if (anchor) {
         if (!m_visualAnchor || *m_visualAnchor != *anchor) {
@@ -677,6 +698,7 @@ void IntegrationWindow::updatePlannedClock() {
     m_timerLabel->setStyleSheet(
         QStringLiteral("font:28px 'Consolas';color:%1").arg(measured ? "#81b6d0" : "#e5bd78"));
     m_clockCaption->setText(measured ? QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП")
+                            : !kpPlan ? QStringLiteral("ОТ ПЛАНОВОГО T0 · КП НЕ ОПРЕДЕЛЁН")
                             : position < 0
                                 ? (m_forecastPosition ? QStringLiteral("ДО РАСЧЁТНОГО КП")
                                                       : QStringLiteral("ДО ПЛАНОВОГО КП"))
@@ -688,7 +710,7 @@ void IntegrationWindow::updatePlannedClock() {
     double first = std::numeric_limits<double>::infinity();
     for (const auto &a : source.plan().actions)
         if (source.mapping().actions.contains(a.key))
-            first = std::min(first, double(a.offsetMs));
+            first = std::min(first, double(presentationOffset(source, a)));
     m_firstClock->setText(std::isfinite(first)
                               ? QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n%1")
                                     .arg(position < first
@@ -700,9 +722,29 @@ void IntegrationWindow::updatePlannedClock() {
 
 void IntegrationWindow::configureTester() {
     QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
     dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
     auto *layout = new QFormLayout(&dialog);
     auto options = m_session.options();
+    const auto profileField = [&](const QString &title, const QString &path) {
+        auto *container = new QWidget(&dialog);
+        auto *line = new QHBoxLayout(container);
+        line->setContentsMargins(0, 0, 0, 0);
+        auto *value = new QLineEdit(path, container);
+        value->setPlaceholderText(QStringLiteral("Пусто — встроенная историческая проводка"));
+        auto *choose = new QPushButton(QStringLiteral("Выбрать…"), container);
+        line->addWidget(value, 1); line->addWidget(choose);
+        connect(choose, &QPushButton::clicked, &dialog, [&, value] {
+            const auto file = QFileDialog::getOpenFileName(&dialog, QStringLiteral("Профиль сигналов"), value->text(), "JSON (*.json)");
+            if (!file.isEmpty()) value->setText(file);
+        });
+        layout->addRow(title, container);
+        return value;
+    };
+    auto *profile = profileField(QStringLiteral("Профиль основного источника"), options.wiringProfilePath);
+    auto *comparisonProfile = profileField(QStringLiteral("Профиль дополнительного COM"), options.comparisonWiringProfilePath);
+    profile->setObjectName(QStringLiteral("primaryWiringProfile"));
+    comparisonProfile->setObjectName(QStringLiteral("comparisonWiringProfile"));
     auto *transport = new QComboBox(&dialog);
     transport->addItem(QStringLiteral("Новый — Ethernet"), int(IntegrationSession::BoardTransport::Udp));
     transport->addItem(QStringLiteral("Новый — RS-485"), int(IntegrationSession::BoardTransport::Serial));
@@ -747,15 +789,17 @@ void IntegrationWindow::configureTester() {
     layout->addRow(QStringLiteral("Пиротестер"), transport);
     layout->addRow(QStringLiteral("COM · 115200, 8N1"), port);
     layout->addRow(QStringLiteral("IP новой платы"), address);
-    layout->addRow(QStringLiteral("БКД-А-1 · пункты 3, 5, 16"), first);
-    layout->addRow(QStringLiteral("БКД-Б · пункты 20, 21, 24"), second);
+    layout->addRow(QStringLiteral("БКД-А-1 · историческая проводка"), first);
+    layout->addRow(QStringLiteral("БКД-Б · историческая проводка"), second);
     layout->addRow(QStringLiteral("КП · вход 8"), kp);
     layout->addRow(QStringLiteral("БКД на старой плате"), block);
     layout->addRow(QStringLiteral("Второй COM · БКД-Б (необязательно)"), secondPort);
     layout->addRow(legacyKp);
     auto *preset = new QPushButton(QStringLiteral("Схема стенда: новый А / ЯПС 8 + старый Б / COM9 · КП только А"), &dialog);
+    preset->setObjectName(QStringLiteral("historicalPresetBtn"));
     layout->addRow(preset);
     connect(preset, &QPushButton::clicked, &dialog, [=] {
+        profile->clear(); comparisonProfile->clear();
         transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
         first->setCurrentIndex(first->findData(9)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(9));
         comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
@@ -783,6 +827,16 @@ void IntegrationWindow::configureTester() {
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        for (const auto *field : {profile, comparisonProfile}) {
+            if (field->text().trimmed().isEmpty()) continue;
+            QFile file(field->text().trimmed()); StandMapping parsed; QString error;
+            if (!file.open(QIODevice::ReadOnly) || !StandProtocol::parseMapping(file.readAll(), &parsed, &error)) {
+                QMessageBox::warning(&dialog, QStringLiteral("Профиль сигналов"), error.isEmpty() ? file.errorString() : error);
+                return;
+            }
+        }
+        options.wiringProfilePath = profile->text().trimmed();
+        options.comparisonWiringProfilePath = comparisonProfile->text().trimmed();
         options.boardTransport = IntegrationSession::BoardTransport(transport->currentData().toInt());
         options.serialPort = port->currentText().trimmed();
         options.comparisonLegacyPort = options.boardTransport==IntegrationSession::BoardTransport::LegacySerial?QString():comparison->currentText().trimmed();
@@ -820,6 +874,8 @@ void IntegrationWindow::configureTester() {
     settings.setValue(QStringLiteral("tester/secondYps"), options.secondStageYps);
     settings.setValue(QStringLiteral("tester/kpYps"), options.kpYps);
     settings.setValue(QStringLiteral("tester/legacySecondStage"), options.legacySecondStage);
+    settings.setValue(QStringLiteral("tester/wiringProfile"), options.wiringProfilePath);
+    settings.setValue(QStringLiteral("tester/comparisonWiringProfile"), options.comparisonWiringProfilePath);
     m_loggedStates.clear();
     m_timelineSignature.clear();
     m_eventLog->clear();
@@ -949,6 +1005,27 @@ void IntegrationWindow::refresh() {
         m_eventLog->clear();
     }
 
+    // Complete flight-task view: one row per occurrence; no diagnostic input matrix.
+    m_planTable->setRowCount(m_session.plan().actions.size());
+    int planRow = 0;
+    for (const auto &action : m_session.plan().actions) {
+        const auto *definition = findCommand(action.key);
+        const bool assigned = m_session.mapping().actions.value(action.key).definitionConfirmed ||
+            (m_peer && m_peer->mapping().actions.value(action.key).definitionConfirmed);
+        const QString classification = !definition ? QStringLiteral("НЕИЗВЕСТНА БЦВМ")
+            : assigned ? QStringLiteral("КОНТРОЛИРУЕМОЕ")
+            : definition->mask ? QStringLiteral("ТРЕБУЕТ НАСТРОЙКИ")
+                               : QStringLiteral("ИНФОРМАЦИОННОЕ (КОД)");
+        const QStringList values{QString::number(action.ordinal), action.key, action.rawValue,
+            action.comment, classification, m_session.actionResult(action),
+            m_peer ? m_peer->actionResult(action) : QStringLiteral("—"), action.actionId};
+        for (int col = 0; col < values.size(); ++col)
+            cell(m_planTable, planRow, col, values[col], kNeutral, QColor(),
+                 Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Строка %1; %2")
+                     .arg(action.sourceLine).arg(action.actionId));
+        ++planRow;
+    }
+
     QVector<DisplayAction> rows;
     QStringList signatureParts;
     bool explicitKp = false;
@@ -977,7 +1054,7 @@ void IntegrationWindow::refresh() {
             EventRow event;
             event.id = row.plan.ordinal;
             event.key = row.plan.key;
-            event.time_ms = row.plan.offsetMs;
+            event.time_ms = row.physicalKp ? 0 : presentationOffset(m_session, row.plan);
             event.hasChannels = true;
             events.append(event);
         }
@@ -1062,7 +1139,7 @@ void IntegrationWindow::refresh() {
                         inTolerance = false;
                 }
                 facts = QString::number(lastMs, 'f', 3);
-                delta = signedMs(lastMs - action.offsetMs);
+                delta = signedMs(lastMs - evaluation.plannedMs.value());
                 if (!evaluation.toleranceMs) {
                     status = QStringLiteral("ИЗМЕРЕНО · БЕЗ ДОПУСКА");
                     statusColor = kDim;
@@ -1143,7 +1220,7 @@ void IntegrationWindow::refresh() {
              row.physicalKp ? compactInput(m_session.mapping().kp, legacy, secondOnly)
                  : inputNames(m_session.mapping().actions.value(action.key), legacy, secondOnly),
              kDim, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
-        cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
+        cell(m_eventTable, tableRow, 3, QString::number(row.physicalKp ? 0 : presentationOffset(m_session, action)),
              kDim, bg, Qt::AlignRight | Qt::AlignVCenter);
         cell(m_eventTable, tableRow, 4, facts, kNeutral, bg, Qt::AlignRight | Qt::AlignVCenter,
              tooltip);
@@ -1170,7 +1247,7 @@ void IntegrationWindow::refresh() {
                      kDim, subBg);
                 cell(m_eventTable, tableRow, 2, compactInput(sample.input, legacy, secondOnly), kDim, subBg,
                      Qt::AlignLeft | Qt::AlignVCenter, inputName(sample.input, legacy, secondOnly));
-                cell(m_eventTable, tableRow, 3, QString::number(action.offsetMs),
+                cell(m_eventTable, tableRow, 3, QString::number(presentationOffset(m_session, action)),
                      kDim, subBg, Qt::AlignRight | Qt::AlignVCenter);
                 cell(m_eventTable, tableRow, 4,
                      hasValue ? QString::number(*sample.actualMs, 'f', 3) : QStringLiteral("—"),

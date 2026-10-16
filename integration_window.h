@@ -70,6 +70,7 @@ private:
 
     TimelineWidget *m_timeline = nullptr;
     QTableWidget *m_eventTable = nullptr;
+    QTableWidget *m_planTable = nullptr;
     QTextEdit *m_eventLog = nullptr;
 
     QString m_lastUploadId;

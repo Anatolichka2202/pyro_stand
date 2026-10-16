@@ -1,4 +1,5 @@
 #include "integration.h"
+#include "command_catalog.h"
 
 #include <QCryptographicHash>
 #include <QFileInfo>
@@ -8,6 +9,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QStringDecoder>
 #include <QUuid>
 #include <QtEndian>
 
@@ -41,7 +43,9 @@ std::optional<InputRef> parseInput(const QJsonValue &value) {
     const int yps = object.value(QStringLiteral("yps")).toInt(-1);
     const int channel = object.value(QStringLiteral("channel")).toInt(-1);
     const QString edge = object.value(QStringLiteral("edge")).toString(QStringLiteral("rise"));
-    if (yps < 1 || yps > 12 || channel < 1 || channel > 8 ||
+    if (object.value(QStringLiteral("yps")).toDouble() != yps ||
+        object.value(QStringLiteral("channel")).toDouble() != channel ||
+        yps < 1 || yps > 12 || channel < 1 || channel > 8 ||
         (edge != QStringLiteral("rise") && edge != QStringLiteral("fall"))) return std::nullopt;
     return InputRef{(yps - 1) * 8 + channel - 1, edge == QStringLiteral("fall")};
 }
@@ -57,6 +61,20 @@ bool blankFrame(const BoardFrame &frame) {
     return std::all_of(frame.channels.cbegin(), frame.channels.cend(), [](const BoardChannel &ch) {
         return !ch.triggered && !ch.ready && ch.riseUs == 0 && ch.fallUs == 0;
     });
+}
+
+std::optional<ActionMapping> bindExpectedSignals(const CommandDefinition &definition,
+                                                const QHash<QString, InputRef> &bindings) {
+    const auto expected = expectedSignals(definition);
+    if (expected.isEmpty()) return std::nullopt;
+    ActionMapping mapped;
+    mapped.toleranceMs = 1.0;
+    for (const auto &signal : expected) {
+        if (!bindings.contains(signal)) return std::nullopt;
+        mapped.inputs.append(bindings.value(signal));
+    }
+    mapped.definitionConfirmed = true;
+    return mapped;
 }
 }
 
@@ -87,7 +105,7 @@ BoardFrame LegacyTesterDecoder::append(quint8 mask) {
 StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, int kpYps,
                                        const CyclogramPlan &plan) {
     StandMapping result;
-    result.version = QStringLiteral("БКД-А-1/Б · А:ЯПС%1 · Б:ЯПС%2 · КП:ЯПС%3/8")
+    result.version = QStringLiteral("historical-wiring.v2 · БКД-А-1/Б · А:ЯПС%1 · Б:ЯПС%2 · КП:ЯПС%3/8")
         .arg(firstStageYps > 0 ? QString::number(firstStageYps - 1) : QStringLiteral("—"))
         .arg(secondStageYps > 0 ? QString::number(secondStageYps - 1) : QStringLiteral("—"))
         .arg(kpYps > 0 ? QString::number(kpYps - 1) : QStringLiteral("—"));
@@ -95,58 +113,54 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
         if (yps < 1 || yps > 12) return;
         ActionMapping action;
         action.toleranceMs = 1.0;
+        action.definitionConfirmed = true;
         for (int channel : channels) action.inputs.append({(yps - 1) * 8 + channel - 1, false});
         result.actions.insert(key, action);
     };
-    // Owner-confirmed item numbers, retained in original file order by ordinal.
+    // This is the historical wiring variant, explicitly selected by the operator.
+    // Functional identities come from BCVM outputs, never from file ordinals.
+    for (const auto &definition : kCommandDefinitions) {
+        const int yps = QString::fromLatin1(definition.peer) == QStringLiteral("bkhoa")
+            ? firstStageYps : secondStageYps;
+        if (yps < 1 || yps > 12 || definition.mask == 0) continue;
+        if (QString::fromLatin1(definition.key) == result.kpActionKey) continue;
+        for (int bit = 0; bit < 7; ++bit) {
+            if (!(definition.mask & (1u << bit))) continue;
+            const QString signal = QStringLiteral("%1.yps_bkd.0.bit.%2")
+                .arg(QLatin1String(definition.peer)).arg(bit);
+            result.signalBindings.insert(signal, {(yps - 1) * 8 + bit, false, signal});
+        }
+    }
     for (const auto &action : plan.actions) {
-        QString expected;
-        int targetYps = 0;
-        switch (action.ordinal) {
-        case 3: expected = QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
-        case 5: expected = QStringLiteral("FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
-        case 16: expected = QStringLiteral("CLOSE_MAIN_VALVES_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
-        case 20: expected = QStringLiteral("IGNITE_PYRO_CANDLE"); targetYps = secondStageYps; break;
-        case 21: expected = QStringLiteral("OPEN_OXIDIZER_AND_FUEL_VALVES"); targetYps = secondStageYps; break;
-        case 24: expected = QStringLiteral("SHUTDOWN_ENGINE_BLOCK_B"); targetYps = secondStageYps; break;
-        default: break;
-        }
-        if (targetYps > 0 && action.key != expected) {
-            result.warnings << QStringLiteral("Пункт %1: ожидается %2, получено %3; входы не приписаны этому действию")
-                .arg(action.ordinal).arg(expected, action.key);
-            continue;
-        }
-        switch (action.ordinal) {
-        case 3: add(action.key, firstStageYps, {1, 2}); break;
-        case 5: add(action.key, firstStageYps, {3, 4, 5}); break;
-        case 16: add(action.key, firstStageYps, {6, 7}); break;
-        case 20: add(action.key, secondStageYps, {1, 2}); break;
-        case 21: add(action.key, secondStageYps, {3, 4, 5}); break;
-        case 24: add(action.key, secondStageYps, {6, 7}); break;
-        default: break;
-        }
+        const auto *definition = findCommand(action.key);
+        if (!definition || definition->mask == 0 || action.key == result.kpActionKey) continue;
+        if (const auto mapped = bindExpectedSignals(*definition, result.signalBindings))
+            result.actions.insert(action.key, *mapped);
     }
     if (kpYps >= 1 && kpYps <= 12) {
-        result.kp = {(kpYps - 1) * 8 + 7, false};
-        add(QStringLiteral("LIFT_OFF_CONTACT"), kpYps, {8});
-    }
-    if (!plan.actions.isEmpty()) {
-        for (int ordinal : {3, 5, 16, 20, 21, 24}) {
-            const bool selected = ordinal < 20 ? firstStageYps > 0 : secondStageYps > 0;
-            if (selected && std::none_of(plan.actions.cbegin(), plan.actions.cend(),
-                [ordinal](const auto &action) { return action.ordinal == ordinal; }))
-                result.warnings << QStringLiteral("В циклограмме нет назначенного пункта %1").arg(ordinal);
-        }
+        result.kp = {(kpYps - 1) * 8 + 7, false, QStringLiteral("bkhoa.yps_bkd.0.bit.7")};
+        result.signalBindings.insert(result.kp.signalId, result.kp);
+        add(result.kpActionKey, kpYps, {8});
+        result.actions[result.kpActionKey].inputs[0].signalId = result.kp.signalId;
     }
     return result;
 }
 
 bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan, QString *error) {
     if (!plan || bytes.isEmpty()) return fail(error, QStringLiteral("Пустая циклограмма"));
+    if (bytes.size() > 8192) return fail(error, QStringLiteral("Размер ПЗ превышает буфер БЦВМ 8192 байт"));
     CyclogramPlan parsed;
     QDate date;
     QTime time;
-    const QStringList lines = QString::fromUtf8(bytes).split(QRegularExpression(QStringLiteral("[\\r\\n]+")));
+    parsed.sourceBytes = bytes;
+    parsed.sha256 = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    // Preserve physical line numbers, including blank lines. CRLF is one delimiter.
+    QStringDecoder decoder(QStringDecoder::Utf8);
+    const QString decoded = decoder(bytes);
+    if (decoder.hasError()) return fail(error, QStringLiteral("ПЗ не является корректным UTF-8"));
+    const QStringList lines = decoded.split(QRegularExpression(QStringLiteral("\\r\\n|\\r|\\n")));
+    if (bytes.contains(char(0)) || bytes.startsWith("\xEF\xBB\xBF"))
+        return fail(error, QStringLiteral("NUL/BOM в циклограмме не поддерживается БЦВМ"));
     const QRegularExpression integer(QStringLiteral("^[+-]?[0-9]+$"));
     int ordinal = 0;
     for (int i = 0; i < lines.size(); ++i) {
@@ -180,7 +194,15 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
             if (!ok || offset < std::numeric_limits<qint32>::min() ||
                 offset > std::numeric_limits<qint32>::max())
                 return fail(error, QStringLiteral("Строка %1: смещение вне диапазона").arg(i + 1));
-            parsed.actions.append({key, qint32(offset), ++ordinal});
+            PlannedAction action{key, qint32(offset), ++ordinal};
+            action.sourceLine = i + 1;
+            action.actionId = parsed.sha256 + u':' + QString::number(i + 1);
+            const QString tail = lines.at(i).mid(lines.at(i).indexOf(u'=') + 1);
+            const int commentAt = tail.indexOf(u'#');
+            action.rawValue = (commentAt >= 0 ? tail.left(commentAt) : tail).trimmed();
+            action.comment = commentAt >= 0 ? tail.mid(commentAt + 1) : QString();
+            action.rawLine = lines.at(i).toUtf8();
+            parsed.actions.append(action);
             if (parsed.actions.size() > 256)
                 return fail(error, QStringLiteral("Слишком много действий"));
         }
@@ -220,12 +242,60 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
     const QJsonDocument doc = QJsonDocument::fromJson(bytes, &parseError);
     if (!doc.isObject()) return fail(error, QStringLiteral("Карта каналов: неверный JSON"));
     const QJsonObject root = doc.object();
+    const QString schema = root.value(QStringLiteral("schema")).toString();
+    if (!schema.isEmpty() && schema != QStringLiteral("pyro.signal-wiring.v2") &&
+        schema != QStringLiteral("pyro.stand-profile.v2"))
+        return fail(error, QStringLiteral("Неизвестная версия схемы профиля"));
+    if (root.contains(QStringLiteral("catalog_version")) &&
+        root.value(QStringLiteral("catalog_version")).toString() != QLatin1String(kCommandCatalogVersion))
+        return fail(error, QStringLiteral("Профиль относится к другому каталогу команд"));
     StandMapping parsed;
     parsed.version = root.value(QStringLiteral("version")).toString().trimmed();
     const auto kp = parseInput(root.value(QStringLiteral("kp")));
+    if (root.contains(QStringLiteral("kp_action_key")) &&
+        root.value(QStringLiteral("kp_action_key")).toString() != QStringLiteral("LIFT_OFF_CONTACT"))
+        return fail(error, QStringLiteral("Каталог подтверждает плановый КП только для LIFT_OFF_CONTACT"));
+    if (root.value(QStringLiteral("schema")).toString() == QStringLiteral("pyro.signal-wiring.v2")) {
+        if (parsed.version.isEmpty() || !root.value(QStringLiteral("bindings")).isArray())
+            return fail(error, QStringLiteral("Нужны version и bindings"));
+        if (!root.value(QStringLiteral("kp")).isNull() && !kp)
+            return fail(error, QStringLiteral("Неверная привязка КП"));
+        if (kp) parsed.kp = *kp;
+        QSet<QString> knownSignals;
+        for (const auto &definition : kCommandDefinitions)
+            for (const auto &signal : expectedSignals(definition)) knownSignals.insert(signal);
+        QSet<int> occupied;
+        for (const auto &value : root.value(QStringLiteral("bindings")).toArray()) {
+            const auto input = parseInput(value);
+            const auto id = value.toObject().value(QStringLiteral("signal_id")).toString();
+            if (!input || !knownSignals.contains(id) || parsed.signalBindings.contains(id))
+                return fail(error, QStringLiteral("Неизвестный/повторный сигнал или неверный вход"));
+            const int edge = input->index * 2 + int(input->falling);
+            if (occupied.contains(edge))
+                return fail(error, QStringLiteral("Один вход назначен разным физическим сигналам"));
+            occupied.insert(edge);
+            InputRef binding = *input;
+            binding.signalId = id;
+            parsed.signalBindings.insert(id, binding);
+        }
+        for (const auto &definition : kCommandDefinitions) {
+            if (const auto action = bindExpectedSignals(definition, parsed.signalBindings))
+                parsed.actions.insert(QLatin1String(definition.key), *action);
+        }
+        const auto kpBinding = parsed.signalBindings.constFind(QStringLiteral("bkhoa.yps_bkd.0.bit.7"));
+        if ((kp && kpBinding == parsed.signalBindings.cend()) ||
+            (kpBinding != parsed.signalBindings.cend() &&
+             (!kp || kpBinding->index != kp->index || kpBinding->falling != kp->falling)))
+            return fail(error, QStringLiteral("Привязки планового и физического КП противоречат друг другу"));
+        *mapping = parsed;
+        return true;
+    }
     if (parsed.version.isEmpty() || !kp || !root.value(QStringLiteral("actions")).isArray())
         return fail(error, QStringLiteral("Нужны version, kp и actions"));
     parsed.kp = *kp;
+    parsed.kpActionKey = root.value(QStringLiteral("kp_action_key"))
+        .toString(QStringLiteral("LIFT_OFF_CONTACT"));
+    if (parsed.kpActionKey.isEmpty()) return fail(error, QStringLiteral("Пустой ключ планового КП"));
     QSet<int> assignedSignals;
     for (const QJsonValue &value : root.value(QStringLiteral("actions")).toArray()) {
         if (!value.isObject()) return fail(error, QStringLiteral("Неверная запись действия"));
@@ -245,7 +315,14 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
             if (assignedSignals.contains(signal))
                 return fail(error, QStringLiteral("Один фронт/спад назначен нескольким действиям"));
             assignedSignals.insert(signal);
-            action.inputs.append(*parsedInput);
+            InputRef binding = *parsedInput;
+            binding.signalId = input.toObject().value(QStringLiteral("signal_id")).toString();
+            if (binding.signalId.isEmpty())
+                binding.signalId = QStringLiteral("profile.%1.%2").arg(key).arg(action.inputs.size());
+            if (parsed.signalBindings.contains(binding.signalId))
+                return fail(error, QStringLiteral("Повторный signal_id в профиле"));
+            parsed.signalBindings.insert(binding.signalId, binding);
+            action.inputs.append(binding);
         }
         if (object.contains(QStringLiteral("tolerance_ms"))) {
             const QJsonValue tolerance = object.value(QStringLiteral("tolerance_ms"));
@@ -255,8 +332,57 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
         }
         parsed.actions.insert(key, action);
     }
+    // Old action maps remain readable, but cannot prove an electrical assignment
+    // from positional input lists. Only a complete, named signal set is gradeable.
+    for (auto it = parsed.actions.begin(); it != parsed.actions.end(); ++it) {
+        const auto *definition = findCommand(it.key());
+        if (!definition || definition->mask == 0) continue;
+        const auto expected = expectedSignals(*definition);
+        QSet<QString> declared;
+        for (const auto &input : it->inputs) declared.insert(input.signalId);
+        it->definitionConfirmed = declared.size() == expected.size() &&
+            std::all_of(expected.cbegin(), expected.cend(), [&](const auto &id) { return declared.contains(id); });
+    }
+    for (auto it = parsed.actions.cbegin(); it != parsed.actions.cend(); ++it)
+        for (const auto &input : it->inputs)
+            if (input.index == parsed.kp.index && input.falling == parsed.kp.falling &&
+                (it.key() != parsed.kpActionKey || input.signalId != QStringLiteral("bkhoa.yps_bkd.0.bit.7")))
+                return fail(error, QStringLiteral("Вход КП занят другим сигналом"));
     *mapping = parsed;
     return true;
+}
+
+std::optional<qint32> StandProtocol::plannedKpOffset(const CyclogramPlan &plan, const StandMapping &mapping) {
+    if (mapping.kpActionKey != QStringLiteral("LIFT_OFF_CONTACT")) return std::nullopt;
+    std::optional<qint32> offset;
+    for (const auto &action : plan.actions) {
+        if (action.key != mapping.kpActionKey) continue;
+        if (offset) return std::nullopt;
+        offset = action.offsetMs;
+    }
+    return offset;
+}
+
+QJsonObject StandProtocol::mappingSnapshot(const StandMapping &mapping) {
+    const auto inputJson = [](const InputRef &input) {
+        return QJsonObject{{"yps", input.index < 0 ? QJsonValue() : QJsonValue(input.index / 8 + 1)},
+                           {"channel", input.index < 0 ? QJsonValue() : QJsonValue(input.index % 8 + 1)},
+                           {"edge", input.falling ? "fall" : "rise"}, {"signal_id", input.signalId}};
+    };
+    QJsonArray actions;
+    auto keys = mapping.actions.keys();
+    keys.sort();
+    for (const auto &key : keys) {
+        const auto &mapped = mapping.actions[key];
+        QJsonArray inputs;
+        for (const auto &input : mapped.inputs) inputs.append(inputJson(input));
+        actions.append(QJsonObject{{"key", key}, {"inputs", inputs}, {"definition_confirmed", mapped.definitionConfirmed},
+                                  {"tolerance_ms", mapped.toleranceMs ? QJsonValue(*mapped.toleranceMs) : QJsonValue()}});
+    }
+    return {{"schema", "pyro.stand-profile.v2"}, {"version", mapping.version},
+            {"catalog_version", QLatin1String(kCommandCatalogVersion)}, {"kp", inputJson(mapping.kp)},
+            {"kp_action_key", mapping.kpActionKey}, {"actions", actions},
+            {"wiring_verification", "operator selection; physical acceptance recorded separately"}};
 }
 
 QByteArray StandProtocol::resetCommand() {
@@ -336,6 +462,7 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
         setError(QStringLiteral("Не удалось создать журнал кадров платы"));
     }
     updateBenchMapping();
+    if (!m_options.wiringProfilePath.isEmpty()) loadMapping(m_options.wiringProfilePath);
 }
 
 IntegrationSession::~IntegrationSession() {
@@ -402,8 +529,10 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_prePermissionActivity = false;
     m_awaitReset = false;
     m_mappingBytes.clear();
+    m_mapping = {};
     resetCollectionEvidence(false);
     updateBenchMapping();
+    if (!m_options.wiringProfilePath.isEmpty()) loadMapping(m_options.wiringProfilePath);
     QJsonObject evidence;
     evidence.insert(QStringLiteral("type"), QStringLiteral("TESTER_CONFIGURATION_CHANGED"));
     evidence.insert(QStringLiteral("mapping"), m_mapping.version);
@@ -449,11 +578,12 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
     m_localEvidence = QJsonArray{};
     if (clearFrameEvidence())
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_collectionElapsed.start();
     if (!inputCleared) m_evidenceValid = false;
 }
 
 void IntegrationSession::updateBenchMapping() {
-    if (!m_mappingBytes.isEmpty()) return;
+    if (!m_mappingBytes.isEmpty() || !m_options.wiringProfilePath.isEmpty()) return;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
         const bool dual = !m_options.secondLegacySerialPort.isEmpty();
         m_mapping = StandProtocol::benchMapping(dual || !m_options.legacySecondStage ? 1 : 0,
@@ -481,6 +611,7 @@ void IntegrationSession::connectDebug() {
 void IntegrationSession::resetDebugState() {
     m_uploadId.clear();
     m_uploadState = QStringLiteral("NONE");
+    m_fileIdentityValid = true;
     m_lockState = QStringLiteral("UNKNOWN");
     m_bcvmUtc.clear();
     m_executionEnabled = false;
@@ -562,12 +693,16 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
             hash.compare(object.value(QStringLiteral("sha256_hex")).toString(), Qt::CaseInsensitive) != 0) {
             setError(QStringLiteral("Файл Debug: неверные размер, SHA-256 или upload_id")); return;
         }
-        CyclogramPlan plan;
-        QString error;
-        if (!StandProtocol::parseCyclogram(bytes, &plan, &error)) {
-            setError(QStringLiteral("Файл Debug: %1").arg(error)); return;
+        if (id == m_uploadId && !m_cyclogramSha.isEmpty() && hash != m_cyclogramSha) {
+            m_fileIdentityValid = false;
+            m_boardArmed = false;
+            m_executionObserved = false;
+            m_executionEnabled = false;
+            setError(QStringLiteral("Один upload_id содержит разные файлы; нужен новый upload_id и сбор"));
+            return;
         }
         if (id != m_uploadId) {
+            m_fileIdentityValid = true;
             // New upload, even within the same KASU run: previous board frames
             // and evidence must never appear in the next flight report.
             resetCollectionEvidence(true);
@@ -591,16 +726,26 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
             m_awaitReset = false;
             m_resetWatchdog.stop();
             m_hasBoardFrame = false;
+            m_hasPlan = false;
+            m_plan = {};
             emit message(QStringLiteral("Новая циклограмма; сбросьте плату перед прогоном"));
         }
         m_cyclogramBytes = bytes;
         m_cyclogramSha = hash;
+        CyclogramPlan plan;
+        QString error;
+        if (!StandProtocol::parseCyclogram(bytes, &plan, &error)) {
+            m_hasPlan = false;
+            m_plan = {};
+            updateBenchMapping();
+            setError(QStringLiteral("Файл Debug: %1").arg(error)); return;
+        }
         m_plan = plan;
         updateBenchMapping();
         for (const auto &warning : m_mapping.warnings) emit message(warning);
         m_hasPlan = true;
         emit changed();
-    } else if (type == QStringLiteral("CYCLOGRAM_UPLOAD_STATE") && id == m_uploadId) {
+    } else if (type == QStringLiteral("CYCLOGRAM_UPLOAD_STATE") && id == m_uploadId && m_fileIdentityValid) {
         const QString state = object.value(QStringLiteral("upload_state")).toString();
         if (state != QStringLiteral("CONFIRMED") && state != QStringLiteral("FAILED")) return;
         m_uploadState = state;
@@ -612,7 +757,7 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
                         ? object.value(QStringLiteral("bcvm_utc")).toString() : QString();
         emit changed();
     } else if (type == QStringLiteral("BCVM_EXECUTION_ENABLED") && id == m_uploadId &&
-               m_uploadState == QStringLiteral("CONFIRMED")) {
+               m_uploadState == QStringLiteral("CONFIRMED") && m_fileIdentityValid) {
         m_executionEnabled = true;
         m_executionObserved = true;
         m_lockState = QStringLiteral("UNLOCKED");
@@ -626,7 +771,7 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
         m_lockState = object.value(QStringLiteral("fresh")).toBool() &&
                               (state == QStringLiteral("LOCKED") || state == QStringLiteral("UNLOCKED"))
                           ? state : QStringLiteral("UNKNOWN");
-        m_executionEnabled = m_lockState == QStringLiteral("UNLOCKED") &&
+        m_executionEnabled = m_fileIdentityValid && m_lockState == QStringLiteral("UNLOCKED") &&
             m_uploadState == QStringLiteral("CONFIRMED") && id == m_uploadId &&
             object.value(QStringLiteral("execution_enabled_confirmed")).toBool();
         if (m_executionEnabled) m_executionObserved = true;
@@ -800,8 +945,19 @@ bool IntegrationSession::loadMapping(const QString &path) {
     StandMapping mapping;
     QString error;
     if (!StandProtocol::parseMapping(bytes, &mapping, &error)) { setError(error); return false; }
+    // A new profile must not reinterpret observations collected under the old one.
+    resetCollectionEvidence(false);
+    m_boardArmed = false;
+    m_awaitReset = false;
+    m_resetWatchdog.stop();
+    m_boardFrame = {};
+    m_hasBoardFrame = false;
+    m_legacyArmed = {};
+    for (auto &decoder : m_legacy) decoder.reset();
     m_mapping = mapping;
     m_mappingBytes = bytes;
+    m_localEvidence.append(QJsonObject{{"type", "STAND_PROFILE_CHANGED"},
+        {"version", mapping.version}, {"collection_id", m_collectionId}});
     emit message(QStringLiteral("Загружена карта каналов: %1").arg(mapping.version));
     emit changed();
     return true;
@@ -824,6 +980,7 @@ bool IntegrationSession::resetBoard() {
         }
         if (!clearFrameEvidence()) return false;
         m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_collectionElapsed.start();
         m_localEvidence = QJsonArray{};
         for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
         for (auto &decoder : m_legacy) decoder.reset();
@@ -854,6 +1011,7 @@ bool IntegrationSession::resetBoard() {
     }
     if (!clearFrameEvidence()) return false;
     m_collectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_collectionElapsed.start();
     m_localEvidence = QJsonArray{};
     m_boardArmed = false;
     m_boardFrame = {};
@@ -917,6 +1075,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     };
     if (!m_mapping.actions.contains(action.key))
         return blocked(State::Unmapped, QStringLiteral("Не сопоставлено"));
+    if (!m_fileIdentityValid)
+        return blocked(State::InvalidAssignment, QStringLiteral("Нарушена идентичность файла upload_id; требуется новая загрузка"));
     if (m_uploadState != QStringLiteral("CONFIRMED"))
         return blocked(State::UploadUnconfirmed, QStringLiteral("Загрузка БЦВМ не подтверждена"));
     if (!m_executionObserved)
@@ -933,7 +1093,13 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
         return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
-    if (qAbs(qint64(action.offsetMs)) * 1000 >= (qint64(1) << 31))
+    if (m_collectionElapsed.isValid() && m_collectionElapsed.elapsed() * 1000 >= (qint64(1) << 31))
+        return blocked(State::AmbiguousInterval, QStringLiteral("Окно сбора превысило половину оборота счётчика"));
+    const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
+    if (!kpOffset)
+        return blocked(State::PlanReferenceUnknown, QStringLiteral("Нет единственного планового КП; связь опор не подтверждена"));
+    result.plannedMs = double(qint64(action.offsetMs) - *kpOffset);
+    if (qAbs(qint64(action.offsetMs) - *kpOffset) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Интервал счётчика неоднозначен после переполнения"));
     if (m_options.boardTransport == BoardTransport::LegacySerial &&
         (m_legacy[0].sampleCount() * 1000 >= (quint64(1) << 31) ||
@@ -943,7 +1109,19 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
         return blocked(State::WaitingForClockAlignment, QStringLiteral("КП только на БКД-А; счётчик БКД-Б не привязан к общей опоре"));
     const ActionMapping mapped = m_mapping.actions.value(action.key);
+    if (mapped.inputs.isEmpty() || !mapped.definitionConfirmed || !findCommand(action.key))
+        return blocked(State::InvalidAssignment, QStringLiteral("Назначение не подтверждено каталогом команд"));
     for (const auto &input : mapped.inputs) {
+        if (input.index < 0 || input.index >= 96 ||
+            (m_options.boardTransport == BoardTransport::LegacySerial &&
+             input.index >= (dualLegacy ? 16 : 8)))
+            return blocked(State::InvalidAssignment, QStringLiteral("Вход вне диапазона выбранного источника"));
+        for (const auto &other : m_plan.actions) {
+            if (other.actionId == action.actionId && other.ordinal == action.ordinal) continue;
+            for (const auto &used : m_mapping.actions.value(other.key).inputs)
+                if (used.index == input.index && used.falling == input.falling)
+                    return blocked(State::InvalidAssignment, QStringLiteral("Одно наблюдение назначено нескольким вхождениям"));
+        }
         if (!(dualLegacy && input.index >= 8 ? secondKp : kp))
             return blocked(State::WaitingForKp, QStringLiteral("Ожидание КП8 в потоке этого БКД"));
     }
@@ -957,9 +1135,11 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
             // The board and КП share one uint32 microsecond counter.
             // Signed subtraction handles a single wrap; longer intervals are ambiguous.
             const auto inputKp = dualLegacy && input.index >= 8 ? secondKp : kp;
+            if (quint32(*stamp - *inputKp) == (quint32(1) << 31))
+                return blocked(State::AmbiguousInterval, QStringLiteral("Интервал ровно в половину оборота счётчика"));
             const qint64 deltaUs = qint32(*stamp - *inputKp);
             sample.actualMs = double(deltaUs) / 1000.0;
-            sample.deviationMs = *sample.actualMs - action.offsetMs;
+            sample.deviationMs = *sample.actualMs - *result.plannedMs;
             ++observed;
         }
         result.channels.append(sample);
@@ -1018,11 +1198,13 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         return fail(error, evidenceReader.errorString());
     QSaveFile frames(framesPath);
     if (!frames.open(QIODevice::WriteOnly)) return fail(error, frames.errorString());
+    QCryptographicHash frameHash(QCryptographicHash::Sha256);
     while (!evidenceReader.atEnd()) {
         const QByteArray chunk = evidenceReader.read(65536);
         if (evidenceReader.error() != QFileDevice::NoError)
             return fail(error, evidenceReader.errorString());
         if (frames.write(chunk) != chunk.size()) return fail(error, frames.errorString());
+        frameHash.addData(chunk);
     }
     if (!frames.commit()) return fail(error, frames.errorString());
 
@@ -1033,6 +1215,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("collection_id"), m_collectionId);
     report.insert(QStringLiteral("upload_id"), m_uploadId);
     report.insert(QStringLiteral("upload_state"), m_uploadState);
+    report.insert(QStringLiteral("file_identity_valid"), m_fileIdentityValid);
     report.insert(QStringLiteral("bcvm_lock_state"), m_lockState);
     report.insert(QStringLiteral("execution_enabled_confirmed"), m_executionEnabled);
     report.insert(QStringLiteral("execution_permission_observed"), m_executionObserved);
@@ -1043,7 +1226,16 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("plan_t0_utc"), m_hasPlan ? m_plan.t0Utc.toString(Qt::ISODate) : QString());
     report.insert(QStringLiteral("mapping_version"), m_mapping.version);
     report.insert(QStringLiteral("mapping_warnings"), QJsonArray::fromStringList(m_mapping.warnings));
-    report.insert(QStringLiteral("mapping_json"), QJsonDocument::fromJson(m_mappingBytes).object());
+    const QJsonObject snapshot = StandProtocol::mappingSnapshot(m_mapping);
+    report.insert(QStringLiteral("mapping_json"), snapshot);
+    report.insert(QStringLiteral("mapping_sha256"), QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(snapshot).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex()));
+    report.insert(QStringLiteral("mapping_source_base64"), QString::fromLatin1(m_mappingBytes.toBase64()));
+    report.insert(QStringLiteral("catalog_version"), QLatin1String(kCommandCatalogVersion));
+    report.insert(QStringLiteral("time_model"), QStringLiteral("unified.time.v1"));
+    report.insert(QStringLiteral("planned_kp_offset_ms"), StandProtocol::plannedKpOffset(m_plan, m_mapping)
+        ? QJsonValue(*StandProtocol::plannedKpOffset(m_plan, m_mapping)) : QJsonValue());
+    report.insert(QStringLiteral("hardware_acceptance"), QStringLiteral("not established by software tests"));
     report.insert(QStringLiteral("tester_protocol"), m_options.boardTransport == BoardTransport::LegacySerial
         ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
     report.insert(QStringLiteral("measurement_clock"), m_options.boardTransport == BoardTransport::LegacySerial
@@ -1072,6 +1264,9 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("accepted_frames"), QString::number(m_acceptedFrames));
     report.insert(QStringLiteral("rejected_frames"), QString::number(m_rejectedFrames));
     report.insert(QStringLiteral("frame_evidence_file"), QFileInfo(framesPath).fileName());
+    report.insert(QStringLiteral("frame_evidence_sha256"), QString::fromLatin1(frameHash.result().toHex()));
+    report.insert(QStringLiteral("catalog_source_revision"), QStringLiteral("c8e14dcfe6e13d703044beca58c3dc2ee2a8c32b"));
+    report.insert(QStringLiteral("protocol_limits"), QStringLiteral("No tester epoch/sequence; counter continuity and physical wiring require separate verification. Repeated pulses are not resolved."));
     report.insert(QStringLiteral("debug_evidence"), m_debugEvidence);
     report.insert(QStringLiteral("local_evidence"), m_localEvidence);
     QJsonArray actions;
@@ -1079,14 +1274,27 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         QJsonObject item;
         item.insert(QStringLiteral("key"), action.key);
         item.insert(QStringLiteral("ordinal"), action.ordinal);
+        item.insert(QStringLiteral("action_id"), action.actionId);
+        item.insert(QStringLiteral("source_line"), action.sourceLine);
+        item.insert(QStringLiteral("raw_value"), action.rawValue);
+        item.insert(QStringLiteral("comment"), action.comment);
         item.insert(QStringLiteral("offset_ms"), action.offsetMs);
         item.insert(QStringLiteral("result"), actionResult(action));
         const auto measurement = measureAction(action);
+        item.insert(QStringLiteral("planned_from_kp_ms"), measurement.plannedMs ? QJsonValue(*measurement.plannedMs) : QJsonValue());
+        item.insert(QStringLiteral("measurement_state"), int(measurement.state));
+        item.insert(QStringLiteral("reason"), measurement.reason);
         QJsonArray channels;
         for (const auto &sample : measurement.channels) {
             QJsonObject channel;
             channel.insert(QStringLiteral("yps_or_legacy_stream"), sample.input.index / 8 + 1);
             channel.insert(QStringLiteral("channel"), sample.input.index % 8 + 1);
+            channel.insert(QStringLiteral("edge"), sample.input.falling ? QStringLiteral("fall") : QStringLiteral("rise"));
+            channel.insert(QStringLiteral("signal_id"), sample.input.signalId);
+            const auto &raw = m_boardFrame.channels[size_t(sample.input.index)];
+            channel.insert(QStringLiteral("raw_tick_us"), double(sample.input.falling ? raw.fallUs : raw.riseUs));
+            channel.insert(QStringLiteral("clock_domain"), m_options.boardTransport == BoardTransport::LegacySerial
+                ? QStringLiteral("legacy-stream-%1").arg(sample.input.index / 8) : QStringLiteral("tester-u32-us"));
             channel.insert(QStringLiteral("actual_ms"), sample.actualMs ? QJsonValue(*sample.actualMs) : QJsonValue());
             channel.insert(QStringLiteral("deviation_ms"), sample.deviationMs ? QJsonValue(*sample.deviationMs) : QJsonValue());
             channels.append(channel);

@@ -630,7 +630,7 @@ void Stand::readingThread(int64_t timeToStartMs)
             }
 
             // Проверка событий циклограммы
-            struct PendingSignal { int id; int tick; QString key; int planMs; };
+            struct PendingSignal { int id; int tick; QString key; int64_t planMs; };
             QVector<PendingSignal> pending;
             {
                 QMutexLocker locker(&m_eventsMutex);

@@ -28,7 +28,7 @@ function RunFinite([string]$folder,[string]$exe,[string]$arguments) {
         $stdout.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $verification ($folder+'-smoke.stdout.txt')) -Encoding utf8
         $stderr.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $verification ($folder+'-smoke.stderr.txt')) -Encoding utf8
         if($p.ExitCode -ne 0) { throw "Startup failed: $exe, exit $($p.ExitCode)" }
-        return @{application=$folder;exit_code=$p.ExitCode;passed=$true;mode='offscreen startup, no hardware'}
+        return @{application=$folder;exit_code=$p.ExitCode;passed=$true;mode='offscreen startup, no hardware';arguments=$arguments}
     } finally { $p.Dispose() }
 }
 $env:KASU_HMI_SMOKE_TEST='1'
@@ -39,6 +39,7 @@ $port=$udp.Client.LocalEndPoint.Port
 $udp.Dispose()
 $env:PYRO_STAND_SMOKE_TEST='1'
 $results+=RunFinite 'PyroStand' 'pyro_stand.exe' ("--tester udp --bind-ip 127.0.0.1 --board-ip 127.0.0.1 --board-port "+$port+" --debug-socket portable-startup-no-server")
+$results+=RunFinite 'PyroStand' 'pyro_stand.exe' ("--tester udp --first-stage-yps-index 8 --second-stage-yps 0 --kp-yps-index 8 --compare-legacy-serial NONEXISTENT_PORTABLE_TEST --compare-legacy-block B --compare-legacy-no-kp --bind-ip 127.0.0.1 --board-ip 127.0.0.1 --board-port "+$port+" --debug-socket portable-startup-no-server")
 Remove-Item Env:PYRO_STAND_SMOKE_TEST
 
 if (-not $SkipTester) {
@@ -73,4 +74,4 @@ foreach($relative in @('PyroTester\app.log','KASU_PP\bcvm-exchange.jsonl','KASU_
         Move-Item -LiteralPath $path -Destination (Join-Path $verification ($relative.Replace('\','-')+'.smoke')) -Force
     }
 }
-Write-Output "Portable startup checks passed for $($results.Count) included applications."
+Write-Output "Portable startup checks passed: $($results.Count) checks."

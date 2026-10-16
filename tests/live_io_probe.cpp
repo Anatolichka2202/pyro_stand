@@ -6,6 +6,7 @@
 #include <QSerialPortInfo>
 #include <QSaveFile>
 #include <cstdio>
+#include <QMap>
 // Passive, opt-in equipment check: no reset, upload, permission or outbound commands.
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
@@ -26,6 +27,13 @@ int main(int argc, char **argv) {
                      [&](const QString &s) { messages.append("new: " + s); });
     QObject::connect(&legacy, &IntegrationSession::message, &app,
                      [&](const QString &s) { messages.append("old: " + s); });
+    QMap<int,BoardChannel> modernSeen,legacySeen;
+    const auto observe=[](IntegrationSession &session,QMap<int,BoardChannel> &seen){
+        if(!session.hasBoardFrame())return;
+        for(int i=0;i<96;++i){const auto &c=session.boardFrame().channels[size_t(i)];if(c.triggered||c.ready||c.riseUs||c.fallUs)seen.insert(i,c);}
+    };
+    QObject::connect(&modern,&IntegrationSession::changed,&app,[&]{observe(modern,modernSeen);});
+    QObject::connect(&legacy,&IntegrationSession::changed,&app,[&]{observe(legacy,legacySeen);});
     modern.start();
     legacy.start();
     QTimer::singleShot(6000, &app, [&] {
@@ -53,6 +61,14 @@ int main(int argc, char **argv) {
             {"new", state(modern)},
             {"legacy", state(legacy)},
             {"messages", messages}};
+        const auto records=[](const QMap<int,BoardChannel> &seen){QJsonArray active;
+            for(auto it=seen.cbegin();it!=seen.cend();++it){const auto &c=it.value();active.append(QJsonObject{{"yps_index",it.key()/8},{"channel",it.key()%8+1},{"triggered",c.triggered},{"ready",c.ready},{"rise_us",QString::number(c.riseUs)},{"fall_us",QString::number(c.fallUs)}});}
+            return active;
+        };
+        result.insert("new_active_records",records(modernSeen));
+        result.insert("legacy_active_records",records(legacySeen));
+        result.insert("records_observed_over_entire_window",true);
+        result.insert("channel_identity_verified",false);
         const auto bytes = QJsonDocument(result).toJson();
         QSaveFile file(parser.value("output"));
         if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||

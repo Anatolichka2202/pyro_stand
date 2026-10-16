@@ -25,6 +25,11 @@
 - Smooth clocks/timeline are presentation only: hardware anchor plus monotonic PC
   interpolation, or explicitly approximate PC/forecast time when KP is absent.
   Forecasts must not change `IntegrationSession` measured results or report acceptance.
+- Owner correction 2026-10-14: current physical KP exists ONLY on BKD-A (new tester).
+  Old COM9 observes BKD-B with no KP. Owner identified new tester YPS index 8;
+  BKD-A and its KP input 8 use group 8 (internal one-based slot 9).
+  Do not assign a guessed new YPS or demand a nonexistent KP on B. Without verified
+  cross-counter alignment B remains approximate/ungraded; preserve raw timestamps.
 - Combined new + old mode uses independent IntegrationSessions, KP references,
   collection boundaries and reports. Do not merge unrelated hardware counters.
 - Planned T0 UTC originates from the cyclogram published by KASU PP.
@@ -37,7 +42,7 @@
   Two old COMs require КП8 in each stream; never subtract independent byte counters.
   New tester's YPS assignments are selected by physical wiring in the UI; do not guess them.
   Owner confirmed 2026-10-12: А-1 item 3 -> channels 1,2; item 5 -> 3,4,5;
-  item 16 -> 6,7. Б item 20 -> 1,2; item 21 -> 3,4,5; item 22 -> 6,7.
+  item 16 -> 6,7. Б item 20 -> 1,2; item 21 -> 3,4,5; item 24 -> 6,7 (owner correction 2026-10-14; verified against supplied cyclogram.txt).
   These are original action ordinals, not milliseconds or display row numbers.
   Validate action meaning too: an incompatible numbered item must not receive a false measurement.
   Default action tolerance: +/- 1 ms; an approved mapping may override.

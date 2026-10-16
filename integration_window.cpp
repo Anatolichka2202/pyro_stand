@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QDateTime>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -54,7 +55,7 @@ QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = 
             .arg(input.index >= 8 || secondOnly ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"))
             .arg(input.index % 8 + 1).arg(labels.at(input.index % 8));
     return QStringLiteral("ЯПС %1 / %2 %3")
-        .arg(input.index / 8 + 1)
+        .arg(input.index / 8)
         .arg(input.index % 8 + 1)
         .arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
 }
@@ -63,7 +64,7 @@ QString compactInput(const InputRef &input, bool legacy, bool secondOnly) {
     return legacy
         ? QStringLiteral("%1: %2").arg(input.index >= 8 || secondOnly
             ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1")).arg(input.index % 8 + 1)
-        : QStringLiteral("ЯПС %1: %2 %3").arg(input.index / 8 + 1)
+        : QStringLiteral("ЯПС %1: %2 %3").arg(input.index / 8)
             .arg(input.index % 8 + 1).arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
 }
 
@@ -344,6 +345,7 @@ void IntegrationWindow::configurePeer() {
     legacy.secondLegacySerialPort.clear();
     legacy.comparisonLegacyPort.clear();
     legacy.legacySecondStage = options.comparisonLegacySecondStage;
+    legacy.legacyHasKp = options.comparisonLegacyHasKp;
     m_peer = std::make_unique<IntegrationSession>(legacy, this);
     connect(m_peer.get(), &IntegrationSession::changed, this, [this] {
         if (!m_refreshTimer.isActive())
@@ -379,7 +381,7 @@ void IntegrationWindow::refreshCanvas() {
             if (action.key == "LIFT_OFF_CONTACT")
                 continue;
             auto eval = session.measureAction(action);
-            if (eval.state != ActionMeasurement::State::WaitingForKp)
+            if ((eval.state != ActionMeasurement::State::WaitingForKp && eval.state != ActionMeasurement::State::WaitingForClockAlignment))
                 continue;
             auto map = session.mapping().actions.value(action.key);
             QVector<double> candidates;
@@ -414,7 +416,7 @@ void IntegrationWindow::refreshCanvas() {
             const double zero = median(points[0]);
             double last = -std::numeric_limits<double>::infinity();
             for (const auto &action : session.plan().actions) {
-                if (session.measureAction(action).state != ActionMeasurement::State::WaitingForKp)
+                if ((session.measureAction(action).state != ActionMeasurement::State::WaitingForKp && session.measureAction(action).state != ActionMeasurement::State::WaitingForClockAlignment))
                     continue;
                 for (const auto &in : session.mapping().actions.value(action.key).inputs) {
                     if (legacy && in.index >= 8)
@@ -458,7 +460,7 @@ void IntegrationWindow::refreshCanvas() {
                 CanvasChannel row;
                 row.input =
                     legacy ? QString::number(in.index % 8 + 1)
-                           : QStringLiteral("%1:%2").arg(in.index / 8 + 1).arg(in.index % 8 + 1);
+                           : QStringLiteral("%1:%2").arg(in.index / 8).arg(in.index % 8 + 1);
                 row.role = roles[in.index % 8];
                 row.color = kDim;
                 row.actual = row.delta = row.rawTick = QStringLiteral("—");
@@ -485,7 +487,7 @@ void IntegrationWindow::refreshCanvas() {
                     }
                 int stream = legacy ? in.index / 8 : 0;
                 if (row.actual == QStringLiteral("—") && raw.triggered &&
-                    eval.state == ActionMeasurement::State::WaitingForKp &&
+                    (eval.state == ActionMeasurement::State::WaitingForKp || eval.state == ActionMeasurement::State::WaitingForClockAlignment) &&
                     stream < points.size() && !points[stream].isEmpty()) {
                     double actual =
                         (double(in.falling ? raw.fallUs : raw.riseUs) - median(points[stream])) /
@@ -556,7 +558,7 @@ void IntegrationWindow::refreshCanvas() {
                      m_peer->debugConnected() ? QStringLiteral("связь есть")
                                               : QStringLiteral("нет связи"),
                      m_peer->hasPlan() ? QStringLiteral("получен") : QStringLiteral("ожидание"),
-                     m_peer->legacyStreamKpObserved(0) ? QStringLiteral("есть")
+                     !m_peer->options().legacyHasKp ? QStringLiteral("только БКД-А") : m_peer->legacyStreamKpObserved(0) ? QStringLiteral("есть")
                                                        : QStringLiteral("нет")));
     } else
         m_peerStatus->clear();
@@ -721,6 +723,11 @@ void IntegrationWindow::configureTester() {
     auto *comparisonBlock=new QComboBox(&dialog);comparisonBlock->addItem(QStringLiteral("БКД-А-1"),false);comparisonBlock->addItem(QStringLiteral("БКД-Б"),true);comparisonBlock->setCurrentIndex(options.comparisonLegacySecondStage?1:0);
     layout->addRow(QStringLiteral("Одновременно старый COM (пусто = выключен)"),comparison);
     layout->addRow(QStringLiteral("БКД дополнительного старого COM"),comparisonBlock);
+    auto *comparisonKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старой платы"), &dialog);
+    comparisonKp->setChecked(options.comparisonLegacyHasKp);
+    layout->addRow(comparisonKp);
+    auto *legacyKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старого COM"), &dialog);
+    legacyKp->setChecked(options.legacyHasKp);
     auto *address = new QLineEdit(options.boardIp.toString(), &dialog);
     auto *first = new QComboBox(&dialog);
     auto *second = new QComboBox(&dialog);
@@ -728,7 +735,7 @@ void IntegrationWindow::configureTester() {
     for (auto *box : {first, second, kp}) {
         box->addItem(QStringLiteral("Не назначен"), 0);
         for (int yps = 1; yps <= 12; ++yps)
-            box->addItem(QStringLiteral("ЯПС %1").arg(yps), yps);
+            box->addItem(QStringLiteral("ЯПС %1").arg(yps - 1), yps);
     }
     first->setCurrentIndex(first->findData(options.firstStageYps));
     second->setCurrentIndex(second->findData(options.secondStageYps));
@@ -741,10 +748,18 @@ void IntegrationWindow::configureTester() {
     layout->addRow(QStringLiteral("COM · 115200, 8N1"), port);
     layout->addRow(QStringLiteral("IP новой платы"), address);
     layout->addRow(QStringLiteral("БКД-А-1 · пункты 3, 5, 16"), first);
-    layout->addRow(QStringLiteral("БКД-Б · пункты 20, 21, 22"), second);
+    layout->addRow(QStringLiteral("БКД-Б · пункты 20, 21, 24"), second);
     layout->addRow(QStringLiteral("КП · вход 8"), kp);
     layout->addRow(QStringLiteral("БКД на старой плате"), block);
     layout->addRow(QStringLiteral("Второй COM · БКД-Б (необязательно)"), secondPort);
+    layout->addRow(legacyKp);
+    auto *preset = new QPushButton(QStringLiteral("Схема стенда: новый А / ЯПС 8 + старый Б / COM9 · КП только А"), &dialog);
+    layout->addRow(preset);
+    connect(preset, &QPushButton::clicked, &dialog, [=] {
+        transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
+        first->setCurrentIndex(first->findData(9)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(9));
+        comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
+    });
     auto *note = new QLabel(QStringLiteral(
         "1–2: пиросвечи; 3–5: пусковая группа; 6–7: отсечные клапаны.\n"
         "Назначьте ЯПС по фактическому подключению. Времена берутся из циклограммы КАСУ ПП.\n"
@@ -755,7 +770,7 @@ void IntegrationWindow::configureTester() {
     const auto update = [=] {
         const auto value = IntegrationSession::BoardTransport(transport->currentData().toInt());
         const bool legacy = value == IntegrationSession::BoardTransport::LegacySerial;
-        comparison->setEnabled(!legacy);comparisonBlock->setEnabled(!legacy);
+        comparison->setEnabled(!legacy);comparisonBlock->setEnabled(!legacy);comparisonKp->setEnabled(!legacy);legacyKp->setEnabled(legacy);
         port->setEnabled(value != IntegrationSession::BoardTransport::Udp);
         address->setEnabled(!legacy);
         first->setEnabled(!legacy); second->setEnabled(!legacy); kp->setEnabled(!legacy);
@@ -772,6 +787,8 @@ void IntegrationWindow::configureTester() {
         options.serialPort = port->currentText().trimmed();
         options.comparisonLegacyPort = options.boardTransport==IntegrationSession::BoardTransport::LegacySerial?QString():comparison->currentText().trimmed();
         options.comparisonLegacySecondStage=comparisonBlock->currentData().toBool();
+        options.comparisonLegacyHasKp=comparisonKp->isChecked();
+        options.legacyHasKp=legacyKp->isChecked();
         options.secondLegacySerialPort = secondPort->currentText().trimmed();
         options.firstStageYps = first->currentData().toInt();
         options.secondStageYps = second->currentData().toInt();
@@ -793,6 +810,8 @@ void IntegrationWindow::configureTester() {
     QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
     settings.setValue("tester/comparisonLegacyPort",options.comparisonLegacyPort);
     settings.setValue("tester/comparisonLegacySecondStage",options.comparisonLegacySecondStage);
+    settings.setValue("tester/comparisonLegacyHasKp",options.comparisonLegacyHasKp);
+    settings.setValue("tester/legacyHasKp",options.legacyHasKp);
     settings.setValue(QStringLiteral("tester/transport"), int(options.boardTransport));
     settings.setValue(QStringLiteral("tester/serial"), options.serialPort);
     settings.setValue(QStringLiteral("tester/secondSerial"), options.secondLegacySerialPort);

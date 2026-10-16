@@ -56,9 +56,9 @@ QByteArray benchCyclogram() {
         {5, "FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"},
         {7, "LIFT_OFF_CONTACT"}, {16, "CLOSE_MAIN_VALVES_ENGINES_9_TO_12"},
         {20, "IGNITE_PYRO_CANDLE"}, {21, "OPEN_OXIDIZER_AND_FUEL_VALVES"},
-        {22, "SHUTDOWN_ENGINE_BLOCK_B"}};
-    const QHash<int, int> offsets = {{3,-3},{5,-1},{7,0},{16,2},{20,-3},{21,-1},{22,2}};
-    for (int i = 1; i <= 22; ++i)
+        {24, "SHUTDOWN_ENGINE_BLOCK_B"}};
+    const QHash<int, int> offsets = {{3,-3},{5,-1},{7,0},{16,2},{20,-3},{21,-1},{24,2}};
+    for (int i = 1; i <= 24; ++i)
         bytes += keys.value(i, "OTHER_" + QByteArray::number(i)) + " = " +
                  QByteArray::number(offsets.value(i, i * 10)) + '\n';
     return bytes;
@@ -77,6 +77,7 @@ private slots:
     void cyclogramAndMapping();
     void twoExternalStreams();
     void builtInBenchProfile();
+    void currentOwnerCyclogramMapping();
     void legacyDecoder();
     void legacyIndependentCounters();
     void legacyStreamHealth();
@@ -102,10 +103,37 @@ void IntegrationTest::builtInBenchProfile() {
     QVERIFY(unassigned.actions.isEmpty());
     QVERIFY(unassigned.kp.index < 0);
     for (auto &action : plan.actions)
-        if (action.ordinal == 22) action.key = "FAIRING_SEPARATION";
+        if (action.ordinal == 24) action.key = "FAIRING_SEPARATION";
     const auto mismatch = StandProtocol::benchMapping(4, 9, 4, plan);
     QVERIFY(!mismatch.actions.contains("FAIRING_SEPARATION"));
     QVERIFY(!mismatch.warnings.isEmpty());
+}
+
+void IntegrationTest::currentOwnerCyclogramMapping() {
+    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/bench_20261014.ini"));
+    QVERIFY(file.open(QIODevice::ReadOnly));CyclogramPlan plan;QString error;
+    QVERIFY2(StandProtocol::parseCyclogram(file.readAll(),&plan,&error),qPrintable(error));
+    const QHash<int,QPair<QString,int>> expected={
+      {3,{"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12",-8000}},
+      {5,{"FIRE_STARTING_CHAMBER_ENGINES_9_TO_12",-7950}},
+      {16,{"CLOSE_MAIN_VALVES_ENGINES_9_TO_12",158000}},
+      {20,{"IGNITE_PYRO_CANDLE",159800}},
+      {21,{"OPEN_OXIDIZER_AND_FUEL_VALVES",160000}},
+      {24,{"SHUTDOWN_ENGINE_BLOCK_B",445000}}};
+    for(auto it=expected.cbegin();it!=expected.cend();++it){
+      auto action=std::find_if(plan.actions.cbegin(),plan.actions.cend(),[&](const auto &a){return a.ordinal==it.key();});
+      QVERIFY(action!=plan.actions.cend());QCOMPARE(action->key,it.value().first);QCOMPARE(action->offsetMs,it.value().second);
+    }
+    const auto newMapping=StandProtocol::benchMapping(9,0,9,plan);
+    QVERIFY(newMapping.warnings.isEmpty());QCOMPARE(newMapping.kp.index,71);
+    QCOMPARE(newMapping.actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12").inputs.first().index,64);
+    QVERIFY(!newMapping.actions.contains("IGNITE_PYRO_CANDLE"));
+    IntegrationSession::Options oldOptions;oldOptions.boardTransport=IntegrationSession::BoardTransport::LegacySerial;oldOptions.legacySecondStage=true;oldOptions.legacyHasKp=false;
+    IntegrationSession old(oldOptions);old.m_plan=plan;old.updateBenchMapping();
+    QVERIFY(old.mapping().warnings.isEmpty());QVERIFY(old.mapping().kp.index<0);
+    QCOMPARE(old.mapping().actions.value("SHUTDOWN_ENGINE_BLOCK_B").inputs.first().index,5);
+    QVERIFY(!old.mapping().actions.contains("FAIRING_SEPARATION"));
+    QVERIFY(!old.mapping().actions.contains("SHUTDOWN_ENGINE_BLOCK_B_AGAIN"));
 }
 
 void IntegrationTest::legacyDecoder() {

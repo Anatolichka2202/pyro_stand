@@ -88,7 +88,9 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
                                        const CyclogramPlan &plan) {
     StandMapping result;
     result.version = QStringLiteral("БКД-А-1/Б · А:ЯПС%1 · Б:ЯПС%2 · КП:ЯПС%3/8")
-        .arg(firstStageYps).arg(secondStageYps).arg(kpYps);
+        .arg(firstStageYps > 0 ? QString::number(firstStageYps - 1) : QStringLiteral("—"))
+        .arg(secondStageYps > 0 ? QString::number(secondStageYps - 1) : QStringLiteral("—"))
+        .arg(kpYps > 0 ? QString::number(kpYps - 1) : QStringLiteral("—"));
     auto add = [&](const QString &key, int yps, std::initializer_list<int> channels) {
         if (yps < 1 || yps > 12) return;
         ActionMapping action;
@@ -106,7 +108,7 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
         case 16: expected = QStringLiteral("CLOSE_MAIN_VALVES_ENGINES_9_TO_12"); targetYps = firstStageYps; break;
         case 20: expected = QStringLiteral("IGNITE_PYRO_CANDLE"); targetYps = secondStageYps; break;
         case 21: expected = QStringLiteral("OPEN_OXIDIZER_AND_FUEL_VALVES"); targetYps = secondStageYps; break;
-        case 22: expected = QStringLiteral("SHUTDOWN_ENGINE_BLOCK_B"); targetYps = secondStageYps; break;
+        case 24: expected = QStringLiteral("SHUTDOWN_ENGINE_BLOCK_B"); targetYps = secondStageYps; break;
         default: break;
         }
         if (targetYps > 0 && action.key != expected) {
@@ -120,7 +122,7 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
         case 16: add(action.key, firstStageYps, {6, 7}); break;
         case 20: add(action.key, secondStageYps, {1, 2}); break;
         case 21: add(action.key, secondStageYps, {3, 4, 5}); break;
-        case 22: add(action.key, secondStageYps, {6, 7}); break;
+        case 24: add(action.key, secondStageYps, {6, 7}); break;
         default: break;
         }
     }
@@ -129,7 +131,7 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
         add(QStringLiteral("LIFT_OFF_CONTACT"), kpYps, {8});
     }
     if (!plan.actions.isEmpty()) {
-        for (int ordinal : {3, 5, 16, 20, 21, 22}) {
+        for (int ordinal : {3, 5, 16, 20, 21, 24}) {
             const bool selected = ordinal < 20 ? firstStageYps > 0 : secondStageYps > 0;
             if (selected && std::none_of(plan.actions.cbegin(), plan.actions.cend(),
                 [ordinal](const auto &action) { return action.ordinal == ordinal; }))
@@ -459,6 +461,12 @@ void IntegrationSession::updateBenchMapping() {
         m_mapping.version = dual ? QStringLiteral("Старый · COM А-1 + COM Б · КП8 в каждом потоке")
             : (m_options.legacySecondStage ? QStringLiteral("Старый · БКД-Б · КП8")
                                           : QStringLiteral("Старый · БКД-А-1 · КП8"));
+        if (!m_options.legacyHasKp) {
+            m_mapping.kp = {};
+            m_mapping.actions.remove(QStringLiteral("LIFT_OFF_CONTACT"));
+            m_mapping.version.replace(QStringLiteral(" · КП8"), QString());
+            m_mapping.version += QStringLiteral(" · КП только на БКД-А другой платы");
+        }
     } else {
         m_mapping = StandProtocol::benchMapping(m_options.firstStageYps,
             m_options.secondStageYps, m_options.kpYps, m_plan);
@@ -866,7 +874,7 @@ bool IntegrationSession::resetBoard() {
 }
 
 bool IntegrationSession::legacyStreamKpObserved(int stream) const {
-    if (m_options.boardTransport != BoardTransport::LegacySerial ||
+    if (m_options.boardTransport != BoardTransport::LegacySerial || !m_options.legacyHasKp ||
         stream < 0 || stream > 1 || !m_legacyArmed[size_t(stream)] || !m_hasBoardFrame)
         return false;
     if (stream == 1 && m_options.secondLegacySerialPort.isEmpty()) return false;
@@ -932,6 +940,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
          (dualLegacy && m_legacy[1].sampleCount() * 1000 >= (quint64(1) << 31))))
         return blocked(State::AmbiguousInterval, QStringLiteral("Слишком длинный сбор старого пиротестера для этой шкалы счётчика"));
 
+    if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
+        return blocked(State::WaitingForClockAlignment, QStringLiteral("КП только на БКД-А; счётчик БКД-Б не привязан к общей опоре"));
     const ActionMapping mapped = m_mapping.actions.value(action.key);
     for (const auto &input : mapped.inputs) {
         if (!(dualLegacy && input.index >= 8 ? secondKp : kp))
@@ -1051,6 +1061,12 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("first_stage_yps"), m_options.firstStageYps);
     report.insert(QStringLiteral("second_stage_yps"), m_options.secondStageYps);
     report.insert(QStringLiteral("kp_yps"), m_options.kpYps);
+    report.insert(QStringLiteral("legacy_has_kp_input"), m_options.legacyHasKp);
+    if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
+        report.insert(QStringLiteral("time_reference_limit"), QStringLiteral("Physical KP belongs to BKD-A on another tester; no verified alignment of this byte counter to that KP. Relative measurements remain unavailable."));
+    report.insert(QStringLiteral("first_stage_yps_index"), m_options.firstStageYps > 0 ? QJsonValue(m_options.firstStageYps - 1) : QJsonValue());
+    report.insert(QStringLiteral("second_stage_yps_index"), m_options.secondStageYps > 0 ? QJsonValue(m_options.secondStageYps - 1) : QJsonValue());
+    report.insert(QStringLiteral("kp_yps_index"), m_options.kpYps > 0 ? QJsonValue(m_options.kpYps - 1) : QJsonValue());
     report.insert(QStringLiteral("legacy_block"), m_options.legacySecondStage ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"));
     report.insert(QStringLiteral("kp_time_us"), kpTimeUs() ? QJsonValue(double(*kpTimeUs())) : QJsonValue());
     report.insert(QStringLiteral("accepted_frames"), QString::number(m_acceptedFrames));

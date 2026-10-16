@@ -27,6 +27,7 @@ private slots:
     void fullPlanKeepsTableUsableAndHardwareClockStable();
     void kpClusterDoesNotHideFailure();
     void combinedKeepsCountersSeparate();
+    void commonKpOnlyOnNewBoard();
 };
 
 void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
@@ -132,8 +133,8 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
         {5, "FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"},
         {7, "LIFT_OFF_CONTACT"}, {16, "CLOSE_MAIN_VALVES_ENGINES_9_TO_12"},
         {20, "IGNITE_PYRO_CANDLE"}, {21, "OPEN_OXIDIZER_AND_FUEL_VALVES"},
-        {22, "SHUTDOWN_ENGINE_BLOCK_B"}};
-    for (int i = 1; i <= 22; ++i)
+        {24, "SHUTDOWN_ENGINE_BLOCK_B"}};
+    for (int i = 1; i <= 24; ++i)
         file += keys.value(i, "OTHER_" + QByteArray::number(i)) + " = " + QByteArray::number(i) + '\n';
     QJsonObject event{{"contract", "kasu.pp.debug.stand.v1"}, {"type", "CYCLOGRAM_AVAILABLE"},
         {"seq", "1"}, {"run_id", "run"}, {"stream_id", "stream"}, {"upload_id", "upload"},
@@ -194,7 +195,7 @@ void OperatorGuiTest::kpClusterDoesNotHideFailure() {
 }
 
 void OperatorGuiTest::combinedKeepsCountersSeparate(){
-    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;options.firstStageYps=1;options.kpYps=1;options.comparisonLegacyPort="NONEXISTENT_TEST_COMPARE";
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;options.firstStageYps=1;options.kpYps=1;options.comparisonLegacyPort="NONEXISTENT_TEST_COMPARE";options.comparisonLegacySecondStage=false;options.comparisonLegacyHasKp=true;
     IntegrationWindow window(options);QVERIFY(window.m_peer);window.resize(1600,900);window.show();
     const QByteArray file="START_UTC_DATE = 2026-10-14\nSTART_UTC_TIME = 12:00:00\nOTHER1=0\nOTHER2=1\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-20\n";
     for(auto *session:{&window.m_session,window.m_peer.get()}){
@@ -212,6 +213,44 @@ void OperatorGuiTest::combinedKeepsCountersSeparate(){
     QCOMPARE(&window.clockSession(), window.m_peer.get());
     QVERIFY(!window.m_timeline->isHidden());
     window.grab().save(QCoreApplication::applicationDirPath()+"/operator-combined.png");
+}
+
+void OperatorGuiTest::commonKpOnlyOnNewBoard() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();options.telemetryPort=0;
+    options.firstStageYps=9;options.kpYps=9;
+    options.comparisonLegacyPort="NONEXISTENT_B";
+    options.comparisonLegacySecondStage=true;
+    options.comparisonLegacyHasKp=false;
+    IntegrationWindow window(options);window.show();
+    QByteArray file="START_UTC_DATE = 2026-10-14\nSTART_UTC_TIME = 12:00:00\n";
+    const QHash<int,QByteArray> keys={{3,"IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"},{5,"FIRE_STARTING_CHAMBER_ENGINES_9_TO_12"},{16,"CLOSE_MAIN_VALVES_ENGINES_9_TO_12"},{20,"IGNITE_PYRO_CANDLE"},{21,"OPEN_OXIDIZER_AND_FUEL_VALVES"},{24,"SHUTDOWN_ENGINE_BLOCK_B"}};
+    for(int i=1;i<=24;++i)file+=keys.value(i,"OTHER_"+QByteArray::number(i))+"="+QByteArray::number(i*10)+'\n';
+    for(auto *session:{&window.m_session,window.m_peer.get()}) {
+        QString error;QVERIFY(StandProtocol::parseCyclogram(file,&session->m_plan,&error));
+        session->m_hasPlan=true;session->m_uploadState="CONFIRMED";session->m_executionObserved=true;
+        session->m_boardArmed=true;session->m_hasBoardFrame=true;session->updateBenchMapping();
+    }
+    window.m_session.m_boardFrame.channels[71]={true,false,500000,0};
+    QCOMPARE(window.m_session.mapping().kp.index,71);
+    QCOMPARE(window.m_session.mapping().actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12").inputs.first().index,64);
+    auto &old=*window.m_peer;old.m_legacyArmed[0]=true;
+    old.m_boardFrame.channels[0]={true,false,1000000,0};old.m_boardFrame.channels[1]={true,false,1001000,0};
+    // An incidental bit 8 in B must never be mistaken for the physical KP on A.
+    old.m_boardFrame.channels[7]={true,false,999000,0};
+    QVERIFY(!old.kpTimeUs());QVERIFY(!old.legacyStreamKpObserved(0));
+    const auto action=std::find_if(old.plan().actions.cbegin(),old.plan().actions.cend(),[](const auto &a){return a.ordinal==20;});
+    QVERIFY(action!=old.plan().actions.cend());
+    QCOMPARE(old.measureAction(*action).state,ActionMeasurement::State::WaitingForClockAlignment);
+    window.refresh();QCOMPARE(window.m_canvas->channelCount(),15);
+    int kpRows=0;for(const auto &g:window.m_canvas->events()) {
+        if(g.id==QStringLiteral("КП"))++kpRows;
+        if(g.source.contains("NONEXISTENT_B"))for(const auto &row:g.channels) {
+            QVERIFY(row.status!=QStringLiteral("в допуске"));
+            if(row.input=="1"&&g.id=="20")QVERIFY(row.actual.startsWith(QStringLiteral("≈")));
+        }
+    }
+    QCOMPARE(kpRows,1);QTRY_VERIFY(window.m_canvas->fits());
 }
 
 QTEST_MAIN(OperatorGuiTest)

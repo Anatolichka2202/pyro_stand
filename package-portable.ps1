@@ -2,6 +2,7 @@
     [string]$DestinationRoot = (Join-Path $PSScriptRoot 'build\portable'),
     [string]$KasuBuildDir = 'C:\qt_repos_2\KASU_PP\build\agent-debug',
     [switch]$SkipTester,
+    [string]$CyclogramFile,
     [string]$TesterExe = 'C:\Users\МилТех\Desktop\пиротестер\piro_tester\desctop_app\dist\ТестерЯПС.exe'
 )
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,7 @@ $testerRoot = 'C:\Users\МилТех\Desktop\пиротестер\piro_tester'
 $packageName = 'Stand-Windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
 $package = [IO.Path]::GetFullPath((Join-Path $DestinationRoot $packageName))
 if (Test-Path -LiteralPath $package) { throw "Output exists: $package" }
+if ($CyclogramFile -and -not (Test-Path -LiteralPath $CyclogramFile -PathType Leaf)) { throw "Missing cyclogram: $CyclogramFile" }
 New-Item -ItemType Directory -Force -Path $package | Out-Null
 
 function CacheValue([string]$build, [string]$name) {
@@ -89,6 +91,21 @@ setlocal
 call "%~dp0START_KASU.cmd"
 call "%~dp0START_PYROSTAND.cmd" %*
 '@ | Set-Content -LiteralPath (Join-Path $package 'START_STAND.cmd') -Encoding ascii
+@'
+@echo off
+setlocal
+call "%~dp0START_PYROSTAND.cmd" --tester udp --first-stage-yps-index 8 --second-stage-yps 0 --kp-yps-index 8 --compare-legacy-serial COM9 --compare-legacy-block B --compare-legacy-no-kp %*
+'@ | Set-Content -LiteralPath (Join-Path $package 'START_CONFIGURED_PYROSTAND.cmd') -Encoding ascii
+@'
+@echo off
+setlocal
+call "%~dp0START_KASU.cmd"
+call "%~dp0START_CONFIGURED_PYROSTAND.cmd" %*
+'@ | Set-Content -LiteralPath (Join-Path $package 'START_CONFIGURED_STAND.cmd') -Encoding ascii
+if ($CyclogramFile) {
+    Copy-Item -LiteralPath $CyclogramFile -Destination (Join-Path $package 'cyclogram.txt')
+    if ((Get-FileHash -LiteralPath $CyclogramFile).Hash -ne (Get-FileHash -LiteralPath (Join-Path $package 'cyclogram.txt')).Hash) { throw 'Cyclogram copy differs from supplied source' }
+}
 if (-not $SkipTester) {
 @'
 @echo off
@@ -187,7 +204,7 @@ Debug-сокет, проверяет его и состояния загрузк
 результаты Python — в PyroTester/tests_results.
 
 ОГРАНИЧЕНИЯ
-Встроено распределение владельца: А-1 пункты 3/5/16, Б пункты 20/21/22,
+Встроено распределение владельца: А-1 пункты 3/5/16, Б пункты 20/21/24,
 группы каналов 1,2 / 3,4,5 / 6,7. Назначение действий также проверяется.
 Старый пример cyclogram_full.ini содержит FAIRING_SEPARATION в пункте 22.
 Этот пример не поставляется как задание для прогона.
@@ -212,12 +229,16 @@ if ($SkipTester) {
 Распаковать весь ZIP. Qt отдельно не нужен. Приложение Егора и прошивки не включены.
 START_STAND.cmd — оба приложения; START_KASU.cmd и START_PYROSTAND.cmd — отдельно.
 Запускать одну копию КАСУ ПП и один приёмник на каждом выбранном COM/UDP.
-Для нового Ethernet + старого COM9:
-START_PYROSTAND.cmd --tester udp --compare-legacy-serial COM9 --compare-legacy-block A1
-ЯПС новой платы задавать по проводке; 0 в параметрах означает «не назначен».
-Текущая проводка: COM9 → ЯПС 0 / БКД-А 0; КП — канал 8 БКД-А.
-Новая плата пока без подключённых входов. Профиль А-1 — сопоставление пунктов
-3/5/16; его название не задаёт аппаратный адрес БКД.
+START_CONFIGURED_STAND.cmd — текущая схема, оба приложения.
+START_CONFIGURED_PYROSTAND.cmd — текущая схема, если КАСУ уже запущена.
+Новая Ethernet-плата: ЯПС 8 (индекс 0..11), БКД-А, пункты 3/5/16; КП — вход 8.
+Старая COM9: БКД-Б, пункты 20/21/24, входы 1..7, физического КП нет.
+БКД-Б на новой плате не назначен. Счётчик старой платы не вычитается из тика КП новой.
+Без подтверждённой общей временной привязки Б показывается расчётно, без допуска.
+В «Подключении» ту же настройку задаёт кнопка «Схема стенда», затем OK.
+cyclogram.txt — исходный файл владельца без изменения UTC или команд.
+Загрузить его нужно через КАСУ; наличие файла в ZIP не означает загрузку на борт.
+Настройки подключения сохраняются рядом с exe в portable-режиме.
 Плавные часы — индикация ПК; ≈ — прогноз, не подтверждение допуска.
 Для прогона нужны загрузка, разрешение, новый сбор и физический КП.
 Подробности — docs/PYROSTAND.md; результаты проверок — verification/.

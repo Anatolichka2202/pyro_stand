@@ -32,6 +32,12 @@ int main(int argc, char *argv[])
     parser.addOption({"board-serial", "COM-порт платы вместо UDP", "port"});
     parser.addOption({"tester", "Тип пиротестера: udp, rs485, legacy", "type"});
     parser.addOption({"compare-legacy-serial", "Старый COM одновременно с новой платой; независимая опора КП", "port"});
+    parser.addOption({"compare-legacy-no-kp", "КП только на новой плате, в старом потоке отсутствует"});
+    parser.addOption({"compare-legacy-has-kp", "КП подключён к старой плате в совместном режиме"});
+    parser.addOption({"legacy-no-kp", "КП отсутствует в старом потоке; относительные измерения не подтверждаются"});
+    parser.addOption({"first-stage-yps-index", "Физический индекс ЯПС БКД-А новой платы (0..11)", "index"});
+    parser.addOption({"second-stage-yps-index", "Физический индекс ЯПС БКД-Б новой платы (0..11)", "index"});
+    parser.addOption({"kp-yps-index", "Физический индекс ЯПС с КП новой платы (0..11)", "index"});
     parser.addOption({"compare-legacy-block", "БКД дополнительного старого COM: A1 или B", "block"});
     parser.addOption({"legacy-serial", "Старый пиротестер: 8-битная маска, 1 байт/мс", "port"});
     parser.addOption({"legacy-second-serial", "Второй старый пиротестер БКД-Б (первый COM — А-1)", "port"});
@@ -47,7 +53,9 @@ int main(int argc, char *argv[])
     if (savedTransport >= 0 && savedTransport <= 2)
         options.boardTransport = IntegrationSession::BoardTransport(savedTransport);
     options.comparisonLegacyPort=settings.value("tester/comparisonLegacyPort").toString();
-    options.comparisonLegacySecondStage=settings.value("tester/comparisonLegacySecondStage",false).toBool();
+    options.comparisonLegacySecondStage=settings.value("tester/comparisonLegacySecondStage",true).toBool();
+    options.comparisonLegacyHasKp=settings.value("tester/comparisonLegacyHasKp",false).toBool();
+    options.legacyHasKp=settings.value("tester/legacyHasKp",true).toBool();
     options.serialPort = settings.value(QStringLiteral("tester/serial")).toString();
     options.secondLegacySerialPort = settings.value(QStringLiteral("tester/secondSerial")).toString();
     options.firstStageYps = settings.value(QStringLiteral("tester/firstYps"), 0).toInt();
@@ -105,6 +113,14 @@ int main(int argc, char *argv[])
     }
     if (options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) parser.showHelp(2);
 
+    for (auto pair : {std::pair{"first-stage-yps-index", &options.firstStageYps}, std::pair{"second-stage-yps-index", &options.secondStageYps}, std::pair{"kp-yps-index", &options.kpYps}}) {
+        if (parser.isSet(pair.first)) {bool ok=false;const int index=parser.value(pair.first).toInt(&ok);if(!ok||index<0||index>11)parser.showHelp(2);*pair.second=index+1;}
+    }
+    if(options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps)parser.showHelp(2);
+    if(parser.isSet("compare-legacy-has-kp") && parser.isSet("compare-legacy-no-kp"))parser.showHelp(2);
+    if(parser.isSet("compare-legacy-has-kp"))options.comparisonLegacyHasKp=true;
+    if(parser.isSet("compare-legacy-no-kp"))options.comparisonLegacyHasKp=false;
+    if(parser.isSet("legacy-no-kp"))options.legacyHasKp=false;
     if(parser.isSet("compare-legacy-serial"))options.comparisonLegacyPort=parser.value("compare-legacy-serial");
     if(parser.isSet("compare-legacy-block")){const auto block=parser.value("compare-legacy-block").toUpper();if(block!="A1"&&block!="B")parser.showHelp(2);options.comparisonLegacySecondStage=block=="B";}
     if(options.boardTransport==IntegrationSession::BoardTransport::LegacySerial)options.comparisonLegacyPort.clear();

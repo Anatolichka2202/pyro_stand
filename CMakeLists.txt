@@ -59,6 +59,7 @@ add_stand_test(tst_reading   tests/tst_reading.cpp)
 
 add_executable(tst_integration tests/tst_integration.cpp integration.cpp integration.h)
 target_include_directories(tst_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tst_integration PRIVATE STAND_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 target_link_libraries(tst_integration Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort)
 add_test(NAME tst_integration COMMAND tst_integration)
 

@@ -81,7 +81,7 @@ struct ActionMeasurement {
     enum class State {
         Unmapped, UploadUnconfirmed, ExecutionUnconfirmed, PrematureActivity,
         BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
-        WaitingForInputs, Partial, Measured
+        WaitingForClockAlignment, WaitingForInputs, Partial, Measured
     };
     State state = State::Unmapped;
     QString reason;
@@ -107,7 +107,9 @@ public:
         BoardTransport boardTransport = BoardTransport::Udp;
         QString serialPort;
         QString comparisonLegacyPort; // independent legacy observer alongside a new tester
-        bool comparisonLegacySecondStage = false;
+        bool comparisonLegacySecondStage = true;
+        bool comparisonLegacyHasKp = false;
+        bool legacyHasKp = true;
         QString secondLegacySerialPort; // optional simultaneous БКД-Б; own channel-8 KP
         QHostAddress boardIp = QHostAddress(QStringLiteral("192.168.17.144"));
         QHostAddress bindIp = QHostAddress::AnyIPv4;

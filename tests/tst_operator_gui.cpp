@@ -16,6 +16,7 @@
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialogButtonBox>
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
@@ -29,6 +30,8 @@ private slots:
     void fullWorkingPlanVisible();
     void nonzeroPlannedKpUsesOneScale();
     void historicalPresetClearsExternalProfiles();
+    void invalidIpShowsSpecificError_data();
+    void invalidIpShowsSpecificError();
     void showsMappedEventsNotRawTesterChannels();
     void showsDualLegacyComStatuses();
     void fullPlanKeepsTableUsableAndHardwareClockStable();
@@ -38,6 +41,39 @@ private slots:
 };
 
 
+
+void OperatorGuiTest::invalidIpShowsSpecificError_data() {
+    QTest::addColumn<QString>("invalidIp");
+    QTest::newRow("trailing-comma") << QStringLiteral("192.168.17.144,");
+    QTest::newRow("abbreviated-address") << QStringLiteral("17.144");
+}
+
+void OperatorGuiTest::invalidIpShowsSpecificError() {
+    QFETCH(QString, invalidIp);
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool correctError=false;
+    QTimer::singleShot(0,&window,[&] {
+        auto *dialog=window.findChild<QDialog*>("testerConfigurationDialog");
+        if(!dialog) return;
+        auto *ip=dialog->findChild<QLineEdit*>("testerBoardIp");
+        auto *buttons=dialog->findChild<QDialogButtonBox*>();
+        if(ip && buttons) {
+            ip->setText(invalidIp);
+            buttons->button(QDialogButtonBox::Ok)->click();
+            auto *error=dialog->findChild<QLabel*>("testerConfigurationError");
+            correctError=dialog->isVisible() && error && error->isVisible() &&
+                error->text().contains(invalidIp) && error->text().contains(QStringLiteral("Некорректный IP")) &&
+                !error->text().contains(QStringLiteral("разные группы ЯПС"));
+            dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-invalid-ip.png");
+        }
+        // Force rejection even if validation regresses: never apply ports or change user settings.
+        dialog->reject();
+    });
+    window.configureTester();QVERIFY(correctError);
+    QCOMPARE(window.m_session.options().boardIp,QHostAddress(QHostAddress::LocalHost));
+}
 
 void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;

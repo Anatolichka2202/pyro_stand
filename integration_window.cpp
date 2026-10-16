@@ -188,7 +188,12 @@ void IntegrationWindow::setupUi() {
                   "QLabel{color:#a6b3be;font-family:'Segoe UI';font-size:12px;} "
                   "QPushButton{background:#19222b;color:#e8edf1;border:1px solid "
                   "#35434f;padding:5px 9px;} QPushButton:focus{border:1px solid #81b6d0;} "
-                  "QDialog,QTextEdit{background:#10161c;color:#e8edf1;}");
+                  "QDialog,QTextEdit{background:#10161c;color:#e8edf1;} "
+                  "QLineEdit,QComboBox{background:#19222b;color:#e8edf1;border:1px solid #35434f;padding:4px;} "
+                  "QLineEdit:focus,QComboBox:focus{border:1px solid #81b6d0;} "
+                  "QLineEdit:disabled,QComboBox:disabled{background:#10161c;color:#8b949e;} "
+                  "QComboBox QAbstractItemView{background:#19222b;color:#e8edf1;selection-background-color:#35434f;} "
+                  "QCheckBox{color:#a6b3be;}");
     auto *surface = new QWidget(this);
     surface->setObjectName("operatorSurface");
     setCentralWidget(surface);
@@ -876,17 +881,33 @@ void IntegrationWindow::configureTester() {
         connect(field, &QLineEdit::textChanged, &dialog, update);
     connect(preset, &QPushButton::clicked, &dialog, update);
     update();
+    auto *validationError = new QLabel(&dialog);
+    validationError->setObjectName(QStringLiteral("testerConfigurationError"));
+    validationError->setWordWrap(true);
+    validationError->setStyleSheet(QStringLiteral("color:#f85149;"));
+    validationError->hide();
+    root->addWidget(validationError);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Применить"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
     root->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        validationError->hide();
+        const auto showError = [&](const QString &message, QWidget *field) {
+            validationError->setText(message);
+            validationError->show();
+            details->setChecked(true);
+            field->setFocus();
+            if (auto *line = qobject_cast<QLineEdit *>(field)) line->selectAll();
+            dialog.adjustSize();
+        };
         for (const auto *field : {profile, comparisonProfile}) {
             if (field->text().trimmed().isEmpty()) continue;
             QFile file(field->text().trimmed()); StandMapping parsed; QString error;
             if (!file.open(QIODevice::ReadOnly) || !StandProtocol::parseMapping(file.readAll(), &parsed, &error)) {
-                QMessageBox::warning(&dialog, QStringLiteral("Профиль сигналов"), error.isEmpty() ? file.errorString() : error);
+                showError(QStringLiteral("Профиль сигналов: %1").arg(error.isEmpty() ? file.errorString() : error),
+                          field == profile ? profile : comparisonProfile);
                 return;
             }
         }
@@ -904,13 +925,29 @@ void IntegrationWindow::configureTester() {
         options.kpYps = kp->currentData().toInt();
         options.legacySecondStage = block->currentData().toBool();
         const bool legacy = options.boardTransport == IntegrationSession::BoardTransport::LegacySerial;
-        if ((!options.comparisonLegacyPort.isEmpty() && options.boardTransport==IntegrationSession::BoardTransport::Serial && options.comparisonLegacyPort.compare(options.serialPort,Qt::CaseInsensitive)==0) ||
-            (options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) ||
-            (!legacy && !options.boardIp.setAddress(address->text().trimmed())) ||
-            (!legacy && options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) ||
-            (legacy && !options.secondLegacySerialPort.isEmpty() && options.serialPort.compare(options.secondLegacySerialPort, Qt::CaseInsensitive) == 0)) {
-            QMessageBox::warning(&dialog, QStringLiteral("Подключение"),
-                QStringLiteral("Укажите COM/IP. Два БКД должны иметь разные группы ЯПС."));
+        if (!legacy && (!options.boardIp.setAddress(address->text().trimmed()) ||
+                        options.boardIp.protocol() != QAbstractSocket::IPv4Protocol ||
+                        address->text().trimmed().split(u'.').size() != 4)) {
+            showError(QStringLiteral("Некорректный IP новой платы: «%1». Введите полный IPv4 без запятых, например 192.168.17.144.")
+                          .arg(address->text()), address);
+            return;
+        }
+        if (options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) {
+            showError(QStringLiteral("Не указан COM-порт основного тестера."), port);
+            return;
+        }
+        if (!options.comparisonLegacyPort.isEmpty() && options.boardTransport == IntegrationSession::BoardTransport::Serial &&
+            options.comparisonLegacyPort.compare(options.serialPort, Qt::CaseInsensitive) == 0) {
+            showError(QStringLiteral("Один COM-порт выбран для двух разных тестеров. Укажите разные порты."), comparison);
+            return;
+        }
+        if (!legacy && options.firstStageYps != 0 && options.firstStageYps == options.secondStageYps) {
+            showError(QStringLiteral("БКД-А и БКД-Б на новой плате назначены на одну ЯПС. Выберите разные группы либо «Не назначен»."), second);
+            return;
+        }
+        if (legacy && !options.secondLegacySerialPort.isEmpty() &&
+            options.serialPort.compare(options.secondLegacySerialPort, Qt::CaseInsensitive) == 0) {
+            showError(QStringLiteral("Первый и второй старый тестер используют один COM-порт. Укажите разные порты."), secondPort);
             return;
         }
         dialog.accept();

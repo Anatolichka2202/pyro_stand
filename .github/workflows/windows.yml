@@ -27,6 +27,10 @@ jobs:
       - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Verify report archive validator
+        shell: pwsh
+        run: python -m unittest discover -s tests -p test_verify_report.py -v
+
       - name: Configure Pyro-stand
         shell: pwsh
         run: cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI_TESTS=ON

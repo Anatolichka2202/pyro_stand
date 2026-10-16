@@ -32,5 +32,8 @@ jobs:
       - name: Check simulator (Python standard library)
         run: python3 -m unittest discover -s tests -p test_virtual_tester.py -v
 
+      - name: Verify report archive validator
+        run: python3 -m unittest discover -s tests -p test_verify_report.py -v
+
       - name: Run tests
         run: ctest --test-dir build --output-on-failure -V

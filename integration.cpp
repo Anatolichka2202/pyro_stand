@@ -9,6 +9,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QTimeZone>
 #include <QStringDecoder>
 #include <QUuid>
 #include <QtEndian>

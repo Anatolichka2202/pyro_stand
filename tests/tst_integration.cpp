@@ -1253,15 +1253,15 @@ void IntegrationTest::transientKpRemainsAfterNextUdpFrame() {
     QVERIFY(session.boardFrame().channels[71].triggered);
     QCOMPARE(session.boardFrame().channels[71].riseUs, quint32(1'000'000));
     QCOMPARE(*session.kpTimeUs(), quint32(1'000'000));
-    const ActionMapping mapped = session.mapping().forAction(session.plan().actions[0]);
+    const ActionMapping mapped = session.mapping().forAction(session.plan().actions[1]);
     QCOMPARE(mapped.inputs.size(), 2);
     QCOMPARE(mapped.inputs[0].index, 64);
     QCOMPARE(mapped.inputs[1].index, 65);
     QCOMPARE(session.boardFrame().channels[64].riseUs, quint32(1'020'000));
     QCOMPARE(session.boardFrame().channels[65].riseUs, quint32(1'020'000));
-    QCOMPARE(session.measureAction(session.plan().actions[0]).state,
+    QCOMPARE(session.measureAction(session.plan().actions[1]).state,
              ActionMeasurement::State::Measured);
-    QCOMPARE(session.measureAction(session.plan().actions[0]).channels[0].actualMs.value(), 20.0);
+    QCOMPARE(session.measureAction(session.plan().actions[1]).channels[0].actualMs.value(), 20.0);
     session.processFrame(onePulse(64, 1'050'000));
     QCOMPARE(session.boardFrame().channels[64].riseUs, quint32(1'020'000));
     QCOMPARE(session.liveFrame().channels[64].riseUs, quint32(1'050'000));

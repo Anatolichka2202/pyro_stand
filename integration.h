@@ -284,6 +284,7 @@ private:
     bool m_executionObserved = false;
     bool m_fileIdentityValid = true;
     bool m_boardReceiving = false;
+    bool m_udpDrainScheduled = false;
     bool m_boardArmed = false;
     bool m_prePermissionActivity = false;
     bool m_awaitReset = false;

@@ -53,7 +53,73 @@ private slots:
     void udpAndKasuDebugToReport();
     void udpCorruptionAndLoss();
     void realQtSerialOnLinuxPty();
+    void sustainedUdpKeepsEventLoopAndArchive();
+    void queuedUdpDrainSurvivesReconfigure();
 };
+
+void VirtualIoTest::queuedUdpDrainSurvivesReconfigure() {
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost;options.bindIp=QHostAddress::LocalHost;
+    IntegrationSession stand(options);stand.start();QUdpSocket simulator;
+    QVERIFY(simulator.bind(QHostAddress::LocalHost,0));const auto raw=packet();
+    for(int i=0;i<200;++i)
+        QCOMPARE(simulator.writeDatagram(raw,QHostAddress::LocalHost,stand.m_udp.localPort()),qint64(raw.size()));
+    stand.receiveUdp();QCOMPARE(stand.acceptedFrames(),quint64(64));
+    QVERIFY(stand.m_udpDrainScheduled);
+    stand.configureBoard(options);
+    const auto accepted=stand.acceptedFrames();
+    QCoreApplication::processEvents();QCOMPARE(stand.acceptedFrames(),accepted);
+    QCOMPARE(simulator.writeDatagram(raw,QHostAddress::LocalHost,stand.m_udp.localPort()),qint64(raw.size()));
+    QTRY_COMPARE(stand.acceptedFrames(),accepted+1);
+}
+
+void VirtualIoTest::sustainedUdpKeepsEventLoopAndArchive() {
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost;options.bindIp=QHostAddress::LocalHost;
+    options.firstStageYps=1;options.kpYps=1;
+    IntegrationSession stand(options);stand.start();
+    QString parseError;
+    QVERIFY(StandProtocol::parseCyclogram("START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=600000\n",&stand.m_plan,&parseError));
+    stand.m_hasPlan=true;stand.updateBenchMapping();
+    stand.m_uploadState="CONFIRMED";stand.m_executionObserved=true;stand.m_boardArmed=true;
+    QUdpSocket simulator;QVERIFY(simulator.bind(QHostAddress::LocalHost,0));
+    QElapsedTimer clock,lastBeat;clock.start();lastBeat.start();qint64 maxGap=0;int beats=0;
+    QTimer heartbeat;heartbeat.setInterval(5);
+    connect(&heartbeat,&QTimer::timeout,this,[&]{maxGap=std::max(maxGap,lastBeat.restart());++beats;});
+    heartbeat.start();
+    const int seconds=std::clamp(qEnvironmentVariableIntValue("PYRO_STAND_SOAK_SECONDS"),2,300);
+    const auto raw=packet(1000000,1020000);quint64 sent=0;
+    while(clock.elapsed()<seconds*1000) {
+        for(int i=0;i<20;++i) {
+            QCOMPARE(simulator.writeDatagram(raw,QHostAddress::LocalHost,stand.m_udp.localPort()),qint64(raw.size()));++sent;
+        }
+        QTest::qWait(20);
+    }
+    QTRY_COMPARE(stand.acceptedFrames(),sent);QCOMPARE(stand.rejectedFrames(),quint64(0));
+    QVERIFY(beats>seconds*20);QVERIFY2(maxGap<500,qPrintable(QString::number(maxGap)));
+    heartbeat.stop();
+    stand.finishCollection();QVERIFY(stand.collectionFinished());
+    QTemporaryDir directory;QVERIFY(directory.isValid());QString error;
+    const auto path=directory.filePath("soak.json");QVERIFY(stand.saveReport(path,&error));
+    QFile archived(path+".frames.jsonl");QVERIFY(archived.open(QIODevice::ReadOnly));
+    const auto before=QCryptographicHash::hash(archived.readAll(),QCryptographicHash::Sha256);
+    const auto size=stand.m_frameEvidence.size();const auto frozen=stand.boardFrame().channels[0].riseUs;
+    QCOMPARE(frozen,quint32(1020000));
+    QCOMPARE(stand.measureAction(stand.plan().actions[1]).state,ActionMeasurement::State::Measured);
+    const auto late=packet(2000000,2040000);
+    for(int i=0;i<100;++i) {
+        simulator.writeDatagram(late,QHostAddress::LocalHost,stand.m_udp.localPort());
+        if(i%10==0) QCoreApplication::processEvents();
+    }
+    QTRY_COMPARE(stand.acceptedFrames(),sent+100);
+    QCOMPARE(stand.boardFrame().channels[0].riseUs,frozen);
+    QCOMPARE(stand.liveFrame().channels[0].riseUs,quint32(2040000));
+    QCOMPARE(stand.m_frameEvidence.size(),size);
+    archived.seek(0);QCOMPARE(QCryptographicHash::hash(archived.readAll(),QCryptographicHash::Sha256),before);
+    qInfo("SOAK seconds=%d packets=%llu heartbeat=%d max_gap_ms=%lld evidence_bytes=%lld",
+          seconds,static_cast<unsigned long long>(sent),beats,static_cast<long long>(maxGap),static_cast<long long>(size));
+}
 
 void VirtualIoTest::udpAndKasuDebugToReport() {
     const QString socketName = "virtual-pyro-" +

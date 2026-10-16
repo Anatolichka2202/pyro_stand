@@ -131,6 +131,14 @@ int main(int argc, char *argv[])
     if(parser.isSet("compare-legacy-block")){const auto block=parser.value("compare-legacy-block").toUpper();if(block!="A1"&&block!="B")parser.showHelp(2);options.comparisonLegacySecondStage=block=="B";}
     if(options.boardTransport==IntegrationSession::BoardTransport::LegacySerial)options.comparisonLegacyPort.clear();
     if(options.boardTransport==IntegrationSession::BoardTransport::Serial&&!options.comparisonLegacyPort.isEmpty()&&options.comparisonLegacyPort.compare(options.serialPort,Qt::CaseInsensitive)==0)parser.showHelp(2);
+    // Smoke-проверка никогда не наследует реальные порты из настроек оператора.
+    if(qEnvironmentVariableIsSet("PYRO_STAND_SMOKE_TEST")) {
+        options.boardTransport=IntegrationSession::BoardTransport::Udp;
+        options.boardIp=QHostAddress::LocalHost;options.bindIp=QHostAddress::LocalHost;
+        options.telemetryPort=0;options.debugSocket.clear();
+        options.serialPort.clear();options.secondLegacySerialPort.clear();options.comparisonLegacyPort.clear();
+        options.wiringProfilePath.clear();options.comparisonWiringProfilePath.clear();
+    }
     // Глобальные стили (QSS) – тёмная тема, шрифты, цвета из макета
     a.setStyleSheet(R"(
         QMainWindow, QWidget#operatorSurface {

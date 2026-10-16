@@ -571,6 +571,8 @@ void IntegrationSession::start() {
         if (!m_udp.bind(m_options.bindIp, m_options.telemetryPort,
                         QUdpSocket::DontShareAddress))
             setError(QStringLiteral("UDP %1: %2").arg(m_options.telemetryPort).arg(m_udp.errorString()));
+        else
+            m_udp.setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption,1024*1024);
     } else {
         m_serial.setPortName(m_options.serialPort);
         m_serial.setBaudRate(115200);
@@ -935,7 +937,9 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
 }
 
 void IntegrationSession::receiveUdp() {
-    while (m_udp.hasPendingDatagrams()) {
+    // Ограничиваем работу одного вызова, чтобы поток UDP не вытеснял GUI и таймеры.
+    int batch=0;
+    while (m_udp.hasPendingDatagrams() && batch++<64) {
         QByteArray raw;
         raw.resize(int(m_udp.pendingDatagramSize()));
         QHostAddress sender;
@@ -950,6 +954,10 @@ void IntegrationSession::receiveUdp() {
             continue;
         }
         processFrame(raw);
+    }
+    if(m_udp.hasPendingDatagrams() && !m_udpDrainScheduled) {
+        m_udpDrainScheduled=true;
+        QTimer::singleShot(0,this,[this]{m_udpDrainScheduled=false;receiveUdp();});
     }
 }
 

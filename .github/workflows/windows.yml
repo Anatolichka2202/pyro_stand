@@ -1,0 +1,66 @@
+name: Windows and KASUPP integration
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    name: Windows / Qt 6.8 / MSVC / KASUPP
+    steps:
+      - name: Checkout Pyro-stand
+        uses: actions/checkout@v4
+
+      - name: Checkout KASUPP sources (contract only)
+        uses: actions/checkout@v4
+        with:
+          repository: Anatolichka2202/KASU_KP
+          ref: master
+          path: kasu
+
+      - name: Set up Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtserialport
+          cache: true
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure Pyro-stand
+        shell: pwsh
+        run: cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI_TESTS=ON
+
+      - name: Build Pyro-stand and all test targets
+        shell: pwsh
+        run: cmake --build build-win --parallel 2
+
+      - name: Pyro-stand C++ tests (offscreen)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build-win -C Debug --output-on-failure -V
+
+      - name: Python virtual tester checks
+        shell: pwsh
+        run: python -m unittest discover -s tests -p test_virtual_tester.py -v
+
+      - name: Configure real KASUPP publisher contract
+        shell: pwsh
+        run: |
+          cmake -S tests/kasu_contract -B build-kasu-contract -G Ninja -DCMAKE_BUILD_TYPE=Debug "-DKASU_SOURCE=$env:GITHUB_WORKSPACE/kasu"
+
+      - name: Build real publisher + stand consumer
+        shell: pwsh
+        run: cmake --build build-kasu-contract --parallel 2
+
+      - name: Run real KASUPP publisher contract
+        shell: pwsh
+        run: ctest --test-dir build-kasu-contract -C Debug --output-on-failure -V

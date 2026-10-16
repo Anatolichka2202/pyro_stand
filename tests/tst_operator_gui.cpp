@@ -42,6 +42,7 @@ private slots:
 void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
     options.wiringProfilePath="NONEXISTENT_PROFILE_A";options.comparisonWiringProfilePath="NONEXISTENT_PROFILE_B";
+    options.boardIp=QHostAddress(QStringLiteral("17.0.0.144")); // reproduces the saved-address error
     IntegrationWindow window(options);
     bool cleared=false, collapsed=false, correctScheme=false;
     QTimer::singleShot(0,&window,[&] {
@@ -57,7 +58,9 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
             const auto *summary=dialog->findChild<QLabel*>("testerConfigurationSummary");
             const auto *transport=dialog->findChild<QComboBox*>("testerTransportChoice");
             const auto *port=dialog->findChild<QComboBox*>("comparisonLegacyPortChoice");
+            const auto *ip=dialog->findChild<QLineEdit*>("testerBoardIp");
             correctScheme=summary && transport && port &&
+                ip && ip->text()=="192.168.17.144" && summary->text().contains("192.168.17.144") &&
                 transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
                 port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 8")) &&
                 summary->text().contains(QStringLiteral("БКД-Б · одна ЯПС · без КП"));

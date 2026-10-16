@@ -797,6 +797,7 @@ void IntegrationWindow::configureTester() {
     auto *legacyKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старого COM"), &dialog);
     legacyKp->setChecked(options.legacyHasKp);
     auto *address = new QLineEdit(options.boardIp.toString(), &dialog);
+    address->setObjectName(QStringLiteral("testerBoardIp"));
     auto *first = new QComboBox(&dialog);
     auto *second = new QComboBox(&dialog);
     auto *kp = new QComboBox(&dialog);
@@ -823,6 +824,7 @@ void IntegrationWindow::configureTester() {
     layout->addRow(legacyKp);
     connect(preset, &QPushButton::clicked, &dialog, [=] {
         profile->clear(); comparisonProfile->clear();
+        address->setText(QStringLiteral("192.168.17.144"));
         transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
         first->setCurrentIndex(first->findData(9)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(9));
         comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
@@ -852,9 +854,9 @@ void IntegrationWindow::configureTester() {
             if (!secondPort->currentText().isEmpty())
                 text += QStringLiteral("\nВторой старый тестер: %1 → БКД-Б").arg(secondPort->currentText());
         } else {
-            text = QStringLiteral("Новая плата: %1 → БКД-А, %2\nКП: %3, вход 8")
+            text = QStringLiteral("Новая плата: %1 · IP %2 → БКД-А, %3\nКП: %4, вход 8")
                 .arg(value == IntegrationSession::BoardTransport::Udp ? QStringLiteral("Ethernet") : QStringLiteral("RS-485"),
-                     first->currentText(), kp->currentText());
+                     address->text(), first->currentText(), kp->currentText());
             if (second->currentData().toInt() != 0)
                 text += QStringLiteral("\nБКД-Б на новой плате: %1").arg(second->currentText());
             if (!comparison->currentText().isEmpty())
@@ -870,7 +872,7 @@ void IntegrationWindow::configureTester() {
         connect(choice, &QComboBox::currentTextChanged, &dialog, update);
     for (auto *check : {comparisonKp, legacyKp})
         connect(check, &QCheckBox::toggled, &dialog, update);
-    for (auto *field : {profile, comparisonProfile})
+    for (auto *field : {profile, comparisonProfile, address})
         connect(field, &QLineEdit::textChanged, &dialog, update);
     connect(preset, &QPushButton::clicked, &dialog, update);
     update();
@@ -1046,7 +1048,8 @@ void IntegrationWindow::refresh() {
         connection.comparisonLegacyPort.compare(QStringLiteral("COM9"), Qt::CaseInsensitive) == 0 &&
         connection.comparisonLegacySecondStage && !connection.comparisonLegacyHasKp &&
         connection.wiringProfilePath.isEmpty() && connection.comparisonWiringProfilePath.isEmpty())
-        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП"));
+        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
+            .arg(connection.boardIp.toString()));
     if (!m_session.mapping().warnings.isEmpty())
         m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · НЕСООТВЕТСТВИЕ ПУНКТОВ"));
     m_mappingStatus->setToolTip(m_session.mapping().warnings.join('\n'));

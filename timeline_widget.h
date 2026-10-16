@@ -31,12 +31,15 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    bool event(QEvent *event) override;
 
 private:
     struct TimelineEvent {
         int     id        = 0;
         int64_t time_ms   = 0;
         QString status;   // "" | "ok" | "fail"
+        QString description;
+        bool monitored = false;
         bool    isT0      = false;  // LIFT_OFF_CONTACT (time_ms == 0)
         int     displayIdx = 0;     // 1-based index among timeline events
     };

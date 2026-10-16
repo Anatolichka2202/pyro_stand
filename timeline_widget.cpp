@@ -2,6 +2,8 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QFontMetrics>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -49,6 +51,7 @@ void TimelineWidget::setEvents(const QVector<EventRow> &events)
         te.id         = e.id;
         te.time_ms    = e.time_ms;
         te.status     = e.status;
+        te.description=e.description;te.monitored=e.hasChannels;
         te.isT0       = (e.key == QStringLiteral("LIFT_OFF_CONTACT"));
         te.displayIdx = e.id > 0 ? e.id : idx;
         ++idx;
@@ -77,6 +80,20 @@ void TimelineWidget::setPlayheadMs(int64_t msFromT0)
 {
     m_playheadMs = msFromT0;
     update();
+}
+
+bool TimelineWidget::event(QEvent *event) {
+    if(event->type()==QEvent::ToolTip) {
+        auto *help=static_cast<QHelpEvent*>(event);
+        QStringList nearby;
+        for(const auto &item:m_events) if(std::abs(msToX(item.time_ms,width())-help->pos().x())<=CLUSTER_PX)
+            nearby << QStringLiteral("%1 · %2 · %3 мс · %4").arg(item.id).arg(item.description)
+                .arg(item.time_ms).arg(item.monitored?QStringLiteral("контроль"):QStringLiteral("информация"));
+        if(nearby.isEmpty()) QToolTip::hideText();
+        else QToolTip::showText(help->globalPos(),nearby.join('\n').toHtmlEscaped(),this);
+        return true;
+    }
+    return QWidget::event(event);
 }
 
 void TimelineWidget::markEventFired(int eventId, const QString &status)
@@ -137,6 +154,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
         int     x        = 0;
         int     count    = 0;
         bool    hasT0    = false;
+        bool    monitored = false;
         QString status;          // "" | "ok" | "fail" — статус кластера
         int     displayIdx = 0;  // индекс первого события в кластере
     };
@@ -148,6 +166,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
             auto &last = nodes.last();
             last.count++;
             if (te.isT0) last.hasT0 = true;
+            last.monitored |= te.monitored;
             // fail > late > ok
             if (te.status == "fail") last.status = "fail";
             else if (last.status != "fail" && te.status == "late") last.status = "late";
@@ -157,6 +176,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
             cn.x          = x;
             cn.count      = 1;
             cn.hasT0      = te.isT0;
+            cn.monitored  = te.monitored;
             cn.status     = te.status;
             cn.displayIdx = te.displayIdx;
             nodes.append(cn);
@@ -185,6 +205,9 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
         }
 
         const int r = cn.hasT0 ? T0_R : DOT_R;
+        if(cn.monitored) {
+            p.fillRect(QRect(cn.x-4,axisY+11,8,3),PLAYHEAD_COLOR);
+        }
 
         // Кружок
         p.setPen(Qt::NoPen);

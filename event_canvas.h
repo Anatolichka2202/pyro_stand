@@ -8,6 +8,8 @@ struct CanvasChannel {
 };
 struct CanvasEvent {
     QString id, title, source, plan;
+    QString actual, delta, status, detail;
+    QColor color;
     qint64 offsetMs = 0;
     QVector<CanvasChannel> channels;
 };

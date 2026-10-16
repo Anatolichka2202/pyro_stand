@@ -23,6 +23,12 @@
 #include <QStringList>
 #include <QVBoxLayout>
 #include <QSizePolicy>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QSplitter>
+#include <QToolButton>
+#include <QMenu>
+#include <QTextDocument>
 #include <QFileInfo>
 #include <cstdint>
 #include <limits>
@@ -43,39 +49,6 @@ QString signedMs(double value) {
     if (std::abs(value) < 0.0005) value = 0.0;
     return (value > 0.0 ? QStringLiteral("+") : QString()) +
            QString::number(value, 'f', 3);
-}
-
-QString inputName(const InputRef &input, bool legacy = false, bool secondOnly = false) {
-    if (legacy)
-        return QStringLiteral("%1 / %2")
-            .arg(input.index >= 8 || secondOnly ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"))
-            .arg(input.index % 8 + 1);
-    return QStringLiteral("ЯПС %1 / %2 %3")
-        .arg(input.index / 8)
-        .arg(input.index % 8 + 1)
-        .arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
-}
-
-QString compactInput(const InputRef &input, bool legacy, bool secondOnly) {
-    return legacy
-        ? QStringLiteral("%1: %2").arg(input.index >= 8 || secondOnly
-            ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1")).arg(input.index % 8 + 1)
-        : QStringLiteral("ЯПС %1: %2 %3").arg(input.index / 8)
-            .arg(input.index % 8 + 1).arg(input.falling ? QStringLiteral("↓") : QStringLiteral("↑"));
-}
-
-QString inputNames(const ActionMapping &mapping, bool legacy = false, bool secondOnly = false) {
-    QStringList names;
-    int previousGroup = -1;
-    for (const auto &input : mapping.inputs) {
-        const int group = input.index / 8;
-        names << (group == previousGroup
-            ? QString::number(input.index % 8 + 1) +
-                (legacy ? QString() : (input.falling ? QStringLiteral(" ↓") : QStringLiteral(" ↑")))
-            : compactInput(input, legacy, secondOnly));
-        previousGroup = group;
-    }
-    return names.join(QStringLiteral(", "));
 }
 
 // Operator-facing fallback when the source action has no comment.
@@ -119,7 +92,7 @@ void cell(QTableWidget *table, int row, int col, const QString &value,
     item->setTextAlignment(alignment);
     item->setForeground(foreground);
     item->setBackground(background);
-    item->setToolTip(tip);
+    item->setToolTip(Qt::convertFromPlainText(tip));
 }
 
 QFrame *statusChip(QWidget *parent, const QString &title, QLabel **dotOut, QLabel **statusOut) {
@@ -158,10 +131,6 @@ void setChip(QLabel *dot, QLabel *status, bool active, const QString &message) {
             active ? QStringLiteral("#3fb950") : QStringLiteral("#8b949e")));
 }
 
-struct DisplayAction {
-    PlannedAction plan;
-    bool physicalKp = false;
-};
 
 qint64 presentationOffset(const IntegrationSession &session, const PlannedAction &action) {
     const auto kp = StandProtocol::plannedKpOffset(session.plan(), session.mapping());
@@ -208,7 +177,8 @@ void IntegrationWindow::setupUi() {
                   "QLineEdit:focus,QComboBox:focus{border:1px solid #81b6d0;} "
                   "QLineEdit:disabled,QComboBox:disabled{background:#10161c;color:#8b949e;} "
                   "QComboBox QAbstractItemView{background:#19222b;color:#e8edf1;selection-background-color:#35434f;} "
-                  "QCheckBox{color:#a6b3be;}");
+                  "QCheckBox{color:#a6b3be;}"
+                  "QToolButton{background:#19222b;color:#e8edf1;border:1px solid #35434f;padding:5px;}");
     auto *surface = new QWidget(this);
     surface->setObjectName("operatorSurface");
     setCentralWidget(surface);
@@ -216,7 +186,7 @@ void IntegrationWindow::setupUi() {
     main->setContentsMargins(14, 10, 14, 10);
     main->setSpacing(5);
     auto *header = new QHBoxLayout;
-    auto *title = new QLabel(QStringLiteral("ПИРОСТЕНД · контроль исполнения"), surface);
+    auto *title = new QLabel(QStringLiteral("ПИРОСТЕНД"), surface);
     title->setStyleSheet("font-size:17px;color:#81b6d0");
     header->addWidget(title);
     header->addStretch();
@@ -236,8 +206,16 @@ void IntegrationWindow::setupUi() {
     log->setObjectName("journalBtn");
     auto *planButton = new QPushButton(QStringLiteral("Полный план"), surface);
     planButton->setObjectName("fullPlanBtn");
-    for (auto *button : {map, m_resetButton, finish, live, save, log, planButton})
+    for (auto *button : {map, m_resetButton, finish, live, save})
         header->addWidget(button);
+    auto *more=new QToolButton(surface);
+    more->setText(QStringLiteral("Ещё"));more->setObjectName("secondaryCommandsBtn");
+    more->setPopupMode(QToolButton::InstantPopup);
+    auto *menu=new QMenu(more);
+    menu->addAction(log->text(),log,&QPushButton::click);
+    menu->addAction(planButton->text(),planButton,&QPushButton::click);
+    more->setMenu(menu);header->addWidget(more);
+    log->hide();planButton->hide();
     main->addLayout(header);
     auto *clocks = new QHBoxLayout;
     m_firstClock = new QLabel(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"), surface);
@@ -283,6 +261,7 @@ void IntegrationWindow::setupUi() {
         label->setStyleSheet("color:#a6b3be;font-size:11px");
         main->addWidget(label);
     }
+    m_uploadStatus->hide();m_clockStatus->hide();
     m_nextEventLabel = new QLabel(surface);
     m_nextEventLabel->hide();
     m_eventCaption = new QLabel(surface);
@@ -292,14 +271,38 @@ void IntegrationWindow::setupUi() {
     m_timeline->setFixedHeight(48);
     main->addWidget(m_timeline);
     m_canvas = new EventCanvas(surface);
-    main->addWidget(m_canvas, 1);
-    // Retained as an internal presentation adapter for existing event/journal logic.
+    auto *workspace=new QSplitter(Qt::Horizontal,surface);
+    workspace->setObjectName("measurementWorkspace");workspace->setChildrenCollapsible(false);
+    auto *diagram=new QScrollArea(workspace);
+    diagram->setWidgetResizable(true);diagram->setWidget(m_canvas);
+    diagram->setFrameShape(QFrame::NoFrame);diagram->setMinimumWidth(480);
+    diagram->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_eventTable = new QTableWidget(0, 7, surface);
     m_eventTable->setObjectName("eventTable");
     m_eventTable->setHorizontalHeaderLabels(
         {"#", QStringLiteral("СОБЫТИЕ"), QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
          QStringLiteral("ФАКТ МС"), QStringLiteral("ОТКЛ МС"), QStringLiteral("СТАТУС")});
-    m_eventTable->hide();
+    m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_eventTable->setWordWrap(false);m_eventTable->setTextElideMode(Qt::ElideRight);
+    m_eventTable->verticalHeader()->hide();m_eventTable->setMinimumWidth(410);
+    m_eventTable->setColumnHidden(0,true);m_eventTable->setColumnHidden(2,true);m_eventTable->setColumnHidden(3,true);
+    m_eventTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_eventTable->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
+    m_eventTable->setColumnWidth(4,83);m_eventTable->setColumnWidth(5,75);m_eventTable->setColumnWidth(6,110);
+    m_eventTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    QFont tableFont("Segoe UI");tableFont.setPixelSize(12);m_eventTable->setFont(tableFont);
+    m_eventTable->setStyleSheet("QTableWidget{background:#10161c;color:#e8edf1;gridline-color:#35434f;} "
+        "QTableWidget::item{background:#10161c;} QTableWidget::item:selected{background:#1c2d3a;} "
+        "QHeaderView::section{background:#19222b;color:#a6b3be;padding:4px;}");
+    workspace->addWidget(m_eventTable);workspace->setStretchFactor(0,6);workspace->setStretchFactor(1,4);
+    workspace->setSizes({650,460});main->addWidget(workspace,1);
+    connect(m_eventTable,&QTableWidget::cellClicked,this,[this](int row,int){
+        const auto key=m_eventTable->item(row,0)->data(Qt::UserRole).toString();
+        if(key.isEmpty()) return;
+        if(m_expandedEvents.contains(key)) m_expandedEvents.remove(key);else m_expandedEvents.insert(key);
+        refreshEventTable();
+    });
     m_summaryLabel = new QLabel(surface);
     m_summaryLabel->setWordWrap(true);
     m_summaryLabel->setStyleSheet("font-size:12px;color:#e8edf1");
@@ -320,8 +323,19 @@ void IntegrationWindow::setupUi() {
     m_eventLog = new QTextEdit(journal);
     m_eventLog->setObjectName("eventJournal");
     m_eventLog->setReadOnly(true);
+    m_eventLog->document()->setMaximumBlockCount(1000);
     jl->addWidget(m_eventLog);
     connect(log, &QPushButton::clicked, journal, &QDialog::show);
+    auto *journalToggle=new QToolButton(surface);
+    journalToggle->setText(QStringLiteral("Последние события"));journalToggle->setCheckable(true);
+    journalToggle->setObjectName("recentJournalToggle");main->addWidget(journalToggle);
+    auto *recent=new QTextEdit(surface);m_recentLog=recent;recent->setObjectName("recentJournal");
+    recent->setReadOnly(true);recent->setDocument(m_eventLog->document());recent->setFixedHeight(85);
+    recent->hide();main->addWidget(recent);
+    connect(journalToggle,&QToolButton::toggled,recent,&QWidget::setVisible);
+    connect(journalToggle,&QToolButton::toggled,this,[this](bool visible){
+        if(visible) m_recentLog->verticalScrollBar()->setValue(m_recentLog->verticalScrollBar()->maximum());
+    });
     m_liveDialog = new QDialog(this);
     m_liveDialog->setObjectName("liveChannelsDialog");
     m_liveDialog->setWindowTitle(QStringLiteral("Живые каналы пиротестеров"));
@@ -604,8 +618,8 @@ void IntegrationWindow::refreshCanvas() {
             CanvasEvent g;
             g.id = QString::number(action.ordinal);
             g.title = eventName(action);
-            g.title.replace(QStringLiteral(" двигателей 9–12"), "");
             g.source = source;
+            g.detail=eval.reason+QStringLiteral("\nИсточник карты: ")+session.mapping().version;
             g.offsetMs = presentationOffset(session, action);
             g.plan = QStringLiteral("ПЛАН %1%2").arg(g.offsetMs).arg(
                 StandProtocol::plannedKpOffset(session.plan(), session.mapping()) ? QString() : QStringLiteral(" T0"));
@@ -667,6 +681,43 @@ void IntegrationWindow::refreshCanvas() {
                 g.channels.append(row);
                 ++total;
             }
+            g.actual=g.delta=QStringLiteral("—");
+            g.status=QStringLiteral("Ожидание");g.color=kDim;
+            bool allMeasured=!g.channels.isEmpty(),anyMeasured=false;
+            double latest=-std::numeric_limits<double>::infinity();
+            double worst=0;
+            for(const auto &channel:g.channels) {
+                bool valid=false;const double actual=channel.actual.toDouble(&valid);
+                allMeasured &= valid;anyMeasured |= valid;
+                if(valid) {latest=std::max(latest,actual);const double delta=channel.delta.toDouble();
+                    if(std::abs(delta)>std::abs(worst)) worst=delta;}
+                if(channel.color==kRed) {g.color=kRed;g.status=QStringLiteral("Отклонение");}
+            }
+            using State=ActionMeasurement::State;
+            if(anyMeasured) {
+                g.actual=QString::number(latest,'f',3);g.delta=signedMs(latest-g.offsetMs);
+                g.detail+=QStringLiteral("\nФакт группы: последний вход. Δ = факт − план. Худшее Δ входа: %1 мс").arg(signedMs(worst));
+            }
+            if(g.color!=kRed) {
+                if(allMeasured) {g.status=eval.toleranceMs?QStringLiteral("В допуске"):QStringLiteral("Измерено");
+                    g.color=eval.toleranceMs?kGreen:kNeutral;}
+                else if(eval.state==State::StoppedEarly) {g.status=QStringLiteral("Не измерено");g.color=kDim;}
+                else if(eval.state==State::Partial || anyMeasured) {g.status=QStringLiteral("Не все входы");g.color=kAmber;}
+                else if(eval.state!=State::WaitingForInputs) {
+                    g.color=kAmber;
+                    switch(eval.state) {
+                    case State::WaitingForKp:g.status=QStringLiteral("Нет КП");break;
+                    case State::WaitingForClockAlignment:g.status=QStringLiteral("Нет опоры");break;
+                    case State::InvalidAssignment:g.status=QStringLiteral("Назначение");break;
+                    case State::UploadUnconfirmed:g.status=QStringLiteral("Нет загрузки");break;
+                    case State::ExecutionUnconfirmed:g.status=QStringLiteral("Нет разрешения");break;
+                    case State::BoardNotArmed:g.status=QStringLiteral("Нет сброса");break;
+                    case State::RepeatedAction:g.status=QStringLiteral("Повтор");break;
+                    default:g.status=QStringLiteral("Недостоверно");break;
+                    }
+                }
+            } else if(eval.state==State::MissingAfterFinish) g.status=QStringLiteral("Не сработало");
+            else if(eval.state==State::PartialAfterFinish) g.status=QStringLiteral("Не все входы");
             groups.append(g);
         }
         const int kp = session.mapping().kp.index;
@@ -678,6 +729,9 @@ void IntegrationWindow::refreshCanvas() {
             g.title = QStringLiteral("Контакт подъёма");
             g.source = source;
             g.plan = QStringLiteral("ПЛАН 0");
+            g.actual=confirmed?QStringLiteral("0.000"):QStringLiteral("—");g.delta=QStringLiteral("—");
+            g.status=confirmed?QStringLiteral("КП"):QStringLiteral("Ожидание КП");g.color=confirmed?kGreen:kAmber;
+            g.detail=QStringLiteral("Физический КП · ")+session.mapping().version;
             const auto reference=session.mapping().kp;
             const auto rawKp=reference.falling?raw.fallUs:raw.riseUs;
             g.channels.append({QString::number(reference.index%8+1), QStringLiteral("Опорный ноль"),
@@ -692,6 +746,8 @@ void IntegrationWindow::refreshCanvas() {
                 const bool otherKnown =
                     session.measurementEligible() && session.legacyStreamKpObserved(1);
                 g.source = QStringLiteral("Старый · ") + session.options().secondLegacySerialPort;
+                g.actual=otherKnown?QStringLiteral("0.000"):QStringLiteral("—");
+                g.status=otherKnown?QStringLiteral("КП"):QStringLiteral("Ожидание КП");g.color=otherKnown?kGreen:kAmber;
                 g.channels[0] = {"8",
                                  QStringLiteral("КП8 БКД-Б"),
                                  other.triggered ? QString::number(other.riseUs)
@@ -773,6 +829,7 @@ void IntegrationWindow::appendJournal(const QString &level, const QString &messa
                        "<span style=\"color:%1; font-weight:600;\">%3</span>  "
                        "<span style=\"color:#c8d0dc;\">%4</span>")
             .arg(color, stamp.toHtmlEscaped(), level.toHtmlEscaped(), message.toHtmlEscaped()));
+    if(m_recentLog) m_recentLog->verticalScrollBar()->setValue(m_recentLog->verticalScrollBar()->maximum());
 }
 
 void IntegrationWindow::appendMessage(const QString &message) {
@@ -829,7 +886,7 @@ void IntegrationWindow::updatePlannedClock() {
             .arg((ms / 1000) % 60, 2, 10, QChar('0'))
             .arg((ms % 1000) / 100);
     };
-    m_timerLabel->setText(show(position));
+    m_timerLabel->setText((source.collectionFinished() && measured?QString():QStringLiteral("≈ "))+show(position));
     m_timerLabel->setStyleSheet(
         QStringLiteral("font:28px 'Consolas';color:%1").arg(measured ? "#81b6d0" : "#e5bd78"));
     m_clockCaption->setText(source.collectionFinished() && !measured
@@ -1116,8 +1173,7 @@ void IntegrationWindow::refresh() {
             "Основной измеритель завершил окно наблюдения; точность связи часов не подтверждена"));
     const bool legacy = m_session.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial;
     const bool secondOnly = legacy && m_session.options().secondLegacySerialPort.isEmpty() && m_session.options().legacySecondStage;
-    m_resetButton->setText(legacy ? QStringLiteral("↺  НАЧАТЬ НОВЫЙ СБОР")
-                                  : QStringLiteral("↺  СБРОСИТЬ ИЗМЕРЕНИЯ ПЛАТЫ"));
+    m_resetButton->setText(QStringLiteral("Новый сбор"));
     const bool hasPlan = m_session.hasPlan();
     const bool eligible = m_session.measurementEligible();
     const bool dualLegacy = legacy && !m_session.options().secondLegacySerialPort.isEmpty();
@@ -1227,7 +1283,7 @@ void IntegrationWindow::refresh() {
         m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
             .arg(connection.boardIp.toString()));
     if (!m_session.mapping().warnings.isEmpty())
-        m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · НЕСООТВЕТСТВИЕ ПУНКТОВ"));
+        m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · КАРТА ТРЕБУЕТ ПРОВЕРКИ"));
     m_mappingStatus->setToolTip(m_session.mapping().warnings.join('\n'));
     m_clockStatus->setText(QStringLiteral(
         "UTC БЦВМ при загрузке: %1 · синхронизация с платой не подтверждена")
@@ -1272,30 +1328,13 @@ void IntegrationWindow::refresh() {
         ++planRow;
     }
 
-    QVector<DisplayAction> rows;
-    QStringList signatureParts;
-    bool explicitKp = false;
-    if (hasPlan) {
-        for (const PlannedAction &action : m_session.plan().actions) {
-            if (!m_session.mapping().hasAction(action)) continue;
-            rows.append({action, false});
-            signatureParts << QStringLiteral("%1:%2:%3")
-                .arg(action.ordinal).arg(action.offsetMs).arg(action.key);
-            if (action.key == QStringLiteral("LIFT_OFF_CONTACT")) explicitKp = true;
-        }
-        if (m_session.mapping().kp.index >= 0 && !explicitKp)
-            rows.append({{QStringLiteral("КП"), 0, 0}, true});
-        std::stable_sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-            return a.plan.offsetMs < b.plan.offsetMs;
-        });
-    }
     // Общая шкала содержит ВСЁ полётное задание. Пироканалы лишь отмечают
     // те пункты, которые действительно наблюдаются на одном из источников.
     const QString signature = m_session.uploadId() + QStringLiteral("|") +
         m_session.mapping().version + QStringLiteral("|") +
         (m_peer ? m_peer->mapping().version : QString()) +
         QString::number(m_session.plan().actions.size()) +
-        signatureParts.join(QStringLiteral("|"));
+        m_session.plan().sha256 + m_session.collectionId();
     if (signature != m_timelineSignature) {
         m_timelineSignature = signature;
         QVector<EventRow> events;
@@ -1312,231 +1351,56 @@ void IntegrationWindow::refresh() {
         m_timeline->setEvents(events);
     }
     m_timeline->setVisible(hasPlan);
-    m_eventCaption->setText(QStringLiteral("ОТСЛЕЖИВАЕМЫЕ СОБЫТИЯ · %1")
-        .arg(rows.size()));
-    if (rows.isEmpty()) {
-        m_nextEventLabel->setText(hasPlan
-            ? QStringLiteral("Нет назначенных событий · проверьте подключение БКД и пункты циклограммы")
-            : QStringLiteral("Ожидание циклограммы от КАСУ ПП"));
-    }
-
-    // Show only assigned inputs as subrows; this is not the raw 96-channel table.
-    int displayCount = 0;
-    for (const auto &row : rows) {
-        ++displayCount;
-        if (!row.physicalKp) {
-            const auto mapped = m_session.mapping().forAction(row.plan);
-            if (mapped.inputs.size() > 1)
-                displayCount += mapped.inputs.size();
-        }
-    }
-    if (m_eventTable->rowCount() != displayCount)
-        m_eventTable->setRowCount(displayCount);
-    const int height = m_eventTable->horizontalHeader()->sizeHint().height() +
-                       8 + std::clamp(displayCount, 2, 12) * 28;
-    m_eventTable->setMinimumHeight(m_eventTable->horizontalHeader()->sizeHint().height() +
-        (std::min)(6, displayCount) * 28 + 4);
-    m_eventTable->setMaximumHeight((std::max)(118, height));
-
-    int completed = 0, deviations = 0, waiting = 0, unevaluated = 0;
-    double maxDeviationMs = 0.0;
-    double latestMeasuredMs = -std::numeric_limits<double>::infinity();
-    bool foundAwaited = false;
-    int tableRow = 0;
-    for (const auto &row : rows) {
-        const auto &action = row.plan;
-        const QColor rowBg;
-        QString facts = QStringLiteral("—"), delta = QStringLiteral("—");
-        QString status, tooltip;
-        QColor statusColor = kDim;
-        QColor bg = rowBg;
-        bool nextPending = false;
-        ActionMeasurement evaluation;
-        QString stateKey = QString::number(action.ordinal) + QStringLiteral(":") + action.key;
-
-        if (row.physicalKp) {
-            status = kpKnown ? QStringLiteral("КП ЗАФИКСИРОВАН") : QStringLiteral("ОЖИДАНИЕ КП");
-            statusColor = kpKnown ? kGreen : kAmber;
-            if (kpKnown) facts = QStringLiteral("0.000");
-            tooltip = QStringLiteral(
-                "КП является физическим нулём аппаратной шкалы. "
-                "Отклонение от планового UTC без подтверждённой синхронизации не вычисляется.");
-            m_timeline->markEventFired(action.ordinal, kpKnown ? QStringLiteral("ok") : QString());
-            if (!kpKnown && !foundAwaited) {
-                nextPending = true;
-                foundAwaited = true;
-                m_nextEventLabel->setText(QStringLiteral("Ожидание контакта подъёма"));
-            }
-        } else {
-            evaluation = m_session.measureAction(action);
-            if (evaluation.channels.isEmpty()) {
-                const auto mapped = m_session.mapping().forAction(action);
-                for (const auto &input : mapped.inputs)
-                    evaluation.channels.append({input, std::nullopt, std::nullopt});
-            }
-            tooltip = evaluation.reason;
-            using State = ActionMeasurement::State;
-            if (evaluation.state == State::Measured) {
-                // A multi-input event is complete on its LAST observed input.
-                // Each input is evaluated separately against its own planned time.
-                double lastMs = evaluation.channels.first().actualMs.value();
-                bool inTolerance = true;
-                for (const auto &sample : evaluation.channels) {
-                    lastMs = std::max(lastMs, *sample.actualMs);
-                    latestMeasuredMs = std::max(latestMeasuredMs, *sample.actualMs);
-                    maxDeviationMs = std::max(maxDeviationMs, std::abs(*sample.deviationMs));
-                    if (evaluation.toleranceMs &&
-                        std::abs(*sample.deviationMs) > *evaluation.toleranceMs)
-                        inTolerance = false;
-                }
-                facts = QString::number(lastMs, 'f', 3);
-                delta = signedMs(lastMs - evaluation.plannedMs.value());
-                if (!evaluation.toleranceMs) {
-                    status = QStringLiteral("ИЗМЕРЕНО · БЕЗ ДОПУСКА");
-                    statusColor = kDim;
-                    ++unevaluated;
-                } else if (inTolerance) {
-                    status = QStringLiteral("В ДОПУСКЕ");
-                    statusColor = kGreen;
-                    bg = QColor("#0f2d1a");
-                } else {
-                    status = QStringLiteral("ОТКЛОНЕНИЕ");
-                    statusColor = kRed;
-                    bg = QColor("#3d1515");
-                    ++deviations;
-                }
-                tooltip = evaluation.channels.size() > 1
-                    ? QStringLiteral("Факт группы — отметка последнего входа. "
-                        "Допуск проверен отдельно по каждому назначенному входу.")
-                    : QStringLiteral("Факт измерен относительно КП счётчиком платы.");
-                ++completed;
-                m_timeline->markEventFired(action.ordinal,
-                    !evaluation.toleranceMs ? QString()
-                    : inTolerance ? QStringLiteral("ok") : QStringLiteral("fail"));
-                const QString logValue = status + QStringLiteral("|") + facts + QStringLiteral("|") + delta;
-                if (m_loggedStates.value(stateKey) != logValue) {
-                    appendJournal(QStringLiteral("СОБЫТ."),
-                                  QStringLiteral("%1 · %2 · факт %3 мс · Δ %4 мс")
-                                      .arg(eventName(action), status, facts, delta),
-                                  statusColor.name());
-                }
-                m_loggedStates.insert(stateKey, logValue);
-            } else {
-                m_timeline->markEventFired(action.ordinal, QString());
-                if (evaluation.state == State::MissingAfterFinish ||
-                    evaluation.state == State::PartialAfterFinish) {
-                    status = evaluation.state == State::MissingAfterFinish
-                        ? QStringLiteral("НЕ СРАБОТАЛО") : QStringLiteral("НЕ ВСЕ ВХОДЫ СРАБОТАЛИ");
-                    statusColor = kRed;
-                    bg = QColor("#3d1515");
-                    ++deviations;
-                    m_timeline->markEventFired(action.ordinal, QStringLiteral("fail"));
-                } else if (evaluation.state == State::Partial) {
-                    status = QStringLiteral("ЧАСТЬ ВХОДОВ");
-                    statusColor = kAmber;
-                    ++waiting;
-                } else if (evaluation.state == State::WaitingForInputs) {
-                    status = QStringLiteral("ОЖИДАНИЕ ОТМЕТКИ");
-                    ++waiting;
-                } else {
-                    status = evaluation.reason;
-                    statusColor = kAmber;
-                    ++unevaluated;
-                }
-                for (const auto &sample : evaluation.channels)
-                    if (sample.actualMs)
-                        latestMeasuredMs = std::max(latestMeasuredMs, *sample.actualMs);
-                if (!foundAwaited) {
-                    m_nextEventLabel->setText(QStringLiteral("Без факта: ") + eventName(action));
-                    nextPending = true;
-                    foundAwaited = true;
-                }
-                m_loggedStates.remove(stateKey);
-            }
-        }
-
-        if (!row.physicalKp) {
-            QStringList details;
-            for (const auto &sample : evaluation.channels)
-                details << QStringLiteral("%1 · %2")
-                    .arg(inputName(sample.input, legacy, secondOnly),
-                         sample.actualMs ? QStringLiteral("%1 мс · Δ %2 мс")
-                             .arg(*sample.actualMs, 0, 'f', 3)
-                             .arg(*sample.deviationMs, 0, 'f', 3)
-                             : QStringLiteral("нет отметки"));
-            tooltip = QStringLiteral("Ключ: %1\n%2").arg(action.key, tooltip);
-            if (!details.isEmpty()) tooltip += QStringLiteral("\n") + details.join(QStringLiteral("\n"));
-        }
-        if (nextPending) bg = QColor("#1c2d3a");
-        cell(m_eventTable, tableRow, 0,
-             row.physicalKp ? QStringLiteral("КП") : QString::number(action.ordinal),
-             nextPending ? QColor("#0d1117") : kDim,
-             nextPending ? QColor("#58a6ff") : bg, Qt::AlignCenter);
-        cell(m_eventTable, tableRow, 1,
-             row.physicalKp ? QStringLiteral("КОНТАКТ ПОДЪЁМА · ОПОРНЫЙ НОЛЬ") : eventName(action),
-             kNeutral, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
-        cell(m_eventTable, tableRow, 2,
-             row.physicalKp ? compactInput(m_session.mapping().kp, legacy, secondOnly)
-                 : inputNames(m_session.mapping().forAction(action), legacy, secondOnly),
-             kDim, bg, Qt::AlignLeft | Qt::AlignVCenter, tooltip);
-        cell(m_eventTable, tableRow, 3, QString::number(row.physicalKp ? 0 : presentationOffset(m_session, action)),
-             kDim, bg, Qt::AlignRight | Qt::AlignVCenter);
-        cell(m_eventTable, tableRow, 4, facts, kNeutral, bg, Qt::AlignRight | Qt::AlignVCenter,
-             tooltip);
-        cell(m_eventTable, tableRow, 5, delta,
-             statusColor, bg, Qt::AlignRight | Qt::AlignVCenter, tooltip);
-        cell(m_eventTable, tableRow, 6, status, statusColor, bg,
-             Qt::AlignLeft | Qt::AlignVCenter, tooltip);
-        ++tableRow;
-
-        if (!row.physicalKp && evaluation.channels.size() > 1) {
-            for (const auto &sample : evaluation.channels) {
-                const QColor subBg("#080c12");
-                const bool hasValue = sample.actualMs.has_value();
-                QColor measuredColor = kDim;
-                QString subStatus = hasValue ? QStringLiteral("ИЗМЕРЕНО")
-                                             : QStringLiteral("НЕТ ОТМЕТКИ");
-                if (hasValue && evaluation.toleranceMs) {
-                    const bool good = std::abs(*sample.deviationMs) <= *evaluation.toleranceMs;
-                    measuredColor = good ? kGreen : kRed;
-                    subStatus = good ? QStringLiteral("В ДОПУСКЕ") : QStringLiteral("ОТКЛОНЕНИЕ");
-                } else if (!hasValue &&
-                           (evaluation.state == ActionMeasurement::State::MissingAfterFinish ||
-                            evaluation.state == ActionMeasurement::State::PartialAfterFinish)) {
-                    measuredColor = kRed;
-                    subStatus = QStringLiteral("НЕ СРАБОТАЛ");
-                }
-                cell(m_eventTable, tableRow, 0, QString(), kDim, subBg);
-                cell(m_eventTable, tableRow, 1, QStringLiteral("    ↳ ") + inputName(sample.input, legacy, secondOnly),
-                     kDim, subBg);
-                cell(m_eventTable, tableRow, 2, compactInput(sample.input, legacy, secondOnly), kDim, subBg,
-                     Qt::AlignLeft | Qt::AlignVCenter, inputName(sample.input, legacy, secondOnly));
-                cell(m_eventTable, tableRow, 3, QString::number(presentationOffset(m_session, action)),
-                     kDim, subBg, Qt::AlignRight | Qt::AlignVCenter);
-                cell(m_eventTable, tableRow, 4,
-                     hasValue ? QString::number(*sample.actualMs, 'f', 3) : QStringLiteral("—"),
-                     kNeutral, subBg, Qt::AlignRight | Qt::AlignVCenter);
-                cell(m_eventTable, tableRow, 5,
-                     hasValue ? signedMs(*sample.deviationMs) : QStringLiteral("—"),
-                     measuredColor, subBg, Qt::AlignRight | Qt::AlignVCenter);
-                cell(m_eventTable, tableRow, 6, subStatus, measuredColor, subBg);
-                ++tableRow;
-            }
-        }
-    }
-    if (!foundAwaited && !rows.isEmpty())
-        m_nextEventLabel->setText(QStringLiteral("Назначенные события: %1").arg(rows.size()));
-    m_summaryLabel->setText(QStringLiteral(
-        "РЕЗУЛЬТАТ · ИЗМЕРЕНО: %1 / %2  ·  ОТКЛ./НЕСРАБОТ.: %3  ·  "
-        "ОЖИДАНИЕ: %4  ·  БЕЗ ОЦЕНКИ: %5  ·  МАКС. |Δ|: %6 мс")
-        .arg(completed).arg(std::count_if(rows.cbegin(), rows.cend(),
-            [](const DisplayAction &row) { return !row.physicalKp; }))
-        .arg(deviations).arg(waiting).arg(unevaluated)
-        .arg(completed ? QString::number(maxDeviationMs, 'f', 3) : QStringLiteral("—")));
-    // The marker tracks the latest physical relative measurement, not PC UTC.
-    m_timeline->setPlayheadMs(kpKnown && std::isfinite(latestMeasuredMs)
-        ? int64_t(std::llround(latestMeasuredMs))
-        : std::numeric_limits<int64_t>::min());
     refreshCanvas();
+    refreshEventTable();
     updatePlannedClock();
+}
+
+void IntegrationWindow::refreshEventTable() {
+    const auto &groups=m_canvas->events();
+    int count=0;
+    for(const auto &group:groups) count+=1+(group.channels.size()>1?group.channels.size():0);
+    if(m_eventTable->rowCount()!=count) m_eventTable->setRowCount(count);
+    int row=0;
+    QHash<int,QString> timelineStates;
+    for(const auto &group:groups) {
+        const QString key=group.source+u'/'+group.id;
+        const bool expanded=m_expandedEvents.contains(key);
+        const QString detail=group.title+u'\n'+group.source+QStringLiteral(" · ")+group.plan+u'\n'+group.detail;
+        cell(m_eventTable,row,0,group.id);
+        m_eventTable->item(row,0)->setData(Qt::UserRole,key);
+        const QString compactSource=QString(group.source).replace(QStringLiteral("Новый пиротестер"),QStringLiteral("Новая плата"));
+        cell(m_eventTable,row,1,(group.channels.size()>1?(expanded?QStringLiteral("▾ "):QStringLiteral("▸ ")):QString())+
+            group.title+u'\n'+group.plan+QStringLiteral(" · ")+compactSource,kNeutral,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
+        cell(m_eventTable,row,2,group.source);
+        cell(m_eventTable,row,3,QString::number(group.offsetMs));
+        cell(m_eventTable,row,4,group.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
+        cell(m_eventTable,row,5,group.delta,group.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
+        cell(m_eventTable,row,6,group.status,group.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
+        m_eventTable->setRowHeight(row,46);m_eventTable->setRowHidden(row,false);++row;
+        if(group.channels.size()>1) for(const auto &channel:group.channels) {
+            cell(m_eventTable,row,0,QString());m_eventTable->item(row,0)->setData(Qt::UserRole,QString());
+            cell(m_eventTable,row,1,QStringLiteral("   ↳ ")+channel.input,kDim);
+            cell(m_eventTable,row,2,channel.input);cell(m_eventTable,row,3,QString::number(group.offsetMs));
+            cell(m_eventTable,row,4,channel.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
+            cell(m_eventTable,row,5,channel.delta,channel.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
+            cell(m_eventTable,row,6,channel.status,channel.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
+            m_eventTable->setRowHeight(row,25);m_eventTable->setRowHidden(row,!expanded);++row;
+        }
+        const QString state=group.status+u'|'+group.actual+u'|'+group.delta;
+        if(m_loggedStates.value(key)!=state) {
+            appendJournal(QStringLiteral("СОБЫТИЕ"),group.title+QStringLiteral(" · ")+group.source+
+                QStringLiteral(" · ")+group.status+QStringLiteral(" · факт ")+group.actual+
+                QStringLiteral(" · Δ ")+group.delta,group.color.name());
+            m_loggedStates.insert(key,state);
+        }
+        bool numeric=false;int id=group.id.toInt(&numeric);
+        if(!numeric) {
+            for(const auto &action:m_session.plan().actions) if(action.key=="LIFT_OFF_CONTACT") id=action.ordinal;
+        }
+        const auto status=group.color==kRed?QStringLiteral("fail"):
+            group.color==kGreen?QStringLiteral("ok"):QString();
+        if(timelineStates.value(id)!="fail") timelineStates.insert(id,status);
+    }
+    for(auto it=timelineStates.cbegin();it!=timelineStates.cend();++it) m_timeline->markEventFired(it.key(),it.value());
 }

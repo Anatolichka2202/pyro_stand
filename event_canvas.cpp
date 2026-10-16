@@ -18,6 +18,10 @@ void EventCanvas::setEvents(QVector<CanvasEvent> e) {
                         " " + r.status;
     }
     setAccessibleDescription(text.join("; "));
+    int contentHeight=24;
+    for(const auto &group:m_events) contentHeight+=groupHeight(group)+8;
+    setMinimumHeight(std::max(220,contentHeight));
+    setToolTip(text.join(QStringLiteral("\n")).toHtmlEscaped());
     update();
 }
 int EventCanvas::groupHeight(const CanvasEvent &e) const { return 42 + e.channels.size() * 24; }
@@ -97,7 +101,8 @@ void EventCanvas::paintEvent(QPaintEvent *) {
             const int h = groupHeight(g);
             p.fillRect(QRect(x, y, cw, 24), QColor("#19222b"));
             p.setPen(QColor("#81b6d0"));
-            p.drawText(QRect(x + 6, y, cw - 150, 24), Qt::AlignVCenter, g.id + "  " + g.title);
+            p.drawText(QRect(x + 6, y, cw - 150, 24), Qt::AlignVCenter,
+                       p.fontMetrics().elidedText(g.id+"  "+g.title,Qt::ElideRight,cw-155));
             p.setPen(QColor("#e8edf1"));
             p.drawText(QRect(x + cw - 145, y, 139, 24), Qt::AlignRight | Qt::AlignVCenter, g.plan);
             // Columns reserve numeric widths before allocating the role text.
@@ -123,7 +128,7 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                     p.setPen(j >= 3 ? r.color : QColor("#e8edf1"));
                     p.drawText(QRect(colX + 3, rowY, widths[j] - 6, 24),
                                (j >= 2 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
-                               vals[j]);
+                               p.fontMetrics().elidedText(vals[j],Qt::ElideRight,std::max(0,widths[j]-6)));
                     colX += widths[j];
                 }
                 p.setPen(QColor("#35434f"));

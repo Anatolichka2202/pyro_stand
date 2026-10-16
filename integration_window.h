@@ -3,6 +3,7 @@
 #include "integration.h"
 
 #include <QHash>
+#include <QSet>
 #include <QLabel>
 #include <QMainWindow>
 #include <QTableWidget>
@@ -28,6 +29,7 @@ public:
 private:
     void setupUi();
     void refreshCanvas();
+    void refreshEventTable();
     void configurePeer();
     IntegrationSession &clockSession();
     void refresh();
@@ -80,6 +82,8 @@ private:
     QTableWidget *m_eventTable = nullptr;
     QTableWidget *m_planTable = nullptr;
     QTextEdit *m_eventLog = nullptr;
+    QTextEdit *m_recentLog = nullptr;
+    QSet<QString> m_expandedEvents;
 
     QString m_lastUploadId;
     QString m_timelineSignature;

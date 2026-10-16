@@ -17,6 +17,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QToolButton>
+#include <QScrollBar>
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
@@ -28,6 +30,10 @@ private slots:
 #endif
     }
     void fullWorkingPlanVisible();
+    void compactLayout_data();
+    void compactLayout();
+    void tableKeepsWorstChannelDeviation();
+    void recentJournalFollowsLastMessage();
     void channelLabelsUseSourceComments();
     void nonzeroPlannedKpUsesOneScale();
     void historicalPresetClearsExternalProfiles();
@@ -44,6 +50,72 @@ private slots:
     void peerClockDoesNotTruncateTimeline();
     void finishWithoutKpFreezesVisualUtcClock();
 };
+
+void OperatorGuiTest::recentJournalFollowsLastMessage() {
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    IntegrationWindow window(options);window.show();
+    for(int index=0;index<30;++index) window.appendMessage(QStringLiteral("Строка %1").arg(index));
+    auto *toggle=window.findChild<QToolButton*>("recentJournalToggle");QVERIFY(toggle);toggle->click();
+    auto *recent=window.findChild<QTextEdit*>("recentJournal");QVERIFY(recent);QVERIFY(recent->isVisible());
+    QTest::qWait(10);QVERIFY(recent->verticalScrollBar()->maximum()>0);
+    QCOMPARE(recent->verticalScrollBar()->value(),recent->verticalScrollBar()->maximum());
+    window.appendMessage("LAST_MESSAGE");
+    QCOMPARE(recent->verticalScrollBar()->value(),recent->verticalScrollBar()->maximum());
+    QCOMPARE(recent->document(),window.m_eventLog->document());
+}
+
+void OperatorGuiTest::tableKeepsWorstChannelDeviation() {
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost;options.firstStageYps=1;options.kpYps=1;
+    IntegrationWindow window(options);window.show();auto &session=window.m_session;
+    QString error;QVERIFY(StandProtocol::parseCyclogram("START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",&session.m_plan,&error));
+    session.m_hasPlan=true;session.m_uploadState="CONFIRMED";session.m_executionObserved=true;
+    session.m_boardArmed=true;session.m_hasBoardFrame=true;session.updateBenchMapping();
+    session.m_boardFrame.channels[7]={true,false,1000000,0};
+    session.m_boardFrame.channels[0]={true,false,1018000,0};
+    session.m_boardFrame.channels[1]={true,false,1020000,0};window.refresh();
+    auto *table=window.m_eventTable;int group=-1;
+    for(int row=0;row<table->rowCount();++row) if(table->item(row,0)->text()=="2") group=row;
+    QVERIFY(group>=0);QCOMPARE(table->item(group,4)->text(),QString("20.000"));
+    QCOMPARE(table->item(group,5)->text(),QString("0.000"));
+    QVERIFY(table->item(group,5)->toolTip().contains("-2.000"));
+    QCOMPARE(table->item(group,6)->text(),QStringLiteral("Отклонение"));
+    QVERIFY(table->isRowHidden(group+1));
+    QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualItemRect(table->item(group,1)).center());
+    QVERIFY(!table->isRowHidden(group+1));
+    session.m_boardFrame.channels[0]={};window.refresh();
+    QCOMPARE(table->item(group,6)->text(),QStringLiteral("Не все входы"));
+    session.finishCollection();window.refresh();
+    QVERIFY(table->item(group,6)->foreground().color()!=QColor("#f85149"));
+    window.grab().save(QCoreApplication::applicationDirPath()+"/operator-partial-early-finish.png");
+}
+
+void OperatorGuiTest::compactLayout_data() {
+    QTest::addColumn<QSize>("size");
+    QTest::newRow("1100")<<QSize(1100,700);
+    QTest::newRow("1280")<<QSize(1280,800);
+    QTest::newRow("1920")<<QSize(1920,1080);
+}
+
+void OperatorGuiTest::compactLayout() {
+    QFETCH(QSize,size);
+    IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
+    options.bindIp=QHostAddress::LocalHost;options.boardIp=QHostAddress::LocalHost;
+    options.firstStageYps=9;options.secondStageYps=1;options.kpYps=9;
+    IntegrationWindow window(options);window.resize(size);window.show();
+    QFile file(QFINDTESTDATA("data/working_20261014.txt"));QVERIFY(file.open(QIODevice::ReadOnly));
+    QString error;QVERIFY(StandProtocol::parseCyclogram(file.readAll(),&window.m_session.m_plan,&error));
+    window.m_session.m_hasPlan=true;window.m_session.updateBenchMapping();window.refresh();
+    QTest::qWait(20);
+    QVERIFY(window.m_eventTable->isVisible());QCOMPARE(window.size(),size);
+    const auto canvasRect=QRect(window.m_canvas->mapTo(&window,QPoint(0,0)),window.m_canvas->size());
+    const auto tableRect=QRect(window.m_eventTable->mapTo(&window,QPoint(0,0)),window.m_eventTable->size());
+    QVERIFY(canvasRect.left()<tableRect.left());QVERIFY(tableRect.right()<window.width());
+    QVERIFY(!window.m_eventTable->isColumnHidden(1));QVERIFY(!window.m_eventTable->isColumnHidden(4));
+    QVERIFY(!window.m_eventTable->isColumnHidden(5));QVERIFY(!window.m_eventTable->isColumnHidden(6));
+    window.grab().save(QCoreApplication::applicationDirPath()+QString("/operator-compact-%1.png").arg(size.width()));
+}
 
 
 
@@ -193,7 +265,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     auto *table = window.findChild<QTableWidget *>(QStringLiteral("eventTable"));
     QVERIFY(table);
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 3);
-    QCOMPARE(window.findChildren<QTextEdit *>().size(), 1);
+    QCOMPARE(window.findChildren<QTextEdit *>().size(), 2);
     QCOMPARE(table->columnCount(), 7);
     QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("КАНАЛЫ"));
     QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("СОБЫТИЕ"));
@@ -242,7 +314,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
         names << table->item(row, 1)->text();
     QVERIFY(names.join(QStringLiteral("|")).contains(
         QStringLiteral("Зажигание пиросвечей двигателей 9–12")));
-    QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("КОНТАКТ ПОДЪЁМА")));
+    QVERIFY(names.join(QStringLiteral("|")).contains(QStringLiteral("Контакт подъёма")));
     QVERIFY(!names.join(QStringLiteral("|")).contains(QStringLiteral("CLOSE_MAIN_VALVES")));
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 3);
 }
@@ -288,14 +360,14 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     window.m_session.processDebug(event);
     window.refresh();
     auto *table = window.m_eventTable;
-    QCOMPARE(table->rowCount(), 21);
+    QCOMPARE(table->rowCount(), 22);
     QTRY_COMPARE(window.m_canvas->channelCount(), 16);
     window.grab().save(QCoreApplication::applicationDirPath()+"/operator-full-plan.png");
     QTRY_VERIFY(window.m_canvas->fits());
-    QCOMPARE(window.m_canvas->columnCount(), 2);
+    QCOMPARE(window.m_canvas->columnCount(), 1);
     QCOMPARE(window.size(), QSize(1280, 800));
     window.grab().save(QCoreApplication::applicationDirPath()+"/operator-full-plan.png");
-    QVERIFY(!table->isVisible());
+    QVERIFY(table->isVisible());
 
     event["type"] = "CYCLOGRAM_UPLOAD_STATE";
     event["seq"] = "2";
@@ -309,7 +381,7 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     window.m_session.processLegacyBytes(QByteArray(1, char(0)), 1);
     window.m_session.processLegacyBytes(QByteArray(61001, char(0x80)), 0);
     window.refresh();
-    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("+01:01.0"));
+    QCOMPARE(window.m_timerLabel->text(), QStringLiteral("≈ +01:01.0"));
     QVERIFY(window.m_timerLabel->styleSheet().contains("28px"));
     const auto hardwarePosition=window.m_session.measuredPositionMs();
     QTest::qWait(30);

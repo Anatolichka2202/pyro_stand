@@ -103,7 +103,7 @@ QString eventName(const PlannedAction &action) {
         const QString description = comment.section(QStringLiteral(" · "), 0, 0).trimmed();
         if (!description.isEmpty()) return description;
     }
-    return eventName(action);
+    return eventName(action.key);
 }
 
 void cell(QTableWidget *table, int row, int col, const QString &value,

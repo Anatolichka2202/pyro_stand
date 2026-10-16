@@ -658,8 +658,10 @@ void IntegrationWindow::refreshCanvas() {
                 if (row.actual == QStringLiteral("—") &&
                     eval.state != ActionMeasurement::State::WaitingForInputs &&
                     eval.state != ActionMeasurement::State::Partial) {
-                    row.status = QStringLiteral("без оценки");
-                    row.color = kAmber;
+                    const bool missed = eval.state == ActionMeasurement::State::MissingAfterFinish ||
+                        eval.state == ActionMeasurement::State::PartialAfterFinish;
+                    row.status = missed ? QStringLiteral("НЕ СРАБОТАЛ") : QStringLiteral("без оценки");
+                    row.color = missed ? kRed : kAmber;
                 }
                 g.channels.append(row);
                 ++total;

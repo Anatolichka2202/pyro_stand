@@ -96,6 +96,9 @@ private slots:
     void legacyTicksFinishCollection();
     void liveFrameKeepsReceivingAfterCompletion();
     void mismatchedUdpSenderIsCounted();
+    void finishedLegacyCollectIsImmutable();
+    void missingInputsTurnIntoFailureAfterFinish();
+    void dualLegacyWaitsForBothCounters();
 };
 
 
@@ -830,5 +833,102 @@ void IntegrationTest::mismatchedUdpSenderIsCounted() {
     QVERIFY(session.lastError().contains(QStringLiteral("отброшен")));
 }
 
+
+void IntegrationTest::finishedLegacyCollectIsImmutable() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+    session.m_legacyArmed[0] = true;
+    session.processLegacyBytes(QByteArray(1, char(0)), 0);
+    session.processLegacyBytes(QByteArray(1, char(0x80)), 0);  // КП
+    session.processLegacyBytes(QByteArray(1, char(0x83)), 0);  // Каналы 1, 2
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::Measured);
+    session.finishCollection();
+    const auto frozenSamples = session.m_samplesAtFinish[0];
+    const auto frozenAccepted = session.m_acceptedAtFinish;
+    const auto frozenTick = session.boardFrame().channels[0].riseUs;
+    const auto frozenResult = session.actionResult(session.m_plan.actions[1]);
+
+    // Приём не выключается: счетчик live растёт, результаты испытания — нет.
+    session.processLegacyBytes(QByteArray(8, char(0)), 0);
+    QCOMPARE(session.m_legacy[0].sampleCount(), frozenSamples + quint64(8));
+    QCOMPARE(session.boardFrame().channels[0].riseUs, frozenTick);
+    QCOMPARE(session.m_acceptedAtFinish, frozenAccepted);
+    QCOMPARE(session.actionResult(session.m_plan.actions[1]), frozenResult);
+
+    session.m_legacyWatchdog[0].start(5);
+    QTest::qWait(30);
+    QVERIFY(session.collectionFinished());
+    QVERIFY(session.boardArmed());
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::Measured);
+}
+
+void IntegrationTest::missingInputsTurnIntoFailureAfterFinish() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+    session.m_legacyArmed[0] = true;
+    session.processLegacyBytes(QByteArray(1, char(0x80)), 0);
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::WaitingForInputs);
+    session.finishCollection();
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::MissingAfterFinish);
+    QVERIFY(session.actionResult(session.m_plan.actions[1]).contains(QStringLiteral("Не сработало")));
+
+    // Внешний COM без собственного КП не получает ложный «отказ».
+    session.m_options.legacyHasKp = false;
+    session.updateBenchMapping();
+    QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
+             ActionMeasurement::State::WaitingForClockAlignment);
+}
+
+void IntegrationTest::dualLegacyWaitsForBothCounters() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.secondLegacySerialPort = "TEST_SECOND_COM";
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true;
+    session.updateBenchMapping();
+    session.m_boardArmed = true;
+    session.m_legacyArmed = {true, true};
+    session.processLegacyBytes(QByteArray(300, char(0x80)), 0);
+    session.processLegacyBytes(QByteArray(5, char(0x80)), 1);
+    session.checkCompletion();
+    QVERIFY(!session.collectionFinished());
+    session.processLegacyBytes(QByteArray(295, char(0x80)), 1);
+    session.checkCompletion();
+    QVERIFY(session.collectionFinished());
+}
 QTEST_GUILESS_MAIN(IntegrationTest)
 #include "tst_integration.moc"

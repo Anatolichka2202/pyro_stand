@@ -423,10 +423,15 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
             if (error == QSerialPort::ResourceError || error == QSerialPort::ReadError) {
                 m_legacyReceiving[size_t(stream)] = false;
                 m_boardReceiving = false;
-                m_boardArmed = false;
-                m_awaitReset = false;
-                setError(QStringLiteral("Ошибка COM %1: измерения недостоверны до нового сбора")
-                             .arg(stream + 1));
+                if (!m_collectionFinished) {
+                    m_boardArmed = false;
+                    m_awaitReset = false;
+                    setError(QStringLiteral("Ошибка COM %1: измерения недостоверны до нового сбора")
+                                 .arg(stream + 1));
+                } else {
+                    // Потеря связи после окончания не отменяет уже измеренные фронты.
+                    emit changed();
+                }
             }
         });
     }
@@ -442,7 +447,8 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
             if (m_options.boardTransport != BoardTransport::LegacySerial) return;
             m_legacyReceiving[size_t(stream)] = false;
             m_boardReceiving = false;
-            if (m_boardArmed || (m_awaitReset && m_legacyArmed[size_t(stream)])) {
+            if (!m_collectionFinished &&
+                (m_boardArmed || (m_awaitReset && m_legacyArmed[size_t(stream)]))) {
                 m_boardArmed = false;
                 m_awaitReset = false;
                 setError(QStringLiteral("Разрыв потока старой платы COM %1; начните новый сбор")
@@ -590,6 +596,8 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
     m_collectionElapsed.start();
     m_collectionFinished = false;
     m_finishReason.clear();
+    m_samplesAtFinish = {};
+    m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
     m_kpSeenOnPc.invalidate();
     if (!inputCleared) m_evidenceValid = false;
 }
@@ -835,7 +843,8 @@ void IntegrationSession::receiveSerial() {
             processFrame(candidate);
         } else {
             ++m_rejectedFrames;
-            recordFrame(candidate, QStringLiteral("Неверный кадр RS-485"));
+            if (!m_collectionFinished)
+                recordFrame(candidate, QStringLiteral("Неверный кадр RS-485"));
             m_serialBuffer.remove(0, 1);
             emit changed();
         }
@@ -847,7 +856,7 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
     QString error;
     if (!StandProtocol::parseBoardFrame(raw, &parsed, &error)) {
         ++m_rejectedFrames;
-        recordFrame(raw, error);
+        if (!m_collectionFinished) recordFrame(raw, error);
         setError(error);
         return;
     }
@@ -1011,6 +1020,8 @@ bool IntegrationSession::resetBoard() {
         m_collectionElapsed.start();
         m_collectionFinished = false;
         m_finishReason.clear();
+        m_samplesAtFinish = {};
+        m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
         m_kpSeenOnPc.invalidate();
         m_localEvidence = QJsonArray{};
         for (auto &watchdog : m_legacyWatchdog) watchdog.stop();
@@ -1045,6 +1056,8 @@ bool IntegrationSession::resetBoard() {
     m_collectionElapsed.start();
     m_collectionFinished = false;
     m_finishReason.clear();
+    m_samplesAtFinish = {};
+    m_acceptedAtFinish = m_rejectedAtFinish = m_discardedUdpAtFinish = 0;
     m_kpSeenOnPc.invalidate();
     m_localEvidence = QJsonArray{};
     m_boardArmed = false;
@@ -1128,7 +1141,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
         return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
-    if (m_collectionElapsed.isValid() && m_collectionElapsed.elapsed() * 1000 >= (qint64(1) << 31))
+    if (!m_collectionFinished && m_collectionElapsed.isValid() &&
+        m_collectionElapsed.elapsed() * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Окно сбора превысило половину оборота счётчика"));
     const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
     if (!kpOffset)
@@ -1137,8 +1151,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     if (qAbs(qint64(action.offsetMs) - *kpOffset) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Интервал счётчика неоднозначен после переполнения"));
     if (m_options.boardTransport == BoardTransport::LegacySerial &&
-        (m_legacy[0].sampleCount() * 1000 >= (quint64(1) << 31) ||
-         (dualLegacy && m_legacy[1].sampleCount() * 1000 >= (quint64(1) << 31))))
+        ((m_collectionFinished ? m_samplesAtFinish[0] : m_legacy[0].sampleCount()) * 1000 >= (quint64(1) << 31) ||
+         (dualLegacy && (m_collectionFinished ? m_samplesAtFinish[1] : m_legacy[1].sampleCount()) * 1000 >= (quint64(1) << 31))))
         return blocked(State::AmbiguousInterval, QStringLiteral("Слишком длинный сбор старого пиротестера для этой шкалы счётчика"));
 
     if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
@@ -1180,11 +1194,15 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         result.channels.append(sample);
     }
     if (observed == 0) {
-        result.state = State::WaitingForInputs;
-        result.reason = QStringLiteral("Нет отметок сопоставленных входов");
+        result.state = m_collectionFinished ? State::MissingAfterFinish : State::WaitingForInputs;
+        result.reason = m_collectionFinished
+            ? QStringLiteral("Не сработало за время завершённого испытания")
+            : QStringLiteral("Нет отметок сопоставленных входов");
     } else if (observed != mapped.inputs.size()) {
-        result.state = State::Partial;
-        result.reason = QStringLiteral("Часть входов без отметки");
+        result.state = m_collectionFinished ? State::PartialAfterFinish : State::Partial;
+        result.reason = m_collectionFinished
+            ? QStringLiteral("После завершения часть входов не сработала")
+            : QStringLiteral("Часть входов без отметки");
     } else {
         result.state = State::Measured;
     }
@@ -1194,8 +1212,9 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
 QString IntegrationSession::actionResult(const PlannedAction &action) const {
     const ActionMeasurement result = measureAction(action);
     using State = ActionMeasurement::State;
+    if (result.state == State::MissingAfterFinish) return result.reason;
     if (result.state != State::WaitingForInputs && result.state != State::Partial &&
-        result.state != State::Measured)
+        result.state != State::PartialAfterFinish && result.state != State::Measured)
         return result.reason;
 
     QStringList lines;
@@ -1203,7 +1222,9 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
         const int yps = sample.input.index / 8 + 1;
         const int channel = sample.input.index % 8 + 1;
         if (!sample.actualMs) {
-            lines << QStringLiteral("ЯПС%1/%2: нет отметки").arg(yps).arg(channel);
+            lines << QStringLiteral("ЯПС%1/%2: %3").arg(yps).arg(channel)
+                .arg(result.state == State::PartialAfterFinish
+                    ? QStringLiteral("НЕ СРАБОТАЛ") : QStringLiteral("нет отметки"));
             continue;
         }
         QString line = QStringLiteral("ЯПС%1/%2: %3 мс, Δ %4 мс")
@@ -1222,6 +1243,9 @@ void IntegrationSession::finishCollection(const QString &reason) {
     if (m_collectionFinished || !m_hasPlan) return;
     m_collectionFinished = true;
     m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
+    m_acceptedAtFinish = m_acceptedFrames;
+    m_rejectedAtFinish = m_rejectedFrames;
+    m_discardedUdpAtFinish = m_discardedUdpSenders;
     m_finishReason = reason;
     m_localEvidence.append(QJsonObject{
         {"type", "COLLECTION_FINISHED"},
@@ -1245,10 +1269,18 @@ void IntegrationSession::checkCompletion() {
     if (lastOffset < 0) return;
     constexpr qint64 kAfterLastActionMs = 250;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
-        // Старый прибор: время по числу принятых байтов, а не по таймеру ПК.
-        const qint64 elapsedUs = qint64(m_legacy[0].sampleCount()) * 1000 - qint64(*kp);
-        if (elapsedUs >= (lastOffset + kAfterLastActionMs) * 1000)
-            finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"));
+        // Старый прибор: каждая плата измеряет время собственным счётчиком байтов.
+        // При двух COM нельзя завершать общий сбор, пока второй не дошёл до конца окна.
+        const qint64 limitUs = (lastOffset + kAfterLastActionMs) * 1000;
+        const qint64 firstElapsedUs = qint64(m_legacy[0].sampleCount()) * 1000 - qint64(*kp);
+        if (firstElapsedUs < limitUs) return;
+        if (!m_options.secondLegacySerialPort.isEmpty()) {
+            const auto secondKp = timestamp(m_boardFrame.channels[15], InputRef{15, false});
+            if (!secondKp) return;
+            const qint64 secondElapsedUs = qint64(m_legacy[1].sampleCount()) * 1000 - qint64(*secondKp);
+            if (secondElapsedUs < limitUs) return;
+        }
+        finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"));
         return;
     }
     // Новая плата не передаёт текущий тик, только запомненные фронты.
@@ -1290,7 +1322,8 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("run_id"), m_runId);
     report.insert(QStringLiteral("collection_finished"), m_collectionFinished);
     report.insert(QStringLiteral("finish_reason"), m_finishReason);
-    report.insert(QStringLiteral("udp_discarded_sender_packets"), QString::number(m_discardedUdpSenders));
+    report.insert(QStringLiteral("udp_discarded_sender_packets"),
+                  QString::number(m_collectionFinished ? m_discardedUdpAtFinish : m_discardedUdpSenders));
     report.insert(QStringLiteral("udp_last_sender"), m_lastUdpSender);
     report.insert(QStringLiteral("collection_id"), m_collectionId);
     report.insert(QStringLiteral("upload_id"), m_uploadId);
@@ -1323,8 +1356,10 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         : QStringLiteral("board microsecond counter minus physical KP timestamp"));
     if (m_options.boardTransport == BoardTransport::LegacySerial)
         report.insert(QStringLiteral("legacy_integrity_limit"), QStringLiteral("The byte-mask protocol has no CRC or sequence number; individual missing bytes cannot be detected"));
-    report.insert(QStringLiteral("legacy_sample_count"), QString::number(m_legacy[0].sampleCount()));
-    report.insert(QStringLiteral("second_legacy_sample_count"), QString::number(m_legacy[1].sampleCount()));
+    report.insert(QStringLiteral("legacy_sample_count"),
+                  QString::number(m_collectionFinished ? m_samplesAtFinish[0] : m_legacy[0].sampleCount()));
+    report.insert(QStringLiteral("second_legacy_sample_count"),
+                  QString::number(m_collectionFinished ? m_samplesAtFinish[1] : m_legacy[1].sampleCount()));
     report.insert(QStringLiteral("second_legacy_serial_port"), m_options.secondLegacySerialPort);
     const auto secondKp = m_boardArmed && m_options.boardTransport == BoardTransport::LegacySerial && !m_options.secondLegacySerialPort.isEmpty()
         ? timestamp(m_boardFrame.channels[15], InputRef{15, false}) : std::nullopt;
@@ -1341,8 +1376,10 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("kp_yps_index"), m_options.kpYps > 0 ? QJsonValue(m_options.kpYps - 1) : QJsonValue());
     report.insert(QStringLiteral("legacy_block"), m_options.legacySecondStage ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"));
     report.insert(QStringLiteral("kp_time_us"), kpTimeUs() ? QJsonValue(double(*kpTimeUs())) : QJsonValue());
-    report.insert(QStringLiteral("accepted_frames"), QString::number(m_acceptedFrames));
-    report.insert(QStringLiteral("rejected_frames"), QString::number(m_rejectedFrames));
+    report.insert(QStringLiteral("accepted_frames"),
+                  QString::number(m_collectionFinished ? m_acceptedAtFinish : m_acceptedFrames));
+    report.insert(QStringLiteral("rejected_frames"),
+                  QString::number(m_collectionFinished ? m_rejectedAtFinish : m_rejectedFrames));
     report.insert(QStringLiteral("frame_evidence_file"), QFileInfo(framesPath).fileName());
     report.insert(QStringLiteral("frame_evidence_sha256"), QString::fromLatin1(frameHash.result().toHex()));
     report.insert(QStringLiteral("catalog_source_revision"), QStringLiteral("c8e14dcfe6e13d703044beca58c3dc2ee2a8c32b"));

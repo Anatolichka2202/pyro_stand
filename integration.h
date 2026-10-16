@@ -95,7 +95,8 @@ struct ActionMeasurement {
         Unmapped, UploadUnconfirmed, ExecutionUnconfirmed, PrematureActivity,
         BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
         WaitingForClockAlignment, WaitingForInputs, Partial, Measured,
-        PlanReferenceUnknown, InvalidAssignment
+        PlanReferenceUnknown, InvalidAssignment,
+        MissingAfterFinish, PartialAfterFinish
     };
     State state = State::Unmapped;
     QString reason;
@@ -229,6 +230,10 @@ private:
     bool m_collectionFinished = false;
     QString m_finishReason;
     quint64 m_discardedUdpSenders = 0;
+    // Счётчики завершённого сбора не меняются при последующем live-приёме.
+    quint64 m_acceptedAtFinish = 0;
+    quint64 m_rejectedAtFinish = 0;
+    quint64 m_discardedUdpAtFinish = 0;
     QString m_lastUdpSender;
     BoardFrame m_liveFrame{};
     QTimer m_boardWatchdog;

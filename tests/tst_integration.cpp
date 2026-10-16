@@ -100,6 +100,7 @@ private slots:
     void missingInputsTurnIntoFailureAfterFinish();
     void dualLegacyWaitsForBothCounters();
     void manualEarlyFinishNeverClaimsMissedPulse();
+    void actual33ActionCyclogramHasUnambiguousChannels();
 };
 
 
@@ -955,6 +956,54 @@ void IntegrationTest::manualEarlyFinishNeverClaimsMissedPulse() {
     QCOMPARE(session.measureAction(session.m_plan.actions[1]).state,
              ActionMeasurement::State::StoppedEarly);
     QVERIFY(!session.actionResult(session.m_plan.actions[1]).contains(QStringLiteral("Не сработало")));
+}
+
+
+void IntegrationTest::actual33ActionCyclogramHasUnambiguousChannels() {
+    // Проверяем не упрощённый тестовый пример, а актуальный файл оператора.
+    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/../../cyclogram.txt"));
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+    const QByteArray bytes = file.readAll();
+    QVERIFY(!bytes.contains("SET_UTC_TIME"));
+    CyclogramPlan plan;
+    QString error;
+    QVERIFY2(StandProtocol::parseCyclogram(bytes, &plan, &error), qPrintable(error));
+    QCOMPARE(plan.actions.size(), 33);
+    QCOMPARE(plan.actions.last().offsetMs, 99750);
+    for (const auto &action : plan.actions) {
+        QVERIFY2(!action.comment.trimmed().isEmpty(),
+                 qPrintable(QStringLiteral("Нет комментария: ") + action.key));
+    }
+    const auto mapping = StandProtocol::benchMapping(9, 1, 9, plan);
+    QCOMPARE(mapping.kp.index, 71);
+    QCOMPARE(mapping.actions.size(), 7); // 3 импульса А + 3 импульса Б + КП.
+    QSet<int> observedInputs;
+    int actualInputs = 0;
+    for (auto it = mapping.actions.cbegin(); it != mapping.actions.cend(); ++it) {
+        const auto &mapped = it.value();
+        QVERIFY(mapped.definitionConfirmed);
+        QVERIFY(!mapped.inputs.isEmpty());
+        for (const auto &input : mapped.inputs) {
+            QVERIFY(input.index >= 0 && input.index < 96);
+            QVERIFY2(!observedInputs.contains(input.index),
+                     qPrintable(QStringLiteral("Дублируется вход %1 (%2)")
+                         .arg(input.index + 1).arg(it.key())));
+            observedInputs.insert(input.index);
+            ++actualInputs;
+        }
+    }
+    QCOMPARE(actualInputs, 15);
+    QCOMPARE(mapping.actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12")
+             .inputs.first().index, 64);
+    QCOMPARE(mapping.actions.value("FIRE_STARTING_CHAMBER_ENGINES_9_TO_12")
+             .inputs.first().index, 66);
+    QCOMPARE(mapping.actions.value("CLOSE_MAIN_VALVES_ENGINES_9_TO_12")
+             .inputs.first().index, 69);
+    QCOMPARE(mapping.actions.value("IGNITE_PYRO_CANDLE").inputs.first().index, 0);
+    QCOMPARE(mapping.actions.value("OPEN_OXIDIZER_AND_FUEL_VALVES")
+             .inputs.first().index, 2);
+    QCOMPARE(mapping.actions.value("SHUTDOWN_ENGINE_BLOCK_B")
+             .inputs.first().index, 5);
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

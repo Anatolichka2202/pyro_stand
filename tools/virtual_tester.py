@@ -146,13 +146,15 @@ def main():
                                                "loss", "wrap"), default="normal")
     parser.add_argument("--address", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--rate", type=float, default=100,
+    parser.add_argument("--rate", type=float, default=None,
                         help="Скорость подачи пакетов/масок; 0 — без задержек")
     parser.add_argument("--record", help="Записать сгенерированные данные в JSONL")
     parser.add_argument("--replay", help="Воспроизвести кадры из *.frames.jsonl")
     parser.add_argument("--output", default="legacy-simulated.raw",
                         help="Имя файла сырых байтов в режиме legacy-file")
     args = parser.parse_args()
+    if args.rate is None:
+        args.rate = 1000 if args.mode.startswith("legacy") else 100
     if args.port < 1 or args.port > 65535 or args.rate < 0:
         parser.error("Неверный порт или частота")
     protocol = "legacy-mask-1ms" if args.mode.startswith("legacy") else "aa55-96channels"

@@ -45,6 +45,15 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build-win -C Debug --output-on-failure -V
 
+      - name: Publish operator UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyroStand-Operator-UI-Windows-${{ github.sha }}
+          path: build-win/operator-*.png
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Python virtual tester checks
         shell: pwsh
         run: python -m unittest discover -s tests -p test_virtual_tester.py -v

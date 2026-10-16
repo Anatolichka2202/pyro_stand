@@ -37,3 +37,12 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure -V
+
+      - name: Publish operator UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyroStand-Operator-UI-Linux-${{ github.sha }}
+          path: build/operator-*.png
+          if-no-files-found: warn
+          retention-days: 14

@@ -171,7 +171,11 @@ public:
                     const auto block=step.block;const auto mask=step.mask;const auto &name=step.name;
                     if(legacyBaud>0 && !window.m_peer->m_serial.setBaudRate(legacyBaud)) return 24;
                     if(!window.m_session.resetBoard() || !window.m_peer->resetBoard()) return 14;
-                    if(!waitFor([&]{return window.m_session.boardArmed() && window.m_peer->boardArmed();},5000)) return 15;
+                    // Проба неизвестного baud пишет только сырые байты: ненулевая маска
+                    // покоя не подтверждает готовность старой измерительной шкалы.
+                    if(!waitFor([&]{return window.m_session.boardArmed() &&
+                        (legacyBaud>0?window.m_peer->boardReceiving():window.m_peer->boardArmed());},5000)) return 15;
+                    const bool oldArmedAtPulse=window.m_peer->boardArmed();
                     if(!pulseHealth()) return 22;
                     const std::array<quint8,6> bytes={0x55,block,0x54,0,mask,250};
                     log("PULSE "+name+" width=2500ms, LOCK/WAIT");
@@ -210,7 +214,8 @@ public:
                         {"driver_error_flags_observed",int(driverErrorFlags)},
                         {"polls_with_framing_error",QString::number(framingPolls)},
                         {"polls_with_break",QString::number(breakPolls)},
-                        {"old_time_scale_verified",false},{"new_inputs",newInputs},{"old_inputs",oldInputs},
+                        {"old_time_scale_verified",false},{"old_collection_armed_at_pulse",oldArmedAtPulse},
+                        {"new_inputs",newInputs},{"old_inputs",oldInputs},
                         {"at_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
                     if(!saveObserverReport(window.m_session,QDir(output).filePath(name+"-new.json")) ||
                         !saveObserverReport(*window.m_peer,QDir(output).filePath(name+"-old.json"))) return 18;

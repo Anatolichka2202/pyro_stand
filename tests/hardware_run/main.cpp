@@ -41,7 +41,7 @@ static void log(const QString &text) {
 // Доступ только к существующим тестовым швам. Никакой подстановки измерений.
 class OperatorGuiTest {
 public:
-    static int run(const QString &source,const QString &output,int yps,bool pulseCheck,int legacyBaud) {
+    static int run(const QString &source,const QString &output,int yps,bool pulseCheck,int legacyBaud,bool groupPulseCheck) {
         KasuEventBus bus;QThread coreThread;
         auto *controller=new KasuController(&bus);controller->moveToThread(&coreThread);coreThread.start();
         KasuControllerOptions options;options.bindAddress=QHostAddress("192.168.17.231");
@@ -154,15 +154,26 @@ public:
             if(pulseCheck) {
                 // Отдельная диагностика имитаторов: ПЗ не загружается и UNLOCK не отправляется.
                 QJsonArray steps;
-                for(quint8 block:{quint8(0xA7),quint8(0xA1)}) for(int bit=0;bit<8;++bit) {
-                    if(legacyBaud>0 && (block!=0xA1 || bit!=1)) continue;
+                struct PulseStep { quint8 block; quint8 mask; QString name; };
+                QVector<PulseStep> pulseSteps;
+                if(groupPulseCheck) {
+                    // Те же выходы БКД-А: отдельно и группами, встречающимися в ПЗ.
+                    for(const quint8 mask:{quint8(1),quint8(2),quint8(3),quint8(4),quint8(8),quint8(16),quint8(0x1C),quint8(0x1F),quint8(0x80)})
+                        pulseSteps.append({0xA7,mask,QStringLiteral("A-mask%1").arg(mask,2,16,QChar('0'))});
+                } else {
+                    for(quint8 block:{quint8(0xA7),quint8(0xA1)}) for(int bit=0;bit<8;++bit) {
+                        if(legacyBaud>0 && (block!=0xA1 || bit!=1)) continue;
+                        pulseSteps.append({block,quint8(1u<<bit),QStringLiteral("%1-out%2").arg(block==0xA7?"A":"B").arg(bit+1)});
+                    }
+                }
+                for(const auto &step:pulseSteps) {
                     if(!pulseHealth()) return 22;
-                    const QString name=QStringLiteral("%1-out%2").arg(block==0xA7?"A":"B").arg(bit+1);
+                    const auto block=step.block;const auto mask=step.mask;const auto &name=step.name;
                     if(legacyBaud>0 && !window.m_peer->m_serial.setBaudRate(legacyBaud)) return 24;
                     if(!window.m_session.resetBoard() || !window.m_peer->resetBoard()) return 14;
                     if(!waitFor([&]{return window.m_session.boardArmed() && window.m_peer->boardArmed();},5000)) return 15;
                     if(!pulseHealth()) return 22;
-                    const std::array<quint8,6> bytes={0x55,block,0x54,0,quint8(1u<<bit),250};
+                    const std::array<quint8,6> bytes={0x55,block,0x54,0,mask,250};
                     log("PULSE "+name+" width=2500ms, LOCK/WAIT");
                     if(!rawCommand(bytes,"single-pulse "+name,true)) return 23;
                     QElapsedTimer observation;observation.start();
@@ -194,7 +205,7 @@ public:
                         return inputs;
                     };
                     const auto newInputs=observations(window.m_session),oldInputs=observations(*window.m_peer);
-                    steps.append(QJsonObject{{"name",name},{"block",int(block)},{"bkd",0},{"mask",1<<bit},
+                    steps.append(QJsonObject{{"name",name},{"block",int(block)},{"bkd",0},{"mask",int(mask)},
                         {"requested_width_ms",2500},{"legacy_baud",legacyBaud>0?legacyBaud:115200},
                         {"driver_error_flags_observed",int(driverErrorFlags)},
                         {"polls_with_framing_error",QString::number(framingPolls)},
@@ -204,7 +215,7 @@ public:
                     if(!saveObserverReport(window.m_session,QDir(output).filePath(name+"-new.json")) ||
                         !saveObserverReport(*window.m_peer,QDir(output).filePath(name+"-old.json"))) return 18;
                     QFile summary(QDir(output).filePath("pulse-check.json"));
-                    const auto summaryBytes=QJsonDocument(QJsonObject{{"format","pyro_stand.single-pulse.v1"},
+                    const auto summaryBytes=QJsonDocument(QJsonObject{{"format","pyro_stand.single-pulse.v1"},{"group_comparison",groupPulseCheck},
                         {"purpose","diagnostic pulses on safe simulators; no cyclogram grading"},{"steps",steps}}).toJson();
                     if(!summary.open(QIODevice::WriteOnly|QIODevice::Truncate) || summary.write(summaryBytes)!=summaryBytes.size() || !summary.flush()) return 18;
                     log(QStringLiteral("PULSE RESULT %1 new=%2 old=%3").arg(name).arg(newInputs.size()).arg(oldInputs.size()));
@@ -317,15 +328,18 @@ int main(int argc,char **argv) {
     QCommandLineParser parser;parser.addHelpOption();
     parser.addOption({"execute-safe-loads",QStringLiteral("Явно разрешённый запуск на безопасных имитаторах")});
     parser.addOption({"pulse-check",QStringLiteral("Явно разрешённые одиночные импульсы на имитаторы вне ПЗ")});
+    parser.addOption({"group-pulse-check",QStringLiteral("Сравнение одиночных выходов и групп БКД-А; только совместно с --pulse-check")});
     parser.addOption({"diagnostic-legacy-baud",QStringLiteral("Проба приёма COM9 на одном выходе БКД-Б; времена COM не оцениваются"),"baud"});
     parser.addOption({"source","Исходное ПЗ","path"});parser.addOption({"output","Новый каталог результатов","path"});
     parser.addOption({"yps","ЯПС новой платы, 1..12","number","8"});parser.process(app);
     bool ok=false;const int yps=parser.value("yps").toInt(&ok);
     const int legacyBaud=parser.isSet("diagnostic-legacy-baud")?parser.value("diagnostic-legacy-baud").toInt():0;
+    const bool groupPulseCheck=parser.isSet("group-pulse-check");
+    if(groupPulseCheck && (!parser.isSet("pulse-check") || parser.isSet("diagnostic-legacy-baud"))) parser.showHelp(1);
     if(parser.isSet("diagnostic-legacy-baud") && (!parser.isSet("pulse-check") ||
         !QList<int>{9600,19200,38400,57600,115200,230400}.contains(legacyBaud))) parser.showHelp(1);
     if(!parser.isSet("execute-safe-loads") || (!parser.isSet("source") && !parser.isSet("pulse-check")) || !parser.isSet("output") || !ok || yps<1 || yps>12) parser.showHelp(1);
     const auto output=QFileInfo(parser.value("output")).absoluteFilePath();
     if(QFileInfo::exists(output) || !QDir().mkpath(output)) return 1;
-    return OperatorGuiTest::run(QFileInfo(parser.value("source")).absoluteFilePath(),output,yps,parser.isSet("pulse-check"),legacyBaud);
+    return OperatorGuiTest::run(QFileInfo(parser.value("source")).absoluteFilePath(),output,yps,parser.isSet("pulse-check"),legacyBaud,groupPulseCheck);
 }

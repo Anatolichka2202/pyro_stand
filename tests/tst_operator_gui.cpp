@@ -177,7 +177,7 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
             correctScheme=summary && transport && port &&
                 ip && ip->text()=="192.168.17.144" && summary->text().contains("192.168.17.144") &&
                 transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
-                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 9")) &&
+                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 8")) &&
                 summary->text().contains(QStringLiteral("БКД-Б · одна ЯПС · без КП"));
             dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-connection-bench.png");
         }

@@ -971,7 +971,7 @@ void IntegrationWindow::configureTester() {
     dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
     dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
     auto *root = new QVBoxLayout(&dialog);
-    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 9 + COM9 БКД-Б"), &dialog);
+    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 8 + COM9 БКД-Б"), &dialog);
     preset->setObjectName(QStringLiteral("historicalPresetBtn"));
     preset->setMinimumHeight(40);
     root->addWidget(preset);
@@ -1071,7 +1071,7 @@ void IntegrationWindow::configureTester() {
         profile->clear(); comparisonProfile->clear();
         address->setText(QStringLiteral("192.168.17.144"));
         transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
-        first->setCurrentIndex(first->findData(9)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(9));
+        first->setCurrentIndex(first->findData(8)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(8));
         comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
         secondPort->setCurrentText(QString());
     });
@@ -1327,11 +1327,11 @@ void IntegrationWindow::refresh() {
             ? QStringLiteral("не загружена") : m_session.mapping().version));
     const auto &connection = m_session.options();
     if (connection.boardTransport == IntegrationSession::BoardTransport::Udp &&
-        connection.firstStageYps == 9 && connection.secondStageYps == 0 && connection.kpYps == 9 &&
+        connection.firstStageYps == 8 && connection.secondStageYps == 0 && connection.kpYps == 8 &&
         connection.comparisonLegacyPort.compare(QStringLiteral("COM9"), Qt::CaseInsensitive) == 0 &&
         connection.comparisonLegacySecondStage && !connection.comparisonLegacyHasKp &&
         connection.wiringProfilePath.isEmpty() && connection.comparisonWiringProfilePath.isEmpty())
-        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 9, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
+        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 → БКД-А, ЯПС 8, КП на входе 8   |   СТАРЫЙ · COM9 → БКД-Б, одна ЯПС, без КП")
             .arg(connection.boardIp.toString()));
     if (!m_session.mapping().warnings.isEmpty())
         m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · КАРТА ТРЕБУЕТ ПРОВЕРКИ"));

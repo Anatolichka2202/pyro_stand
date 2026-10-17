@@ -10,10 +10,17 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QThread>
 #include <QTimeZone>
 #include <functional>
 #include <cstdio>
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 using namespace kasu;
 
@@ -34,7 +41,7 @@ static void log(const QString &text) {
 // Доступ только к существующим тестовым швам. Никакой подстановки измерений.
 class OperatorGuiTest {
 public:
-    static int run(const QString &source,const QString &output,int yps) {
+    static int run(const QString &source,const QString &output,int yps,bool pulseCheck,int legacyBaud) {
         KasuEventBus bus;QThread coreThread;
         auto *controller=new KasuController(&bus);controller->moveToThread(&coreThread);coreThread.start();
         KasuControllerOptions options;options.bindAddress=QHostAddress("192.168.17.231");
@@ -78,6 +85,45 @@ public:
             bus.submit(command);
             return waitFor([&]{return requests>previous;},2000);
         };
+        const auto pulseHealth=[&] {
+            bool waitingLocked=false;
+            QMetaObject::invokeMethod(controller,[&]{const auto s=exchange->liveSnapshot();
+                waitingLocked=s.fresh && bcvm::modeBits(s.status.flags)==bcvm::board_mode::WAIT &&
+                    (s.status.flags & bcvm::status_flag::LOCKED);},Qt::BlockingQueuedConnection);
+            return waitingLocked && window.m_session.debugConnected() && window.m_peer &&
+                window.m_peer->debugConnected() && window.m_session.boardReceiving() && window.m_peer->boardReceiving();
+        };
+        const auto rawCommand=[&](const std::array<quint8,6> &bytes,const QString &label,bool energize=false) {
+            if(!waitFor([&]{return state().startsWith("BCVM_EXCHANGE_READY");},5000)) return false;
+            if(energize && !pulseHealth()) return false;
+            bool accepted=false;QString startError;
+            // Bool API подтверждает принятие именно этой команды, а не старый результат.
+            QMetaObject::invokeMethod(controller,[&]{
+                const auto s=exchange->liveSnapshot();
+                if(energize && (!s.fresh || bcvm::modeBits(s.status.flags)!=bcvm::board_mode::WAIT ||
+                    !(s.status.flags & bcvm::status_flag::LOCKED))) return;
+                accepted=exchange->startDebugRawCommand(bytes,&startError);
+            },Qt::BlockingQueuedConnection);
+            if(!accepted) {log("RAW REJECTED "+label+" "+startError);return false;}
+            log("RAW ACCEPTED "+label);
+            return waitFor([&]{return state().startsWith("BCVM_EXCHANGE_READY") && state().contains("BCVM_CONTROL_COMMAND_SENT");},5000);
+        };
+        const auto saveObserverReport=[&](IntegrationSession &session,const QString &path) {
+            if(!session.saveReport(path,&error)) return false;
+            if(!pulseCheck) return true;
+            QFile input(path);if(!input.open(QIODevice::ReadOnly)) return false;
+            auto report=QJsonDocument::fromJson(input.readAll()).object();input.close();
+            if(report.isEmpty()) return false;
+            report.insert("test_kind","diagnostic-pulses-on-simulators; no cyclogram grading");
+            if(session.options().boardTransport==IntegrationSession::BoardTransport::LegacySerial) {
+                report.insert("diagnostic_legacy_baud",legacyBaud>0?legacyBaud:115200);
+                report.insert("time_scale_verified",false);
+                report.insert("nominal_time_fields_are_not_measurements",true);
+                report.insert("measurement_clock","Nominal byte-index decoding only; UART trial time scale is unverified");
+            }
+            QSaveFile annotated(path);const auto bytes=QJsonDocument(report).toJson();
+            return annotated.open(QIODevice::WriteOnly) && annotated.write(bytes)==bytes.size() && annotated.commit();
+        };
         const auto execute=[&]()->int {
             if(!waitFor([&]{return fresh() && window.m_session.debugConnected() && window.m_peer &&
                 window.m_session.boardReceiving() && window.m_peer->boardReceiving();},30000)) {
@@ -104,6 +150,67 @@ public:
                 return ok && tick>=0 && tick<86400 && day.isValid() && qAbs(utc.msecsTo(QDateTime::currentDateTimeUtc()))<3000;
             },5000)) {log("UTC sync not observed in BCVM status; no upload/unlock");return 19;}
             log("BCVM UTC agrees with PC within 3 seconds (not a metrology claim)");
+
+            if(pulseCheck) {
+                // Отдельная диагностика имитаторов: ПЗ не загружается и UNLOCK не отправляется.
+                QJsonArray steps;
+                for(quint8 block:{quint8(0xA7),quint8(0xA1)}) for(int bit=0;bit<8;++bit) {
+                    if(legacyBaud>0 && (block!=0xA1 || bit!=1)) continue;
+                    if(!pulseHealth()) return 22;
+                    const QString name=QStringLiteral("%1-out%2").arg(block==0xA7?"A":"B").arg(bit+1);
+                    if(legacyBaud>0 && !window.m_peer->m_serial.setBaudRate(legacyBaud)) return 24;
+                    if(!window.m_session.resetBoard() || !window.m_peer->resetBoard()) return 14;
+                    if(!waitFor([&]{return window.m_session.boardArmed() && window.m_peer->boardArmed();},5000)) return 15;
+                    if(!pulseHealth()) return 22;
+                    const std::array<quint8,6> bytes={0x55,block,0x54,0,quint8(1u<<bit),250};
+                    log("PULSE "+name+" width=2500ms, LOCK/WAIT");
+                    if(!rawCommand(bytes,"single-pulse "+name,true)) return 23;
+                    QElapsedTimer observation;observation.start();
+                    quint64 framingPolls=0,breakPolls=0;quint32 driverErrorFlags=0;
+                    while(observation.elapsed()<3300) {
+#ifdef Q_OS_WIN
+                        // Флаги драйвера дополняют сырые байты. Число опросов не равно числу испорченных байтов.
+                        DWORD flags=0;COMSTAT serialStatus{};
+                        if(ClearCommError(reinterpret_cast<HANDLE>(window.m_peer->m_serial.handle()),&flags,&serialStatus)) {
+                            driverErrorFlags|=flags;
+                            if(flags & CE_FRAME) ++framingPolls;
+                            if(flags & CE_BREAK) ++breakPolls;
+                        }
+#endif
+                        QCoreApplication::processEvents();QThread::msleep(5);
+                        if(!pulseHealth()) return 22;
+                    }
+                    const auto observations=[&](const IntegrationSession &session) {
+                        QJsonArray inputs;
+                        const bool legacy=session.options().boardTransport==IntegrationSession::BoardTransport::LegacySerial;
+                        for(int index=0;index<(legacy?8:96);++index) {
+                            const auto &input=session.boardFrame().channels[size_t(index)];
+                            if(!input.triggered && !input.riseUs && !input.fallUs) continue;
+                            inputs.append(QJsonObject{{"yps",legacy?QJsonValue():QJsonValue(index/8+1)},
+                                {"channel",index%8+1},{"rise_us",double(input.riseUs)},{"fall_us",double(input.fallUs)},
+                                {"rise_count",legacy?QJsonValue(QString::number(input.observedRises)):QJsonValue()},
+                                {"width_ms",input.riseUs && input.fallUs && !(legacy && legacyBaud>0)?QJsonValue(double(quint32(input.fallUs-input.riseUs))/1000):QJsonValue()}});
+                        }
+                        return inputs;
+                    };
+                    const auto newInputs=observations(window.m_session),oldInputs=observations(*window.m_peer);
+                    steps.append(QJsonObject{{"name",name},{"block",int(block)},{"bkd",0},{"mask",1<<bit},
+                        {"requested_width_ms",2500},{"legacy_baud",legacyBaud>0?legacyBaud:115200},
+                        {"driver_error_flags_observed",int(driverErrorFlags)},
+                        {"polls_with_framing_error",QString::number(framingPolls)},
+                        {"polls_with_break",QString::number(breakPolls)},
+                        {"old_time_scale_verified",false},{"new_inputs",newInputs},{"old_inputs",oldInputs},
+                        {"at_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+                    if(!saveObserverReport(window.m_session,QDir(output).filePath(name+"-new.json")) ||
+                        !saveObserverReport(*window.m_peer,QDir(output).filePath(name+"-old.json"))) return 18;
+                    QFile summary(QDir(output).filePath("pulse-check.json"));
+                    const auto summaryBytes=QJsonDocument(QJsonObject{{"format","pyro_stand.single-pulse.v1"},
+                        {"purpose","diagnostic pulses on safe simulators; no cyclogram grading"},{"steps",steps}}).toJson();
+                    if(!summary.open(QIODevice::WriteOnly|QIODevice::Truncate) || summary.write(summaryBytes)!=summaryBytes.size() || !summary.flush()) return 18;
+                    log(QStringLiteral("PULSE RESULT %1 new=%2 old=%3").arg(name).arg(newInputs.size()).arg(oldInputs.size()));
+                }
+                return 0;
+            }
 
             QFile input(source);if(!input.open(QIODevice::ReadOnly)) {log(input.errorString());return 7;}
             if(input.size()<=0 || input.size()>qint64(bcvm::CYCLOGRAM_MAX_BYTES)) {log("Source size outside BCVM limits");return 8;}
@@ -163,6 +270,16 @@ public:
             return 0;
         };
         const int result=execute();
+        bool outputsCleared=true;
+        if(pulseCheck) {
+            // Нулевая маска снимает также импульс при прерывании проверки.
+            for(quint8 block:{quint8(0xA7),quint8(0xA1)}) {
+                bool cleared=false;
+                for(int attempt=0;attempt<3 && !cleared;++attempt)
+                    cleared=rawCommand({0x55,block,0x54,0,0,0},"diagnostic outputs clear");
+                outputsCleared=outputsCleared && cleared;
+            }
+        }
         // На каждом выходе возвращаем подтверждённый LOCK, включая ошибку после UNLOCK.
         bool locked=false;
         for(int attempt=0;attempt<4 && !locked;++attempt) {
@@ -172,18 +289,21 @@ public:
         window.m_session.finishCollection(QStringLiteral("Аппаратный тест на имитаторах завершён"));
         if(window.m_peer) window.m_peer->finishCollection(QStringLiteral("Аппаратный тест на имитаторах завершён"));
         window.refresh();const bool screenshotSaved=window.grab().save(QDir(output).filePath("operator-hardware.png"));
-        const bool saved=window.m_session.saveReport(QDir(output).filePath("new-report.json"),&error);
-        const bool oldSaved=window.m_peer && window.m_peer->saveReport(QDir(output).filePath("old-report.json"),&error);
+        const bool saved=saveObserverReport(window.m_session,QDir(output).filePath("new-report.json"));
+        const bool oldSaved=window.m_peer && saveObserverReport(*window.m_peer,QDir(output).filePath("old-report.json"));
         QFile status(QDir(output).filePath("result.json"));
-        const auto resultBytes=QJsonDocument(QJsonObject{{"result",result},{"final_lock_confirmed",locked},
+        const int finalResult=result?result:locked && outputsCleared && saved && oldSaved && screenshotSaved?0:18;
+        const auto resultBytes=QJsonDocument(QJsonObject{{"result",finalResult},{"scenario_result",result},{"final_lock_confirmed",locked},
             {"old_report_saved",oldSaved},{"screenshot_saved",screenshotSaved},
+            {"mode",pulseCheck?"diagnostic-pulses":"cyclogram"},
+            {"diagnostic_clear_sent",pulseCheck?QJsonValue(outputsCleared):QJsonValue()},
             {"new_report_saved",saved},{"new_frames",QString::number(window.m_session.acceptedFrames())},
             {"new_crc_errors",QString::number(window.m_session.rejectedFrames())},{"yps",yps},
             {"safe_loads_confirmed_by_operator",true},{"error",error}}).toJson();
         const bool statusSaved=status.open(QIODevice::WriteOnly|QIODevice::NewOnly) && status.write(resultBytes)==resultBytes.size() && status.flush();
         QMetaObject::invokeMethod(controller,[&]{controller->stop();delete controller;},Qt::BlockingQueuedConnection);
-        coreThread.quit();coreThread.wait();log(QStringLiteral("RESULT %1 LOCK=%2").arg(result).arg(locked));
-        return result ? result : locked && saved && oldSaved && screenshotSaved && statusSaved ? 0 : 18;
+        coreThread.quit();coreThread.wait();log(QStringLiteral("RESULT %1 LOCK=%2").arg(finalResult).arg(locked));
+        return statusSaved?finalResult:18;
     }
 };
 
@@ -196,11 +316,16 @@ int main(int argc,char **argv) {
 #endif
     QCommandLineParser parser;parser.addHelpOption();
     parser.addOption({"execute-safe-loads",QStringLiteral("Явно разрешённый запуск на безопасных имитаторах")});
+    parser.addOption({"pulse-check",QStringLiteral("Явно разрешённые одиночные импульсы на имитаторы вне ПЗ")});
+    parser.addOption({"diagnostic-legacy-baud",QStringLiteral("Проба приёма COM9 на одном выходе БКД-Б; времена COM не оцениваются"),"baud"});
     parser.addOption({"source","Исходное ПЗ","path"});parser.addOption({"output","Новый каталог результатов","path"});
     parser.addOption({"yps","ЯПС новой платы, 1..12","number","8"});parser.process(app);
     bool ok=false;const int yps=parser.value("yps").toInt(&ok);
-    if(!parser.isSet("execute-safe-loads") || !parser.isSet("source") || !parser.isSet("output") || !ok || yps<1 || yps>12) parser.showHelp(1);
+    const int legacyBaud=parser.isSet("diagnostic-legacy-baud")?parser.value("diagnostic-legacy-baud").toInt():0;
+    if(parser.isSet("diagnostic-legacy-baud") && (!parser.isSet("pulse-check") ||
+        !QList<int>{9600,19200,38400,57600,115200,230400}.contains(legacyBaud))) parser.showHelp(1);
+    if(!parser.isSet("execute-safe-loads") || (!parser.isSet("source") && !parser.isSet("pulse-check")) || !parser.isSet("output") || !ok || yps<1 || yps>12) parser.showHelp(1);
     const auto output=QFileInfo(parser.value("output")).absoluteFilePath();
     if(QFileInfo::exists(output) || !QDir().mkpath(output)) return 1;
-    return OperatorGuiTest::run(QFileInfo(parser.value("source")).absoluteFilePath(),output,yps);
+    return OperatorGuiTest::run(QFileInfo(parser.value("source")).absoluteFilePath(),output,yps,parser.isSet("pulse-check"),legacyBaud);
 }

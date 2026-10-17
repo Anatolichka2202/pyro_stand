@@ -25,3 +25,5 @@ target_compile_definitions(pyro_hardware_run PRIVATE KASU_ENABLE_BCVM_DEBUG_MODU
 target_link_libraries(pyro_hardware_run PRIVATE kasu_core kasu_bus kasu_runtime
     Qt6::Core Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
 # Намеренно не регистрируем этот запуск в CTest.
+add_executable(pyro_uart_loopback uart_loopback.cpp)
+target_link_libraries(pyro_uart_loopback PRIVATE Qt6::Core Qt6::SerialPort)

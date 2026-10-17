@@ -133,6 +133,7 @@ BoardFrame LegacyTesterDecoder::append(quint8 mask) {
     for (int bit = 0; bit < 8; ++bit) {
         auto &channel = m_frame.channels[size_t(bit)];
         const bool active = (mask & (1 << bit)) != 0;
+        if (active && !(m_previous & (1 << bit))) ++channel.observedRises;
         if (active && !(m_previous & (1 << bit)) && !channel.triggered) {
             channel.triggered = true;
             channel.riseUs = timeUs;
@@ -1079,7 +1080,9 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     // внутри одного сбора не должен исчезать из-за следующего кадра.
     // Live показывает текущий пакет, снимок испытания удерживает ПЕРВУЮ
     // аппаратную отметку каждого фронта. Сброс делается отдельно.
-    if (!m_collectionFinished) {
+    // До пустого кадра отметки могут принадлежать прежнему сбору:
+    // показываем их только в live, не переносим в результат нового прогона.
+    if (!m_collectionFinished && !m_awaitReset) {
         for (size_t i = 0; i < parsed.channels.size(); ++i) {
             const BoardChannel &incoming = parsed.channels[i];
             BoardChannel &stored = m_boardFrame.channels[i];
@@ -1262,11 +1265,14 @@ bool IntegrationSession::legacyStreamKpObserved(int stream) const {
         return false;
     if (stream == 1 && m_options.secondLegacySerialPort.isEmpty()) return false;
     const int kpIndex = stream * 8 + 7;
+    if(m_boardFrame.channels[size_t(kpIndex)].observedRises>1) return false;
     return timestamp(m_boardFrame.channels[size_t(kpIndex)], InputRef{kpIndex, false}).has_value();
 }
 
 std::optional<quint32> IntegrationSession::kpTimeUs() const {
     if (!m_boardArmed || !m_hasBoardFrame || m_mapping.kp.index < 0) return std::nullopt;
+    if(m_options.boardTransport==BoardTransport::LegacySerial &&
+        m_boardFrame.channels[size_t(m_mapping.kp.index)].observedRises>1) return std::nullopt;
     return timestamp(m_boardFrame.channels[size_t(m_mapping.kp.index)], m_mapping.kp);
 }
 
@@ -1317,7 +1323,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     const auto kp = kpTimeUs();
     const bool dualLegacy = m_options.boardTransport == BoardTransport::LegacySerial &&
         !m_options.secondLegacySerialPort.isEmpty();
-    const auto secondKp = dualLegacy ? timestamp(m_boardFrame.channels[15], InputRef{15, false}) : kp;
+    const auto secondKp = dualLegacy ? (legacyStreamKpObserved(1)
+        ? timestamp(m_boardFrame.channels[15],InputRef{15,false}) : std::nullopt) : kp;
     const int repetitions = std::count_if(m_plan.actions.cbegin(), m_plan.actions.cend(),
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
@@ -1336,9 +1343,22 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
          (dualLegacy && (m_collectionFinished ? m_samplesAtFinish[1] : m_legacy[1].sampleCount()) * 1000 >= (quint64(1) << 31))))
         return blocked(State::AmbiguousInterval, QStringLiteral("Слишком длинный сбор старого пиротестера для этой шкалы счётчика"));
 
+    const ActionMapping mapped = m_mapping.forAction(action);
+    if (m_options.boardTransport == BoardTransport::LegacySerial) {
+        auto repeated = [&](int index) {
+            return index>=0 && index<int(m_boardFrame.channels.size()) && m_boardFrame.channels[size_t(index)].observedRises>1;
+        };
+        for(const auto &input:mapped.inputs) {
+            const int kpIndex=dualLegacy?(input.index/8)*8+7:m_mapping.kp.index;
+            if(m_options.legacyHasKp && repeated(kpIndex))
+                return blocked(State::RepeatedInput,QStringLiteral("Повторные фронты КП этого COM; опора неоднозначна"));
+            if(repeated(input.index))
+                return blocked(State::RepeatedInput,QStringLiteral("Повторные фронты на входе %1: %2; одиночное действие не определено")
+                    .arg(input.index%8+1).arg(m_boardFrame.channels[size_t(input.index)].observedRises));
+        }
+    }
     if (m_options.boardTransport == BoardTransport::LegacySerial && !m_options.legacyHasKp)
         return blocked(State::WaitingForClockAlignment, QStringLiteral("КП только на БКД-А; счётчик БКД-Б не привязан к общей опоре"));
-    const ActionMapping mapped = m_mapping.forAction(action);
     if (mapped.inputs.isEmpty() || !mapped.definitionConfirmed || !findCommand(action.key))
         return blocked(State::InvalidAssignment, QStringLiteral("Назначение не подтверждено каталогом команд"));
     for (const auto &input : mapped.inputs) {
@@ -1470,7 +1490,8 @@ void IntegrationSession::checkCompletion() {
         const qint64 firstElapsedUs = qint64(m_legacy[0].sampleCount()) * 1000 - qint64(*kp);
         if (firstElapsedUs < limitUs) return;
         if (!m_options.secondLegacySerialPort.isEmpty()) {
-            const auto secondKp = timestamp(m_boardFrame.channels[15], InputRef{15, false});
+            const auto secondKp = legacyStreamKpObserved(1)
+                ? timestamp(m_boardFrame.channels[15],InputRef{15,false}) : std::nullopt;
             if (!secondKp) return;
             const qint64 secondElapsedUs = qint64(m_legacy[1].sampleCount()) * 1000 - qint64(*secondKp);
             if (secondElapsedUs < limitUs) return;
@@ -1562,7 +1583,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("second_legacy_sample_count"),
                   QString::number(m_collectionFinished ? m_samplesAtFinish[1] : m_legacy[1].sampleCount()));
     report.insert(QStringLiteral("second_legacy_serial_port"), m_options.secondLegacySerialPort);
-    const auto secondKp = m_boardArmed && m_options.boardTransport == BoardTransport::LegacySerial && !m_options.secondLegacySerialPort.isEmpty()
+    const auto secondKp = m_boardArmed && legacyStreamKpObserved(1)
         ? timestamp(m_boardFrame.channels[15], InputRef{15, false}) : std::nullopt;
     report.insert(QStringLiteral("second_legacy_kp_time_us"), secondKp ? QJsonValue(double(*secondKp)) : QJsonValue());
     report.insert(QStringLiteral("serial_port"), m_options.serialPort);
@@ -1633,6 +1654,17 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         actions.append(item);
     }
     report.insert(QStringLiteral("actions"), actions);
+    if(m_options.boardTransport==BoardTransport::LegacySerial) {
+        QJsonArray observations;
+        const int count=m_options.secondLegacySerialPort.isEmpty()?8:16;
+        for(int index=0;index<count;++index) {
+            const auto &input=m_boardFrame.channels[size_t(index)];
+            observations.append(QJsonObject{{"stream",index/8},{"channel",index%8+1},
+                {"rise_count",QString::number(input.observedRises)},
+                {"first_rise_us",double(input.riseUs)},{"first_fall_us",double(input.fallUs)}});
+        }
+        report.insert(QStringLiteral("legacy_input_observations"),observations);
+    }
     QSaveFile output(path);
     if (!output.open(QIODevice::WriteOnly)) return fail(error, output.errorString());
     const QByteArray data = QJsonDocument(report).toJson(QJsonDocument::Indented);

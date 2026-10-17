@@ -75,6 +75,9 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void resetDoesNotCarryOldFrameIntoNewRun();
+    void legacyRepeatedPulseIsNotSingleMeasurement();
+    void repeatedLegacyKpIsNotAnAnchor();
     void finishKeepsCounterAmbiguity();
     void debugHistoryHasExplicitBound();
     void annotatedWiring();
@@ -524,10 +527,14 @@ void IntegrationTest::legacyDecoder() {
     QVERIFY(!frame.channels[0].ready);
     QCOMPARE(decoder.sampleCount(), quint64(5));
     decoder.append(0x81); // repeated pulse does not overwrite the first front
-    QCOMPARE(decoder.append(0x81).channels[0].riseUs, quint32(2000));
+    const auto repeatedFrame=decoder.append(0x81);
+    QCOMPARE(repeatedFrame.channels[0].riseUs, quint32(2000));
+    QCOMPARE(repeatedFrame.channels[0].observedRises,quint64(2));
+    QCOMPARE(repeatedFrame.channels[7].observedRises,quint64(1));
     decoder.reset();
     QCOMPARE(decoder.sampleCount(), quint64(0));
     QVERIFY(!decoder.append(0).channels[0].triggered);
+    QCOMPARE(decoder.append(0).channels[0].observedRises,quint64(0));
 }
 
 void IntegrationTest::legacyIndependentCounters() {
@@ -572,6 +579,17 @@ void IntegrationTest::legacyIndependentCounters() {
     QCOMPARE(session.measureAction(secondAction).channels[1].actualMs.value(), -2.0);
     QCOMPARE(session.measuredPositionMs().value(), 5.0); // delivery of the other UART cannot move A's clock
     QCOMPARE(session.measureAction(firstAction).channels[1].deviationMs.value(), 1.0);
+    // Повтор КП второго COM не отменяет независимую опору первого.
+    session.processLegacyBytes(QByteArray::fromHex("0080"),1);
+    QVERIFY(session.legacyStreamKpObserved(0));
+    QVERIFY(!session.legacyStreamKpObserved(1));
+    QCOMPARE(session.measureAction(firstAction).state,ActionMeasurement::State::Measured);
+    QCOMPARE(session.measureAction(secondAction).state,ActionMeasurement::State::RepeatedInput);
+    QTemporaryDir repeatedKpDir;QVERIFY(repeatedKpDir.isValid());QString repeatedKpError;
+    const QString repeatedKpPath=repeatedKpDir.filePath("report.json");
+    QVERIFY(session.saveReport(repeatedKpPath,&repeatedKpError));
+    QFile repeatedKpReport(repeatedKpPath);QVERIFY(repeatedKpReport.open(QIODevice::ReadOnly));
+    QVERIFY(QJsonDocument::fromJson(repeatedKpReport.readAll()).object().value("second_legacy_kp_time_us").isNull());
     session.m_boardArmed = false; // a UART error / detected gap invalidates the collection
     QCOMPARE(session.measureAction(firstAction).state, ActionMeasurement::State::BoardNotArmed);
 
@@ -1265,6 +1283,65 @@ void IntegrationTest::transientKpRemainsAfterNextUdpFrame() {
     session.processFrame(onePulse(64, 1'050'000));
     QCOMPARE(session.boardFrame().channels[64].riseUs, quint32(1'020'000));
     QCOMPARE(session.liveFrame().channels[64].riseUs, quint32(1'050'000));
+}
+
+void IntegrationTest::repeatedLegacyKpIsNotAnAnchor() {
+    IntegrationSession::Options options;
+    options.boardTransport=IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort="TEST";options.legacyHasKp=true;
+    IntegrationSession session(options);session.updateBenchMapping();
+    session.m_boardArmed=true;session.m_legacyArmed[0]=true;session.m_executionObserved=true;
+    session.processLegacyBytes(QByteArray::fromHex("80"),0);
+    QVERIFY(session.kpTimeUs().has_value());
+    QVERIFY(session.legacyStreamKpObserved(0));
+    session.processLegacyBytes(QByteArray::fromHex("0080"),0);
+    QVERIFY(!session.kpTimeUs().has_value());
+    QVERIFY(!session.legacyStreamKpObserved(0));
+}
+
+void IntegrationTest::legacyRepeatedPulseIsNotSingleMeasurement() {
+    IntegrationSession::Options options;
+    options.boardTransport=IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort="TEST";options.legacyHasKp=true;
+    IntegrationSession session(options);QString error;
+    QVERIFY(StandProtocol::parseCyclogram(cyclogram(),&session.m_plan,&error));
+    session.m_hasPlan=true;session.updateBenchMapping();
+    session.m_uploadState="CONFIRMED";session.m_executionObserved=true;
+    session.m_boardArmed=true;session.m_legacyArmed[0]=true;
+    session.processLegacyBytes(QByteArray::fromHex("80838083"),0);
+    const auto action=session.m_plan.actions[1];
+    const auto result=session.measureAction(action);
+    QVERIFY(result.state!=ActionMeasurement::State::Measured);
+    QVERIFY(result.reason.contains(QStringLiteral("Повтор")));
+    QCOMPARE(session.boardFrame().channels[0].observedRises,quint64(2));
+    session.finishCollection(QStringLiteral("Тест повторов"),true);
+    session.processLegacyBytes(QByteArray::fromHex("8083"),0);
+    QCOMPARE(session.boardFrame().channels[0].observedRises,quint64(2));
+    QCOMPARE(session.measureAction(action).state,result.state);
+    QTemporaryDir dir;QVERIFY(dir.isValid());
+    QVERIFY(session.saveReport(dir.filePath("report.json"),&error));
+    QFile report(dir.filePath("report.json"));QVERIFY(report.open(QIODevice::ReadOnly));
+    const auto document=QJsonDocument::fromJson(report.readAll()).object();
+    QCOMPARE(document.value("legacy_input_observations").toArray()[0].toObject().value("rise_count").toString(),QStringLiteral("2"));
+}
+
+void IntegrationTest::resetDoesNotCarryOldFrameIntoNewRun() {
+    IntegrationSession::Options options;options.boardIp=QHostAddress::LocalHost;
+    IntegrationSession session(options);
+    session.m_awaitReset=true;
+    session.m_boardArmed=false;
+    // Запоздалый пакет предыдущего сбора пришёл после команды reset.
+    session.processFrame(frame(900000,920000));
+    QVERIFY(!session.boardArmed());
+    QVERIFY(session.liveFrame().channels[0].triggered);
+    session.processFrame(frame());
+    QVERIFY(session.boardArmed());
+    QCOMPARE(session.boardFrame().channels[0].riseUs,quint32(0));
+    QCOMPARE(session.boardFrame().channels[1].riseUs,quint32(0));
+    // Новый сбор должен принять собственные отметки, а не старые первые фронты.
+    session.processFrame(frame(2000000,2020000));
+    QCOMPARE(session.boardFrame().channels[0].riseUs,quint32(2000000));
+    QCOMPARE(session.boardFrame().channels[1].riseUs,quint32(2020000));
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

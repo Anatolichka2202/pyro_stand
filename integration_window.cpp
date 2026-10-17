@@ -718,6 +718,7 @@ void IntegrationWindow::refreshCanvas() {
                     case State::ExecutionUnconfirmed:g.status=QStringLiteral("Нет разрешения");break;
                     case State::BoardNotArmed:g.status=QStringLiteral("Нет сброса");break;
                     case State::RepeatedAction:g.status=QStringLiteral("Повтор");break;
+                    case State::RepeatedInput:g.status=QStringLiteral("Повторные фронты");break;
                     default:g.status=QStringLiteral("Недостоверно");break;
                     }
                 }

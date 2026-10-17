@@ -51,6 +51,7 @@ struct BoardChannel {
     bool ready = false;
     quint32 riseUs = 0;
     quint32 fallUs = 0;
+    quint64 observedRises = 0; // Только COM: число фронтов в принятых масках; новая плата истории не передаёт.
 };
 
 struct BoardFrame {
@@ -113,7 +114,7 @@ struct ActionMeasurement {
         BoardNotArmed, WaitingForKp, RepeatedAction, AmbiguousInterval,
         WaitingForClockAlignment, WaitingForInputs, Partial, Measured,
         PlanReferenceUnknown, InvalidAssignment,
-        MissingAfterFinish, PartialAfterFinish, StoppedEarly
+        MissingAfterFinish, PartialAfterFinish, StoppedEarly, RepeatedInput
     };
     State state = State::Unmapped;
     QString reason;

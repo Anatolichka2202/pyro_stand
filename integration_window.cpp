@@ -281,7 +281,9 @@ void IntegrationWindow::setupUi() {
     m_eventTable->setObjectName("eventTable");
     m_eventTable->setHorizontalHeaderLabels(
         {"#", QStringLiteral("СОБЫТИЕ"), QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
-         QStringLiteral("ФАКТ МС"), QStringLiteral("ОТКЛ МС"), QStringLiteral("СТАТУС")});
+         QStringLiteral("ОТ КП, МС"), QStringLiteral("Δ, МС"), QStringLiteral("СТАТУС")});
+    m_eventTable->horizontalHeaderItem(4)->setToolTip(QStringLiteral("(Аппаратная отметка входа − аппаратная отметка КП) / 1000; обновляется во время сбора"));
+    m_eventTable->horizontalHeaderItem(5)->setToolTip(QStringLiteral("Факт от КП − план от КП; вычисляется сразу после получения отметок"));
     m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_eventTable->setWordWrap(false);m_eventTable->setTextElideMode(Qt::ElideRight);
@@ -901,6 +903,16 @@ void IntegrationWindow::updatePlannedClock() {
         m_visualAnchor.reset();
         return;
     }
+    if (!source.boardArmed() && !source.collectionFinished()) {
+        m_timerLabel->setText(QStringLiteral("—"));
+        m_firstClock->setText(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"));
+        m_clockCaption->setText(QStringLiteral("ПОДГОТОВКА СБОРА"));
+        m_clockSource->setText(source.boardReceiving()
+            ? QStringLiteral("В плате прежние отметки · нажмите «Новый сбор»")
+            : QStringLiteral("Ожидание данных пиротестера"));
+        m_visualAnchor.reset();
+        return;
+    }
     const QString collection =
         source.collectionId() + "|" + QString::number(source.measurementEligible());
     if (collection != m_visualCollection) {
@@ -1261,12 +1273,15 @@ void IntegrationWindow::refresh() {
     } else if (!uploaded) {
         phaseText = QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА");
         phaseColor = QStringLiteral("#e3b341");
+    } else if (!m_session.boardArmed()) {
+        phaseText = m_session.boardReceiving() ? QStringLiteral("НУЖЕН НОВЫЙ СБОР")
+                                              : QStringLiteral("ОЖИДАНИЕ ДАННЫХ ПЛАТЫ");
+        phaseColor = QStringLiteral("#e3b341");
     } else if (kpKnown) {
-        phaseText = QStringLiteral("КП ЗАФИКСИРОВАН");
+        phaseText = QStringLiteral("СБОР ИДЁТ · КП ЗАФИКСИРОВАН");
         phaseColor = QStringLiteral("#3fb950");
     } else if (m_session.executionPermissionObserved()) {
-        phaseText = !m_session.boardArmed() ? QStringLiteral("СБОР НЕ ГОТОВ")
-            : dualLegacy && firstKp && !secondKp
+        phaseText = dualLegacy && firstKp && !secondKp
                 ? QStringLiteral("ОЖИДАНИЕ КП БКД-Б")
             : dualLegacy && !firstKp && secondKp
                 ? QStringLiteral("ОЖИДАНИЕ КП БКД-А-1")

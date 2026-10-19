@@ -249,6 +249,7 @@ private:
     QTimer m_reconnect;
     QTimer m_completionTimer;
     QElapsedTimer m_kpSeenOnPc;
+    bool m_acceptEmptyBaseline = true; // Чистый старт новой платы без отправки сброса.
     std::array<quint64, 2> m_samplesAtFinish{};
     qint64 m_durationAtFinishMs = 0;
     bool m_collectionFinished = false;

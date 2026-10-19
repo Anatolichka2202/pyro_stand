@@ -11,6 +11,7 @@
 #include <QTest>
 #include <QUuid>
 #include <QtEndian>
+#include <QUdpSocket>
 #include <algorithm>
 
 namespace {
@@ -75,6 +76,10 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void emptyStartupFramePreparesNewBoard();
+    void lateEmptyFrameCannotBypassFailedReset();
+    void legacyLateEventGetsFiveSecondTail();
+    void newBoardFinishesFiveSecondsAfterTrackedEvent();
     void newBoardYpsSevenAndEightShareKp();
     void resetDoesNotCarryOldFrameIntoNewRun();
     void legacyRepeatedPulseIsNotSingleMeasurement();
@@ -113,6 +118,92 @@ private slots:
     void completedActionStateIsFrozenAcrossLateDebugChanges();
     void transientKpRemainsAfterNextUdpFrame();
 };
+
+void IntegrationTest::lateEmptyFrameCannotBypassFailedReset() {
+    QUdpSocket receiver; QVERIFY(receiver.bind(QHostAddress::LocalHost,0));
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort=0;
+    options.boardIp=QHostAddress::LocalHost; options.commandPort=receiver.localPort();
+    IntegrationSession session(options);
+    QVERIFY(session.resetBoard());
+    QVERIFY(QMetaObject::invokeMethod(&session.m_resetWatchdog,"timeout",Qt::DirectConnection));
+    QVERIFY(!session.m_awaitReset);
+    session.applyFrame(BoardFrame{}); QVERIFY(!session.boardArmed());
+    QVERIFY(session.resetBoard()); session.applyFrame(BoardFrame{}); QVERIFY(session.boardArmed());
+    QCOMPARE(session.m_localEvidence.last().toObject().value("type").toString(),QString("BOARD_EMPTY_FRAME_AFTER_RESET"));
+}
+
+void IntegrationTest::legacyLateEventGetsFiveSecondTail() {
+    IntegrationSession::Options options; options.debugSocket.clear();
+    options.boardTransport=IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options); QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n",&session.m_plan,&error));
+    session.m_hasPlan=true; session.updateBenchMapping();
+    session.m_boardArmed=true; session.m_hasBoardFrame=true;
+    session.m_boardFrame.channels[7]={true,false,1000,0};
+    session.m_boardFrame.channels[0]={true,false,10001000,0};
+    session.m_boardFrame.channels[1]=session.m_boardFrame.channels[0];
+    for(int i=0;i<10002;++i) session.m_legacy[0].append(0);
+    session.checkCompletion(); QVERIFY(!session.collectionFinished());
+    for(int i=0;i<5000;++i) session.m_legacy[0].append(0);
+    session.checkCompletion(); QVERIFY(session.collectionFinished());
+    // Во втором COM другая опора: его предел нельзя считать от КП первого.
+    options.secondLegacySerialPort="TEST_SECOND_COM";
+    IntegrationSession dual(options);
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\nIGNITE_PYRO_CANDLE=20\n",
+        &dual.m_plan,&error));
+    dual.m_hasPlan=true; dual.updateBenchMapping();
+    dual.m_boardArmed=true; dual.m_hasBoardFrame=true; dual.m_legacyArmed={true,true};
+    dual.m_boardFrame.channels[7]={true,false,1000,0};
+    dual.m_boardFrame.channels[15]={true,false,99000,0};
+    for(int index:{0,1}) dual.m_boardFrame.channels[size_t(index)]={true,false,21000,0};
+    for(int index:{8,9}) dual.m_boardFrame.channels[size_t(index)]={true,false,10099000,0};
+    for(int i=0;i<20000;++i) dual.m_legacy[0].append(0);
+    for(int i=0;i<15098;++i) dual.m_legacy[1].append(0);
+    dual.checkCompletion(); QVERIFY(!dual.collectionFinished());
+    dual.m_legacy[1].append(0);
+    dual.checkCompletion(); QVERIFY(dual.collectionFinished());
+}
+
+void IntegrationTest::emptyStartupFramePreparesNewBoard() {
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort=0;
+    IntegrationSession session(options);
+    // Старые сохранённые фронты сами по себе не разрешают новый сбор.
+    BoardFrame stale; stale.channels[0]={true,false,123000,0};
+    session.applyFrame(stale); QVERIFY(!session.boardArmed());
+    session.applyFrame(BoardFrame{});
+    QVERIFY(session.boardArmed());
+    QVERIFY(!session.boardFrame().channels[0].triggered);
+    // Потеря связи после готовности требует явного нового сбора.
+    session.m_boardArmed=false;
+    session.applyFrame(BoardFrame{});
+    QVERIFY(!session.boardArmed());
+}
+
+void IntegrationTest::newBoardFinishesFiveSecondsAfterTrackedEvent() {
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort=0;
+    options.firstStageYps=8; options.secondStageYps=7; options.kpYps=8;
+    IntegrationSession session(options); QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n"
+        "IGNITE_PYRO_CANDLE=20\nINFORMATION_ONLY=100000\n", &session.m_plan,&error));
+    session.m_hasPlan=true; session.m_uploadState="CONFIRMED"; session.m_executionObserved=true;
+    session.m_boardArmed=true; session.m_hasBoardFrame=true; session.updateBenchMapping();
+    session.m_boardFrame.channels[63]={true,false,1000000,0};
+    session.m_boardFrame.channels[48]={true,false,1020000,0};
+    session.m_boardFrame.channels[49]={true,false,1020000,0};
+    session.checkCompletion();
+    QTest::qWait(4900); session.checkCompletion();
+    QVERIFY(!session.collectionFinished());
+    QTRY_VERIFY_WITH_TIMEOUT(session.collectionFinished(),700);
+    QVERIFY(session.plannedWindowComplete());
+    const auto frozen=session.boardFrame().channels[48].riseUs;
+    BoardFrame late; late.channels[48]={true,false,2000000,0}; session.applyFrame(late);
+    QCOMPARE(session.boardFrame().channels[48].riseUs,frozen);
+}
 
 void IntegrationTest::newBoardYpsSevenAndEightShareKp() {
     IntegrationSession::Options options;
@@ -1006,8 +1097,8 @@ void IntegrationTest::legacyTicksFinishCollection() {
     QCOMPARE(session.m_mapping.kp.index, 7);
     session.m_boardFrame.channels[7].triggered = true;
     session.m_boardFrame.channels[7].riseUs = 1000;
-    // 300 байтов старого прибора — 300 аппаратных миллисекунд, независимо от Qt.
-    for (int i = 0; i < 300; ++i)
+    // Окно заканчивается через 5 с после планового отслеживаемого события.
+    for (int i = 0; i < 5030; ++i)
         session.m_legacy[0].append(quint8(0x80));
     session.checkCompletion();
     QVERIFY(session.collectionFinished());
@@ -1144,11 +1235,11 @@ void IntegrationTest::dualLegacyWaitsForBothCounters() {
     session.updateBenchMapping();
     session.m_boardArmed = true;
     session.m_legacyArmed = {true, true};
-    session.processLegacyBytes(QByteArray(300, char(0x80)), 0);
+    session.processLegacyBytes(QByteArray(5030, char(0x80)), 0);
     session.processLegacyBytes(QByteArray(5, char(0x80)), 1);
     session.checkCompletion();
     QVERIFY(!session.collectionFinished());
-    session.processLegacyBytes(QByteArray(295, char(0x80)), 1);
+    session.processLegacyBytes(QByteArray(5025, char(0x80)), 1);
     session.checkCompletion();
     QVERIFY(session.collectionFinished());
 }

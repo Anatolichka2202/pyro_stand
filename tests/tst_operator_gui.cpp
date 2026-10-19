@@ -23,6 +23,7 @@
 class OperatorGuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void startupAndLiveKpCalculation();
     void initTestCase(){
 #ifdef Q_OS_WIN
       QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");
@@ -51,6 +52,46 @@ private slots:
     void peerClockDoesNotTruncateTimeline();
     void finishWithoutKpFreezesVisualUtcClock();
 };
+
+void OperatorGuiTest::startupAndLiveKpCalculation() {
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort=0;
+    options.firstStageYps=8; options.secondStageYps=7; options.kpYps=8;
+    IntegrationWindow window(options); window.resize(1280,800); window.show();
+    auto &session=window.m_session; QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8 # Зажигание А\n"
+        "LIFT_OFF_CONTACT=0 # КП\nIGNITE_PYRO_CANDLE=20 # Зажигание Б\n",
+        &session.m_plan,&error));
+    session.m_hasPlan=true; session.m_uploadState="CONFIRMED"; session.updateBenchMapping();
+    BoardFrame stale; stale.channels[56]={true,false,12,0}; session.applyFrame(stale);
+    window.refresh(); window.updatePlannedClock();
+    QCOMPARE(window.m_timerLabel->text(),QStringLiteral("—"));
+    QVERIFY(window.m_clockSource->text().contains(QStringLiteral("Новый сбор")));
+    session.applyFrame(BoardFrame{}); session.m_executionObserved=true; session.m_executionEnabled=true;
+    BoardFrame a; a.channels[56]={true,false,992000,0}; a.channels[57]=a.channels[56];
+    session.applyFrame(a); window.refresh();
+    auto eventRow=[&](const QString &id) {
+        for(int row=0;row<window.m_eventTable->rowCount();++row)
+            if(window.m_eventTable->item(row,0)->text()==id) return row;
+        return -1;
+    };
+    const int rowA=eventRow("1"), rowB=eventRow("3");
+    QVERIFY(rowA>=0 && rowB>=0);
+    QCOMPARE(window.m_eventTable->item(rowA,4)->text(),QStringLiteral("—"));
+    BoardFrame kp; kp.channels[63]={true,false,1000000,0}; session.applyFrame(kp);
+    window.refresh();
+    QVERIFY(!session.collectionFinished());
+    QCOMPARE(window.m_eventTable->item(rowA,4)->text(),QString("-8.000"));
+    QCOMPARE(window.m_eventTable->item(rowA,5)->text(),QString("0.000"));
+    BoardFrame b; b.channels[48]={true,false,1020500,0}; b.channels[49]=b.channels[48];
+    session.applyFrame(b); window.refresh(); window.updatePlannedClock();
+    QVERIFY(!session.collectionFinished());
+    QCOMPARE(window.m_eventTable->item(rowB,4)->text(),QString("20.500"));
+    QCOMPARE(window.m_eventTable->item(rowB,5)->text(),QString("+0.500"));
+    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("ФИЗИЧЕСКОГО КП")));
+    window.grab().save(QCoreApplication::applicationDirPath()+"/operator-live-kp.png");
+}
 
 void OperatorGuiTest::recentJournalFollowsLastMessage() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
@@ -281,8 +322,8 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     QCOMPARE(table->columnCount(), 7);
     QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("КАНАЛЫ"));
     QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("СОБЫТИЕ"));
-    QCOMPARE(table->horizontalHeaderItem(4)->text(), QStringLiteral("ФАКТ МС"));
-    QCOMPARE(table->horizontalHeaderItem(5)->text(), QStringLiteral("ОТКЛ МС"));
+    QCOMPARE(table->horizontalHeaderItem(4)->text(), QStringLiteral("ОТ КП, МС"));
+    QCOMPARE(table->horizontalHeaderItem(5)->text(), QStringLiteral("Δ, МС"));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("eventTimeline")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("operatorSurface")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("journalCaption")));

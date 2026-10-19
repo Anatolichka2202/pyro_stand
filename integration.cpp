@@ -671,6 +671,7 @@ bool IntegrationSession::discardPendingBoardData() {
 }
 
 void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
+    m_acceptEmptyBaseline = true;
     const bool inputCleared = discardPendingBoardData();
     if (resetDebugEvidence) {m_debugEvidence = QJsonArray{};m_debugEvidenceBytes=0;}
     m_localEvidence = QJsonArray{};
@@ -893,7 +894,7 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
             m_hasBoardFrame = false;
             m_hasPlan = false;
             m_plan = {};
-            emit message(QStringLiteral("Новая циклограмма; сбросьте плату перед прогоном"));
+            emit message(QStringLiteral("Новая циклограмма; ожидается пустой кадр платы. При прежних отметках нажмите «Новый сбор»"));
         }
         m_cyclogramBytes = bytes;
         m_cyclogramSha = hash;
@@ -1098,10 +1099,24 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     m_boardReceiving = true;
     m_boardWatchdog.start();
     if (m_collectionFinished) return;
+    if (m_options.boardTransport != BoardTransport::LegacySerial &&
+        !m_boardArmed && !m_awaitReset && m_acceptEmptyBaseline && blankFrame(parsed)) {
+        // Пустой свежий кадр доказывает отсутствие накопленных фронтов.
+        // Часы устройства при этом не объявляются сброшенными или синхронными UTC.
+        m_boardFrame = parsed;
+        m_boardArmed = true;
+        m_prePermissionActivity = false;
+        m_acceptEmptyBaseline = false;
+        m_localEvidence.append(QJsonObject{{"type","BOARD_EMPTY_FRAME_BASELINE"},
+            {"upload_id",m_uploadId},
+            {"at_utc",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+        emit message(QStringLiteral("Сбор готов: получен пустой кадр новой платы; команды сброса не отправлялись"));
+    }
     if (m_awaitReset && blankFrame(parsed)) {
         m_awaitReset = false;
         m_resetWatchdog.stop();
         m_boardArmed = true;
+        m_acceptEmptyBaseline = false;
         QJsonObject evidence;
         evidence.insert(QStringLiteral("type"), QStringLiteral("BOARD_EMPTY_FRAME_AFTER_RESET"));
         evidence.insert(QStringLiteral("at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
@@ -1113,6 +1128,7 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     }
     if (m_boardArmed && !m_executionObserved && !blankFrame(parsed))
         m_prePermissionActivity = true;
+    if (kpTimeUs() && !m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
 }
 
 void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error) {
@@ -1172,6 +1188,7 @@ bool IntegrationSession::loadMapping(const QString &path) {
 }
 
 bool IntegrationSession::resetBoard() {
+    m_acceptEmptyBaseline = false; // Явный сброс обязан пройти собственное подтверждение.
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
         if (!m_serial.isOpen()) {
             setError(QStringLiteral("COM-порт старого пиротестера не открыт"));
@@ -1319,7 +1336,7 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     if (m_prePermissionActivity)
         return blocked(State::PrematureActivity, QStringLiteral("Кадр с сигналом получен до разрешения исполнения"));
     if (!m_boardArmed)
-        return blocked(State::BoardNotArmed, QStringLiteral("Плата не сброшена для этого прогона"));
+        return blocked(State::BoardNotArmed, QStringLiteral("Нет чистого начала сбора; нажмите «Новый сбор»"));
     const auto kp = kpTimeUs();
     const bool dualLegacy = m_options.boardTransport == BoardTransport::LegacySerial &&
         !m_options.secondLegacySerialPort.isEmpty();
@@ -1479,31 +1496,65 @@ void IntegrationSession::checkCompletion() {
     const auto kp = kpTimeUs();
     if (!kpOffset || !kp) return;
     qint64 lastOffset = std::numeric_limits<qint64>::min();
-    for (const auto &action : m_plan.actions)
+    bool allObserved = true;
+    qint64 lastObserved = 0;
+    for (const auto &action : m_plan.actions) {
+        const auto mapped = m_mapping.forAction(action);
+        if (mapped.inputs.isEmpty()) continue;
         lastOffset = std::max(lastOffset, qint64(action.offsetMs) - *kpOffset);
+        if (m_options.boardTransport == BoardTransport::LegacySerial) continue;
+        for (const auto &input : mapped.inputs) {
+            if (input.index<0 || input.index>=int(m_boardFrame.channels.size())) {
+                allObserved=false; continue;
+            }
+            const auto tick = timestamp(m_boardFrame.channels[size_t(input.index)],input);
+            if (!tick) { allObserved=false; continue; }
+            const qint64 us=qint32(*tick-*kp);
+            lastObserved=std::max(lastObserved,us>=0?(us+999)/1000:us/1000);
+        }
+    }
     if (lastOffset < 0) return;
-    constexpr qint64 kAfterLastActionMs = 250;
+    constexpr qint64 kAfterLastActionMs = 5000;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
         // Старый прибор: каждая плата измеряет время собственным счётчиком байтов.
         // При двух COM нельзя завершать общий сбор, пока второй не дошёл до конца окна.
-        const qint64 limitUs = (lastOffset + kAfterLastActionMs) * 1000;
+        const auto streamLimitUs = [&](int stream, quint32 streamKp) {
+            qint64 planned=0, observed=0;
+            bool hasInputs=false, complete=true;
+            for (const auto &action:m_plan.actions) {
+                for (const auto &input:m_mapping.forAction(action).inputs) {
+                    if (input.index<0 || input.index>=16 || input.index/8!=stream) continue;
+                    hasInputs=true;
+                    planned=std::max(planned,qint64(action.offsetMs)-*kpOffset);
+                    const auto tick=timestamp(m_boardFrame.channels[size_t(input.index)],input);
+                    if (!tick) { complete=false; continue; }
+                    const qint64 us=qint32(*tick-streamKp);
+                    observed=std::max(observed,us>=0?(us+999)/1000:us/1000);
+                }
+            }
+            if (!hasInputs) planned=lastOffset;
+            return ((hasInputs && complete ? observed : std::max(planned,observed)) + kAfterLastActionMs)*1000;
+        };
         const qint64 firstElapsedUs = qint64(m_legacy[0].sampleCount()) * 1000 - qint64(*kp);
-        if (firstElapsedUs < limitUs) return;
+        if (firstElapsedUs < streamLimitUs(0,*kp)) return;
         if (!m_options.secondLegacySerialPort.isEmpty()) {
             const auto secondKp = legacyStreamKpObserved(1)
                 ? timestamp(m_boardFrame.channels[15],InputRef{15,false}) : std::nullopt;
             if (!secondKp) return;
             const qint64 secondElapsedUs = qint64(m_legacy[1].sampleCount()) * 1000 - qint64(*secondKp);
-            if (secondElapsedUs < limitUs) return;
+            if (secondElapsedUs < streamLimitUs(1,*secondKp)) return;
         }
-        finishCollection(QStringLiteral("Плановое окно закончилось по тикам старой платы"), true);
+        finishCollection(QStringLiteral("Окно 5 с после отслеживаемых событий закончилось по тикам старой платы"), true);
         return;
     }
     // Новая плата не передаёт текущий тик, только запомненные фронты.
     // Таймер ПК ограничивает окно ожидания, но никогда не оценивает точность импульса.
     if (!m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
-    if (m_kpSeenOnPc.elapsed() >= lastOffset + kAfterLastActionMs)
-        finishCollection(QStringLiteral("Плановое окно закончилось после регистрации КП (таймер ПК)"), true);
+    const auto lastEvent = allObserved ? lastObserved : std::max(lastOffset,lastObserved);
+    if (m_kpSeenOnPc.elapsed() >= lastEvent + kAfterLastActionMs)
+        finishCollection(allObserved
+            ? QStringLiteral("Прошло 5 с после последнего зарегистрированного события (окно ожидания по ПК)")
+            : QStringLiteral("Истекло окно ожидания: 5 с после последнего отслеживаемого события по плану или отметкам (таймер ПК)"), true);
 }
 
 bool IntegrationSession::saveReport(const QString &path, QString *error) {

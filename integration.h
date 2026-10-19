@@ -219,6 +219,10 @@ public:
 signals:
     void changed();
     void message(const QString &text);
+    // Пассивные подписчики используют тот же транспорт; без разрешений ПЗ и сброса платы.
+    void frameObserved(const BoardFrame &frame, const QByteArray &raw);
+    void legacyBytesObserved(const QByteArray &raw, int stream);
+    void inputDiscontinuity(const QString &reason);
 
 private:
     friend class IntegrationTest;

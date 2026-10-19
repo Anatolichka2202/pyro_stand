@@ -656,6 +656,7 @@ bool IntegrationSession::clearFrameEvidence() {
 }
 
 bool IntegrationSession::discardPendingBoardData() {
+    emit inputDiscontinuity(QStringLiteral("Запись неполная: граница сбора ПЗ / очистка общего входного буфера"));
     m_serialBuffer.clear();
     for (auto *serial : {&m_serial, &m_secondSerial}) {
         if (serial->isOpen() && !serial->clear(QSerialPort::Input)) {
@@ -1015,6 +1016,7 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
     applyFrame(parsed);
     ++m_acceptedFrames;
     if (!m_collectionFinished) recordFrame(raw);
+    emit frameObserved(parsed, raw);
     emit changed();
 }
 
@@ -1030,7 +1032,7 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
     evidence.insert(QStringLiteral("received_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     evidence.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
     const QByteArray evidenceLine = QJsonDocument(evidence).toJson(QJsonDocument::Compact) + '\n';
-    if (!m_collectionFinished &&
+    if (m_hasPlan && !m_collectionFinished &&
         (!m_frameEvidence.isOpen() || m_frameEvidence.write(evidenceLine) != evidenceLine.size())) {
         m_evidenceValid = false;
         setError(QStringLiteral("Не удалось записать аппаратные маски в журнал доказательств"));
@@ -1072,6 +1074,7 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
     m_boardWatchdog.start();
     m_acceptedFrames += quint64(raw.size());
     m_legacyWatchdog[size_t(stream)].start();
+    emit legacyBytesObserved(raw, stream);
     emit changed();
 }
 
@@ -1132,6 +1135,8 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
 }
 
 void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error) {
+    // Без ПЗ непрерывный live-приём не создаёт бесконечный архив испытания.
+    if (!m_hasPlan) return;
     if (!m_frameEvidence.isOpen()) {
         m_evidenceValid = false;
         setError(QStringLiteral("Журнал доказательств недоступен; кадр не записан"));

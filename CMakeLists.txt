@@ -7,7 +7,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network SerialPort Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network SerialPort Test Concurrent)
+qt_standard_project_setup()
 
 # Один операторский продукт. Старая реализация сохранена в истории Git.
 set(PYRO_SOURCES
@@ -22,10 +23,11 @@ set(PYRO_SOURCES
     timeline_widget.h
     command_catalog.h
     types.h
+    free_recording.cpp free_recording.h free_recording_dialog.cpp
 )
 
 add_executable(pyro_stand ${PYRO_SOURCES})
-target_link_libraries(pyro_stand PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::SerialPort)
+target_link_libraries(pyro_stand PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::SerialPort Qt6::Concurrent)
 target_include_directories(pyro_stand PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(WIN32)
@@ -54,13 +56,19 @@ if(BUILD_GUI_TESTS)
         event_canvas.cpp event_canvas.h
         timeline_widget.cpp timeline_widget.h
         command_catalog.h types.h
+        free_recording.cpp free_recording.h free_recording_dialog.cpp
     )
     target_include_directories(tst_operator_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(tst_operator_gui PRIVATE STAND_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
-    target_link_libraries(tst_operator_gui PRIVATE Qt6::Core Qt6::Widgets Qt6::Test Qt6::Network Qt6::SerialPort)
+    target_link_libraries(tst_operator_gui PRIVATE Qt6::Core Qt6::Widgets Qt6::Test Qt6::Network Qt6::SerialPort Qt6::Concurrent)
     add_test(NAME tst_operator_gui COMMAND tst_operator_gui)
     set_tests_properties(tst_operator_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+qt_add_executable(tst_free_recording tests/tst_free_recording.cpp free_recording.cpp free_recording.h integration.cpp integration.h)
+target_include_directories(tst_free_recording PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(tst_free_recording PRIVATE Qt6::Core Qt6::Test Qt6::Network Qt6::SerialPort)
+add_test(NAME tst_free_recording COMMAND tst_free_recording)
 
 # Пассивный диагностический исполняемый файл не запускается автоматически.
 option(BUILD_HARDWARE_PROBE "Собирать пассивную проверку связи с приборами" OFF)

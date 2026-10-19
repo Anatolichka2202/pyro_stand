@@ -76,6 +76,7 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void passiveObserversWithoutPlanDoNotGrowFlightArchive();
     void emptyStartupFramePreparesNewBoard();
     void lateEmptyFrameCannotBypassFailedReset();
     void legacyLateEventGetsFiveSecondTail();
@@ -850,7 +851,8 @@ void IntegrationTest::evidenceIsolation() {
     QVERIFY(session.m_collectionId != freshCollection);
     QVERIFY(!session.hasBoardFrame());
 
-    // A failed evidence writer must never yield an apparently complete report.
+    // Ошибка архива именно прогона с загруженным ПЗ не должна скрываться.
+    session.m_hasPlan = true;
     session.m_frameEvidence.close();
     session.processFrame(frame(4000000U, 4020000U));
     QString writeError;
@@ -883,6 +885,7 @@ void IntegrationTest::resetDiscardsPartialSerialFrame() {
 
 void IntegrationTest::failedExportPreservesEvidence() {
     IntegrationSession session(IntegrationSession::Options{});
+    session.m_hasPlan = true;
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QByteArray first = frame(1000000, 1020000);
@@ -1434,6 +1437,26 @@ void IntegrationTest::repeatedLegacyKpIsNotAnAnchor() {
     session.processLegacyBytes(QByteArray::fromHex("0080"),0);
     QVERIFY(!session.kpTimeUs().has_value());
     QVERIFY(!session.legacyStreamKpObserved(0));
+}
+
+void IntegrationTest::passiveObserversWithoutPlanDoNotGrowFlightArchive() {
+    IntegrationSession session(IntegrationSession::Options{});
+    int validated = 0, masks = 0;
+    connect(&session, &IntegrationSession::frameObserved, &session,
+        [&](const BoardFrame &, const QByteArray &) { ++validated; });
+    connect(&session, &IntegrationSession::legacyBytesObserved, &session,
+        [&](const QByteArray &, int) { ++masks; });
+    for (int i = 0; i < 20; ++i) {
+        session.processFrame(frame());
+        session.processLegacyBytes(QByteArray::fromHex("000100"), 0);
+    }
+    QCOMPARE(session.m_frameEvidence.size(), 0);
+    QCOMPARE(validated, 20); QCOMPARE(masks, 20);
+    session.processFrame("invalid"); QCOMPARE(validated, 20);
+    session.m_collectionFinished = true;
+    session.processFrame(frame()); session.processLegacyBytes(QByteArray(1, 0), 0);
+    QCOMPARE(validated, 21); QCOMPARE(masks, 21);
+    QCOMPARE(session.m_frameEvidence.size(), 0);
 }
 
 void IntegrationTest::legacyRepeatedPulseIsNotSingleMeasurement() {

@@ -214,6 +214,8 @@ void IntegrationWindow::setupUi() {
     auto *menu=new QMenu(more);
     menu->addAction(log->text(),log,&QPushButton::click);
     menu->addAction(planButton->text(),planButton,&QPushButton::click);
+    auto *freeAction = menu->addAction(QStringLiteral("Свободная регистрация…"), this, &IntegrationWindow::openFreeRecording);
+    freeAction->setObjectName(QStringLiteral("freeRecordingAction"));
     more->setMenu(menu);header->addWidget(more);
     log->hide();planButton->hide();
     main->addLayout(header);

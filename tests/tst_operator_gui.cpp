@@ -19,10 +19,14 @@
 #include <QDialogButtonBox>
 #include <QToolButton>
 #include <QScrollBar>
+#include <QMessageBox>
+#include <QTemporaryDir>
+#include <QFileDialog>
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void freeRegistrationWithoutPlan();
     void startupAndLiveKpCalculation();
     void initTestCase(){
 #ifdef Q_OS_WIN
@@ -52,6 +56,67 @@ private slots:
     void peerClockDoesNotTruncateTimeline();
     void finishWithoutKpFreezesVisualUtcClock();
 };
+
+void OperatorGuiTest::freeRegistrationWithoutPlan() {
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QTemporaryDir archive;
+    QVERIFY(archive.isValid());
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.serialPort = QStringLiteral("COM-test");
+    IntegrationWindow window(options); window.show();
+    bool checked = false;
+    QTimer answer;
+    connect(&answer, &QTimer::timeout, &window, [] {
+        if (auto *message = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            if (auto *yes = message->button(QMessageBox::Yes)) yes->click();
+    });
+    answer.start(20);
+    QTimer::singleShot(30, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>(QStringLiteral("freeRecordingDialog"));
+        QVERIFY(dialog);
+        auto *kp = dialog->findChild<QComboBox *>(QStringLiteral("freeKp"));
+        kp->setCurrentIndex(kp->findData(7));
+        auto *start = dialog->findChild<QPushButton *>(QStringLiteral("freeStart"));
+        start->click();
+        QVERIFY(!window.m_session.hasPlan());
+        window.m_session.processLegacyBytes(QByteArray::fromHex("000100808100"), 0);
+        QTest::qWait(150);
+        auto *table = dialog->findChild<QTableWidget *>(QStringLiteral("freeInputs"));
+        QCOMPARE(table->rowCount(), 8);
+        QCOMPARE(table->item(0, 4)->text(), QStringLiteral("-2.000"));
+        QCOMPARE(table->item(0, 5)->text(), QStringLiteral("1.000"));
+        window.m_session.resetCollectionEvidence(false);
+        QTest::qWait(150);
+        auto *status = dialog->findChild<QLabel *>(QStringLiteral("freeStatus"));
+        QVERIFY(status->text().contains(QStringLiteral("граница сбора")));
+        QVERIFY(!dialog->findChild<QComboBox *>(QStringLiteral("freeSource"))->isEnabled());
+        QVERIFY(!dialog->findChild<QPushButton *>(QStringLiteral("freeStop"))->isEnabled());
+        QTimer::singleShot(30, dialog, [&] {
+            if (auto *picker = qobject_cast<QFileDialog *>(QApplication::activeModalWidget())) {
+                picker->selectFile(archive.filePath(QStringLiteral("free.json")));
+                QMetaObject::invokeMethod(picker, "accept", Qt::QueuedConnection);
+            }
+        });
+        dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->click();
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->isEnabled(), 2000);
+        QFile file(archive.filePath(QStringLiteral("free.json"))); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto report = QJsonDocument::fromJson(file.readAll()).object();
+        QCOMPARE(report.value("format").toString(), QStringLiteral("pyro.free-recording.v1"));
+        QVERIFY(!report.value("active").toBool());
+        QCOMPARE(report.value("kp_tick_us").toString(), QStringLiteral("4000"));
+        QCOMPARE(report.value("edges").toArray().size(), 6);
+        QCOMPARE(report.value("raw_records").toArray().size(), 1);
+        QVERIFY(dialog->grab().save(QStringLiteral("free-recording.png")));
+        checked = true; dialog->reject();
+    });
+    // Страховка от зависания модального окна при неуспешной проверке.
+    QTimer::singleShot(3000, &window, [&] {
+        if (auto *dialog = window.findChild<QDialog *>(QStringLiteral("freeRecordingDialog"))) dialog->reject();
+    });
+    window.openFreeRecording();
+    QVERIFY(checked);
+}
 
 void OperatorGuiTest::startupAndLiveKpCalculation() {
     IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort=0;

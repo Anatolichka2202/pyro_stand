@@ -177,11 +177,12 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
             correctScheme=summary && transport && port &&
                 ip && ip->text()=="192.168.17.144" && summary->text().contains("192.168.17.144") &&
                 transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
-                port->currentText()=="COM9" && summary->text().contains(QStringLiteral("БКД-А, ЯПС 8")) &&
-                summary->text().contains(QStringLiteral("БКД-Б · одна ЯПС · без КП"));
+                port->currentText().isEmpty() && summary->text().contains(QStringLiteral("БКХО-А, ЯПС 8")) &&
+                summary->text().contains(QStringLiteral("БКХО-Б на новой плате: ЯПС 7")) &&
+                summary->text().contains(QStringLiteral("КП: ЯПС 8, вход 8"));
             dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-connection-bench.png");
         }
-        dialog->reject(); // Never apply COM9/YPS or access physical equipment in this test.
+        dialog->reject(); // Тест не применяет настройки и не обращается к оборудованию.
     });
     window.configureTester();QVERIFY(cleared);QVERIFY(collapsed);QVERIFY(correctScheme);
     QCOMPARE(window.m_session.options().wiringProfilePath,QString("NONEXISTENT_PROFILE_A"));
@@ -207,7 +208,7 @@ void OperatorGuiTest::nonzeroPlannedKpUsesOneScale() {
 void OperatorGuiTest::channelLabelsUseSourceComments() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
     options.boardIp=QHostAddress::LocalHost;options.bindIp=QHostAddress::LocalHost;
-    options.firstStageYps=9;options.secondStageYps=1;options.kpYps=9;
+    options.firstStageYps=8;options.secondStageYps=7;options.kpYps=8;
     IntegrationWindow window(options);auto &session=window.m_session;QString error;
     const auto comment=QStringLiteral("Зажигание по комментарию ПЗ");
     const auto source=QStringLiteral("START_UTC_DATE=2026-10-16\nSTART_UTC_TIME=12:00:00\n"
@@ -219,19 +220,28 @@ void OperatorGuiTest::channelLabelsUseSourceComments() {
     for(const auto &group:window.m_canvas->events()) {
         for(const auto &row:group.channels) {
             QVERIFY(!row.role.contains(".yps_bkd."));
-            if(group.id=="1") {QCOMPARE(row.role,comment);++commented;}
-            if(group.id=="2") {QCOMPARE(row.role,QStringLiteral("Зажигание пиросвечей"));++fallback;}
+            if(group.id=="1") {QCOMPARE(row.role,comment);QVERIFY(row.input.startsWith("8:"));++commented;}
+            if(group.id=="2") {QCOMPARE(row.role,QStringLiteral("Зажигание пиросвечей"));QVERIFY(row.input.startsWith("7:"));++fallback;}
         }
     }
     QCOMPARE(commented,2);QCOMPARE(fallback,2);
     // Presentation trims whitespace without modifying the source or matching identity.
     QCOMPARE(session.m_plan.sourceBytes,source);
     QVERIFY(session.m_plan.actions[0].comment.contains(comment));
+    // Явная карта файла имеет приоритет: заголовок не должен повторять пресет 8/7.
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8 # Ignition ## board=NEW; link=ETH; bkd=A1; yps=9; out=1,2; in=1,2; edge=rise\n"
+        "LIFT_OFF_CONTACT=0 # KP ## board=NEW; link=ETH; bkd=A1; yps=9; out=8; in=8; edge=rise; role=kp\n",
+        &session.m_plan,&error));
+    session.updateBenchMapping();window.refresh();
+    QVERIFY(session.mapping().occurrenceBased);
+    QVERIFY(!window.m_mappingStatus->text().contains(QStringLiteral("ЯПС 8 — БКХО-А")));
 }
 
 void OperatorGuiTest::fullWorkingPlanVisible() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
-    options.firstStageYps=9;options.kpYps=9;
+    options.firstStageYps=8;options.secondStageYps=7;options.kpYps=8;
     IntegrationWindow window(options);window.show();
     QFile input(QFINDTESTDATA("data/working_20261014.txt"));QVERIFY(input.open(QIODevice::ReadOnly));
     const auto bytes=input.readAll();auto &session=window.m_session;QString error;

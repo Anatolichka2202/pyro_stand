@@ -971,7 +971,7 @@ void IntegrationWindow::configureTester() {
     dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
     dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
     auto *root = new QVBoxLayout(&dialog);
-    auto *preset = new QPushButton(QStringLiteral("Мой стенд: Ethernet БКД-А / ЯПС 8 + COM9 БКД-Б"), &dialog);
+    auto *preset = new QPushButton(QStringLiteral("Мой стенд: новая плата · ЯПС 8 — БКХО-А + КП · ЯПС 7 — БКХО-Б"), &dialog);
     preset->setObjectName(QStringLiteral("historicalPresetBtn"));
     preset->setMinimumHeight(40);
     root->addWidget(preset);
@@ -1071,15 +1071,15 @@ void IntegrationWindow::configureTester() {
         profile->clear(); comparisonProfile->clear();
         address->setText(QStringLiteral("192.168.17.144"));
         transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::Udp)));
-        first->setCurrentIndex(first->findData(8)); second->setCurrentIndex(second->findData(0)); kp->setCurrentIndex(kp->findData(8));
-        comparison->setCurrentText(QStringLiteral("COM9")); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
+        first->setCurrentIndex(first->findData(8)); second->setCurrentIndex(second->findData(7)); kp->setCurrentIndex(kp->findData(8));
+        comparison->setCurrentText(QString()); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
         secondPort->setCurrentText(QString());
     });
     auto *note = new QLabel(QStringLiteral(
         "Выберите «Мой стенд» и нажмите «Применить». Настройка сохранится.\n"
-        "Циклограмму загружайте через КАСУПП — пиростенд получит её для обеих плат.\n"
-        "В этой схеме КП берём с новой платы. У COM9 своя шкала: без собственного КП\n"
-        "или подтверждённой связи часов точная дельта БКД-Б не оценивается."), &dialog);
+        "Циклограмму загружайте через КАСУПП — пиростенд получит её через Debug.\n"
+        "ЯПС 8 и ЯПС 7 принадлежат одной новой плате. Время обоих блоков\n"
+        "считается по её аппаратным отметкам относительно КП на ЯПС 8, вход 8."), &dialog);
     note->setWordWrap(true);
     root->addWidget(note);
     const auto update = [=] {
@@ -1099,11 +1099,11 @@ void IntegrationWindow::configureTester() {
             if (!secondPort->currentText().isEmpty())
                 text += QStringLiteral("\nВторой старый тестер: %1 → БКД-Б").arg(secondPort->currentText());
         } else {
-            text = QStringLiteral("Новая плата: %1 · IP %2 → БКД-А, %3\nКП: %4, вход 8")
+            text = QStringLiteral("Новая плата: %1 · IP %2 → БКХО-А, %3\nКП: %4, вход 8")
                 .arg(value == IntegrationSession::BoardTransport::Udp ? QStringLiteral("Ethernet") : QStringLiteral("RS-485"),
                      address->text(), first->currentText(), kp->currentText());
             if (second->currentData().toInt() != 0)
-                text += QStringLiteral("\nБКД-Б на новой плате: %1").arg(second->currentText());
+                text += QStringLiteral("\nБКХО-Б на новой плате: %1").arg(second->currentText());
             if (!comparison->currentText().isEmpty())
                 text += QStringLiteral("\nСтарый тестер: %1 → %2 · одна ЯПС · %3")
                     .arg(comparison->currentText(), comparisonBlock->currentText(), comparisonKp->isChecked()
@@ -1326,6 +1326,12 @@ void IntegrationWindow::refresh() {
         .arg(m_session.mapping().version.isEmpty()
             ? QStringLiteral("не загружена") : m_session.mapping().version));
     const auto &connection = m_session.options();
+    if (connection.boardTransport == IntegrationSession::BoardTransport::Udp &&
+        connection.firstStageYps == 8 && connection.secondStageYps == 7 && connection.kpYps == 8 &&
+        connection.comparisonLegacyPort.isEmpty() && connection.wiringProfilePath.isEmpty() &&
+        !m_session.mapping().occurrenceBased && m_session.mapping().warnings.isEmpty())
+        m_mappingStatus->setText(QStringLiteral("НОВАЯ · Ethernet %1 · ЯПС 8 — БКХО-А + КП (вход 8) · ЯПС 7 — БКХО-Б · общая аппаратная шкала")
+            .arg(connection.boardIp.toString()));
     if (connection.boardTransport == IntegrationSession::BoardTransport::Udp &&
         connection.firstStageYps == 8 && connection.secondStageYps == 0 && connection.kpYps == 8 &&
         connection.comparisonLegacyPort.compare(QStringLiteral("COM9"), Qt::CaseInsensitive) == 0 &&

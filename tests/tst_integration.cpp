@@ -75,6 +75,7 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void newBoardYpsSevenAndEightShareKp();
     void resetDoesNotCarryOldFrameIntoNewRun();
     void legacyRepeatedPulseIsNotSingleMeasurement();
     void repeatedLegacyKpIsNotAnAnchor();
@@ -112,6 +113,51 @@ private slots:
     void completedActionStateIsFrozenAcrossLateDebugChanges();
     void transientKpRemainsAfterNextUdpFrame();
 };
+
+void IntegrationTest::newBoardYpsSevenAndEightShareKp() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort=0;
+    options.firstStageYps=8; options.secondStageYps=7; options.kpYps=8;
+    IntegrationSession session(options);
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-19\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8\n"
+        "IGNITE_PYRO_CANDLE=20\nLIFT_OFF_CONTACT=0\n", &session.m_plan, &error));
+    session.m_hasPlan=true; session.m_uploadState="CONFIRMED";
+    session.m_executionObserved=true; session.m_boardArmed=true; session.m_hasBoardFrame=true;
+    session.updateBenchMapping();
+    QCOMPARE(session.mapping().kp.index,63);
+    const auto &actions=session.plan().actions;
+    const auto actionA=std::find_if(actions.cbegin(),actions.cend(),[](const auto &action) {
+        return action.key=="IGNITE_PYRO_CANDLES_ENGINES_9_TO_12";
+    });
+    const auto actionB=std::find_if(actions.cbegin(),actions.cend(),[](const auto &action) {
+        return action.key=="IGNITE_PYRO_CANDLE";
+    });
+    QVERIFY(actionA!=actions.cend()); QVERIFY(actionB!=actions.cend());
+    const auto a=session.mapping().forAction(*actionA);
+    const auto b=session.mapping().forAction(*actionB);
+    QCOMPARE(a.inputs.size(),2); QCOMPARE(b.inputs.size(),2);
+    QCOMPARE(a.inputs[0].index,56); QCOMPARE(a.inputs[1].index,57);
+    QCOMPARE(b.inputs[0].index,48); QCOMPARE(b.inputs[1].index,49);
+    // До КП сохраняем аппаратные отметки, но не придумываем относительное время.
+    for (const auto &input:a.inputs) session.m_boardFrame.channels[size_t(input.index)]={true,false,992000,0};
+    for (const auto &input:b.inputs) session.m_boardFrame.channels[size_t(input.index)]={true,false,1020500,0};
+    QCOMPARE(session.measureAction(*actionA).state,ActionMeasurement::State::WaitingForKp);
+    session.m_boardFrame.channels[63]={true,false,1000000,0};
+    const auto measuredA=session.measureAction(*actionA);
+    const auto measuredB=session.measureAction(*actionB);
+    QCOMPARE(measuredA.channels.size(),2); QCOMPARE(measuredB.channels.size(),2);
+    QCOMPARE(measuredA.channels[0].actualMs.value(),-8.0);
+    QCOMPARE(measuredB.channels[0].actualMs.value(),20.5);
+    QCOMPARE(measuredB.channels[0].deviationMs.value(),0.5);
+    // Неиспользуемые соседние ЯПС не подменяют ни события, ни КП.
+    session.m_boardFrame.channels[55]={true,false,5,0};
+    session.m_boardFrame.channels[71]={true,false,123,0};
+    QCOMPARE(session.kpTimeUs().value(),quint32(1000000));
+    QCOMPARE(session.measureAction(*actionB).channels[0].actualMs.value(),20.5);
+}
 
 void IntegrationTest::debugHistoryHasExplicitBound() {
     IntegrationSession::Options options;options.debugSocket.clear();IntegrationSession session(options);

@@ -1402,7 +1402,7 @@ void IntegrationTest::manualEarlyFinishNeverClaimsMissedPulse() {
 
 void IntegrationTest::actual33ActionCyclogramHasUnambiguousChannels() {
     // Проверяем не упрощённый тестовый пример, а актуальный файл оператора.
-    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/../../cyclogram.txt"));
+    QFile file(QStringLiteral(STAND_TEST_DATA_DIR "/mapped_33_actions.txt"));
     QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
     const QByteArray bytes = file.readAll();
     QVERIFY(!bytes.contains("SET_UTC_TIME"));

@@ -18,7 +18,7 @@ cmake --build ../build/pyro_stand
 ctest --test-dir ../build/pyro_stand --output-on-failure
 ```
 
-В Windows можно вызвать `build.bat`, в Linux — `./build.sh`.
+В Windows можно вызвать `build.bat`, в Linux — `bash build.sh`.
 Сборка создаётся вне каталога исходников. Для запуска Windows EXE на другом
 компьютере выполните `windeployqt --release <путь-к-pyro_stand.exe>`.
 

@@ -76,6 +76,12 @@ void send(QLocalSocket *socket, const QJsonObject &object) {
 class IntegrationTest : public QObject {
     Q_OBJECT
 private slots:
+    void rejectedObserversCoverUdpAndSerial();
+    void newBoardLinkLossIsIncomplete_data();
+    void newBoardLinkLossIsIncomplete();
+    void legacyProfileRejectsForeignKp_data();
+    void legacyProfileRejectsForeignKp();
+    void legacyProfileAcceptsOwnKp();
     void passiveObserversWithoutPlanDoNotGrowFlightArchive();
     void emptyStartupFramePreparesNewBoard();
     void lateEmptyFrameCannotBypassFailedReset();
@@ -119,6 +125,127 @@ private slots:
     void completedActionStateIsFrozenAcrossLateDebugChanges();
     void transientKpRemainsAfterNextUdpFrame();
 };
+
+void IntegrationTest::rejectedObserversCoverUdpAndSerial() {
+    IntegrationSession session({});
+    QSignalSpy rejected(&session, &IntegrationSession::frameRejected);
+    session.processFrame("short");
+    QCOMPARE(rejected.count(), 1);
+    QCOMPARE(rejected[0][0].toByteArray(), QByteArray("short"));
+    QVERIFY(!rejected[0][1].toString().isEmpty());
+    auto invalid = frame(); invalid[962] = char(quint8(invalid[962]) ^ 1);
+    session.processFrame(invalid); QCOMPARE(rejected.count(), 2);
+    session.m_collectionFinished = true;
+    session.processFrame(invalid); QCOMPARE(rejected.count(), 3);
+    session.m_options.boardTransport = IntegrationSession::BoardTransport::Serial;
+    session.m_serialBuffer = invalid; session.receiveSerial();
+    QCOMPARE(rejected.count(), 4);
+    QCOMPARE(rejected.last()[0].toByteArray(), invalid);
+    QVERIFY(!rejected.last()[1].toString().isEmpty());
+}
+
+void IntegrationTest::newBoardLinkLossIsIncomplete_data() {
+    QTest::addColumn<bool>("partial");
+    QTest::addColumn<int>("failure");
+    for (int failure = 0; failure < 3; ++failure) {
+        QTest::addRow("missing-%d", failure) << false << failure;
+        QTest::addRow("partial-%d", failure) << true << failure;
+    }
+}
+
+void IntegrationTest::newBoardLinkLossIsIncomplete() {
+    QFETCH(bool, partial);
+    QFETCH(int, failure);
+    IntegrationSession::Options options;
+    if (failure) options.boardTransport = IntegrationSession::BoardTransport::Serial;
+    IntegrationSession session(options); QString error;
+    QVERIFY(StandProtocol::parseCyclogram(cyclogram(), &session.m_plan, &error));
+    session.m_mapping = StandProtocol::benchMapping(1, 0, 1, session.m_plan);
+    session.m_hasPlan = session.m_boardArmed = session.m_hasBoardFrame = true;
+    session.m_boardReceiving = session.m_executionObserved = true;
+    session.m_uploadState = "CONFIRMED";
+    session.m_boardFrame.channels[7] = {true, false, 1000000, 0};
+    if (partial) session.m_boardFrame.channels[0] = {true, false, 1020000, 0};
+    const auto action = session.m_plan.actions.last();
+    const auto disconnect = [&] {
+        if (failure)
+            emit session.m_serial.errorOccurred(failure == 1 ? QSerialPort::ResourceError : QSerialPort::ReadError);
+        else QMetaObject::invokeMethod(&session.m_boardWatchdog, "timeout", Qt::DirectConnection);
+    };
+    disconnect();
+    QVERIFY(session.collectionFinished());
+    QVERIFY(!session.plannedWindowComplete());
+    const auto result = session.measureAction(action);
+    QVERIFY(result.state != ActionMeasurement::State::MissingAfterFinish);
+    QVERIFY(result.state != ActionMeasurement::State::PartialAfterFinish);
+    QVERIFY(result.reason.contains(QStringLiteral("связ")));
+    if (partial) {
+        QVERIFY(result.channels.first().actualMs.has_value());
+        QCOMPARE(*result.channels.first().actualMs, 20.0);
+    }
+    const auto channels = result.channels.size();
+    session.processFrame(frame(1000000, 1020000));
+    QCOMPARE(session.measureAction(action).state, result.state);
+    QCOMPARE(session.measureAction(action).reason, result.reason);
+    QCOMPARE(session.measureAction(action).channels.size(), channels);
+    if (partial) QCOMPARE(*session.measureAction(action).channels.first().actualMs, 20.0);
+    QTemporaryDir dir; QVERIFY(session.saveReport(dir.filePath("interrupted.json"), &error));
+    QFile report(dir.filePath("interrupted.json")); QVERIFY(report.open(QIODevice::ReadOnly));
+    QVERIFY(QJsonDocument::fromJson(report.readAll()).object().value("observation_interrupted").toBool());
+    session.resetCollectionEvidence(false);
+    QVERIFY(!session.collectionFinished());
+    // Поздний timeout после штатного finish не переоценивает завершённый результат.
+    session.m_boardReceiving = true;
+    session.finishCollection(QStringLiteral("complete"), true);
+    disconnect();
+    QVERIFY(session.plannedWindowComplete());
+    QVERIFY(session.saveReport(dir.filePath("complete.json"), &error));
+    QFile complete(dir.filePath("complete.json")); QVERIFY(complete.open(QIODevice::ReadOnly));
+    QVERIFY(!QJsonDocument::fromJson(complete.readAll()).object().value("observation_interrupted").toBool());
+}
+
+void IntegrationTest::legacyProfileRejectsForeignKp_data() {
+    QTest::addColumn<int>("yps"); QTest::addColumn<int>("channel"); QTest::addColumn<QString>("edge");
+    QTest::newRow("second-COM") << 2 << 8 << QStringLiteral("rise");
+    QTest::newRow("unavailable-group") << 12 << 8 << QStringLiteral("rise");
+    QTest::newRow("wrong-channel") << 1 << 3 << QStringLiteral("rise");
+    QTest::newRow("wrong-edge") << 1 << 8 << QStringLiteral("fall");
+}
+
+void IntegrationTest::legacyProfileRejectsForeignKp() {
+    QFETCH(int, yps); QFETCH(int, channel); QFETCH(QString, edge);
+    IntegrationSession::Options options; options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.secondLegacySerialPort = "COM-test";
+    IntegrationSession session(options);
+    QTemporaryFile file; QVERIFY(file.open());
+    file.write(QJsonDocument(QJsonObject{{"version", "regression"},
+        {"kp", QJsonObject{{"yps", yps}, {"channel", channel}, {"edge", edge}}},
+        {"actions", QJsonArray{QJsonObject{{"key", "IGNITE_PYRO_CANDLE"},
+            {"inputs", QJsonArray{QJsonObject{{"yps", 1}, {"channel", 1}}}}}}}}).toJson());
+    file.flush();
+    const auto collection = session.collectionId(); const auto mapping = session.mapping().version;
+    QVERIFY(!session.loadMapping(file.fileName()));
+    QCOMPARE(session.collectionId(), collection); QCOMPARE(session.mapping().version, mapping);
+    QVERIFY(session.lastError().contains(QStringLiteral("КП")));
+}
+
+void IntegrationTest::legacyProfileAcceptsOwnKp() {
+    IntegrationSession::Options options; options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    options.secondLegacySerialPort = "COM-test";
+    IntegrationSession session(options);
+    QTemporaryFile file; QVERIFY(file.open());
+    file.write(R"({"version":"own-kp","kp":{"yps":1,"channel":8},"actions":[{"key":"X","inputs":[{"yps":1,"channel":1}]}]})");
+    file.flush(); QVERIFY(session.loadMapping(file.fileName()));
+    session.m_boardArmed = session.m_hasBoardFrame = session.m_executionObserved = true;
+    session.m_uploadState = "CONFIRMED";
+    session.m_boardFrame.channels[7] = {true, false, 1000, 0};
+    session.m_boardFrame.channels[15] = {true, false, 9000, 0};
+    for (int i = 0; i < 10; ++i) session.m_legacy[0].append(0);
+    QCOMPARE(*session.measuredPositionMs(), 9.0);
+    // Защита расчёта действует и при обходе загрузчика профиля.
+    session.m_mapping.kp.index = 15;
+    QVERIFY(!session.kpTimeUs()); QVERIFY(!session.measuredPositionMs());
+}
 
 void IntegrationTest::lateEmptyFrameCannotBypassFailedReset() {
     QUdpSocket receiver; QVERIFY(receiver.bind(QHostAddress::LocalHost,0));

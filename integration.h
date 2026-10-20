@@ -221,6 +221,7 @@ signals:
     void message(const QString &text);
     // Пассивные подписчики используют тот же транспорт; без разрешений ПЗ и сброса платы.
     void frameObserved(const BoardFrame &frame, const QByteArray &raw);
+    void frameRejected(const QByteArray &raw, const QString &error);
     void legacyBytesObserved(const QByteArray &raw, int stream);
     void inputDiscontinuity(const QString &reason);
 
@@ -243,6 +244,7 @@ private:
     void applyFrame(const BoardFrame &frame);
     void recordFrame(const QByteArray &raw, const QString &error = {});
     void setError(const QString &text);
+    void interruptNewBoardObservation();
     bool appendDebugEvidence(const QJsonObject &object);
 
     Options m_options;
@@ -258,6 +260,7 @@ private:
     qint64 m_durationAtFinishMs = 0;
     bool m_collectionFinished = false;
     bool m_plannedWindowComplete = false;
+    bool m_observationInterrupted = false;
     QString m_finishReason;
     QDateTime m_finishedAtUtc;
     // Итог вычисляется один раз. Поздний Debug не пересчитывает историю.

@@ -16,19 +16,20 @@ public:
     };
     bool start(const Config &config);
     void acceptFrame(const BoardFrame &frame, const QByteArray &raw);
+    void acceptRejected(const QByteArray &raw, const QString &error);
     void acceptLegacy(const QByteArray &raw);
     void stop(const QString &reason);
     void checkDeadline();
     bool active() const { return m_active; }
     bool armed() const { return m_armed; }
-    QString status() const { return m_status; }
+    QString status() const;
     const BoardFrame &frame() const { return m_frame; }
     const Config &config() const { return m_config; }
     std::optional<quint32> kp() const { return m_kp; }
     std::optional<double> relativeMs(quint32 tick) const;
     QJsonObject report() const;
 private:
-    bool retain(const QByteArray &raw);
+    bool retain(const QByteArray &raw, const QString &error = {});
     void observe(const BoardFrame &frame, bool legacy, quint32 sampleTick = 0);
     bool relevant(int index) const;
     Config m_config;
@@ -41,4 +42,5 @@ private:
     QJsonArray m_raw, m_edges;
     QJsonObject m_baseline;
     qsizetype m_bytes = 0;
+    int m_rejectedFrames = 0;
 };

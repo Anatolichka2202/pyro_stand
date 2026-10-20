@@ -4,6 +4,23 @@
 class FreeRecordingTest : public QObject {
     Q_OBJECT
 private slots:
+    void rejectedFramesAreBoundedEvidence() {
+        FreeRecording r; QVERIFY(r.start({}));
+        r.acceptRejected("bad-before-baseline", "CRC"); QVERIFY(!r.armed());
+        r.acceptFrame({}, "baseline"); QVERIFY(r.armed());
+        BoardFrame f; f.channels[0] = {true, false, 1000, 0};
+        r.acceptFrame(f, "valid"); r.acceptRejected("bad-length", "size");
+        const auto report = r.report();
+        QCOMPARE(report.value("raw_records").toArray().size(), 4);
+        QCOMPARE(report.value("rejected_frames").toInt(), 2);
+        QCOMPARE(report.value("edges").toArray().size(), 1);
+        QVERIFY(r.status().contains(QStringLiteral("2")));
+        r.stop("manual"); r.acceptRejected("late", "CRC"); QCOMPARE(r.report().value("rejected_frames").toInt(), 2);
+        QVERIFY(r.start({})); QCOMPARE(r.report().value("rejected_frames").toInt(), 0);
+        r.acceptRejected(QByteArray(16 * 1024 * 1024, 'x'), "CRC");
+        r.acceptRejected("over-limit", "CRC"); QVERIFY(!r.active());
+        QCOMPARE(r.report().value("raw_records").toArray().size(), 1);
+    }
     void retrospectiveKpAndWrap() {
         FreeRecording r; FreeRecording::Config c; c.group = 7; c.kp = 63;
         QVERIFY(r.start(c));

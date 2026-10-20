@@ -499,6 +499,8 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
             if (error == QSerialPort::ResourceError || error == QSerialPort::ReadError) {
                 m_legacyReceiving[size_t(stream)] = false;
                 m_boardReceiving = false;
+                if (stream == 0 && m_options.boardTransport == BoardTransport::Serial)
+                    interruptNewBoardObservation();
                 if (!m_collectionFinished) {
                     m_boardArmed = false;
                     m_awaitReset = false;
@@ -513,7 +515,10 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
     }
     m_boardWatchdog.setInterval(1500);
     connect(&m_boardWatchdog, &QTimer::timeout, this, [this] {
-        if (m_boardReceiving) { m_boardReceiving = false; emit changed(); }
+        if (!m_boardReceiving) return;
+        m_boardReceiving = false;
+        interruptNewBoardObservation();
+        emit changed();
     });
     m_resetWatchdog.setSingleShot(true);
     for (int stream = 0; stream < 2; ++stream) {
@@ -650,6 +655,7 @@ bool IntegrationSession::clearFrameEvidence() {
         return false;
     }
     m_evidenceValid = true;
+    m_observationInterrupted = false;
     m_acceptedFrames = 0;
     m_rejectedFrames = 0;
     return true;
@@ -998,6 +1004,7 @@ void IntegrationSession::receiveSerial() {
             ++m_rejectedFrames;
             if (!m_collectionFinished)
                 recordFrame(candidate, QStringLiteral("Неверный кадр RS-485"));
+            emit frameRejected(candidate, QStringLiteral("Неверный кадр RS-485"));
             m_serialBuffer.remove(0, 1);
             emit changed();
         }
@@ -1010,6 +1017,7 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
     if (!StandProtocol::parseBoardFrame(raw, &parsed, &error)) {
         ++m_rejectedFrames;
         if (!m_collectionFinished) recordFrame(raw, error);
+        emit frameRejected(raw, error);
         setError(error);
         return;
     }
@@ -1174,6 +1182,11 @@ bool IntegrationSession::loadMapping(const QString &path) {
     StandMapping mapping;
     QString error;
     if (!StandProtocol::parseMapping(bytes, &mapping, &error)) { setError(error); return false; }
+    if (m_options.boardTransport == BoardTransport::LegacySerial && mapping.kp.index >= 0 &&
+        (mapping.kp.index != 7 || mapping.kp.falling)) {
+        setError(QStringLiteral("КП старого тестера: поддерживается только фронт входа 8 основного COM; второй COM использует свою опору 8"));
+        return false;
+    }
     // A new profile must not reinterpret observations collected under the old one.
     resetCollectionEvidence(false);
     m_boardArmed = false;
@@ -1293,6 +1306,8 @@ bool IntegrationSession::legacyStreamKpObserved(int stream) const {
 
 std::optional<quint32> IntegrationSession::kpTimeUs() const {
     if (!m_boardArmed || !m_hasBoardFrame || m_mapping.kp.index < 0) return std::nullopt;
+    if (m_options.boardTransport == BoardTransport::LegacySerial &&
+        (!m_options.legacyHasKp || m_mapping.kp.index != 7 || m_mapping.kp.falling)) return std::nullopt;
     if(m_options.boardTransport==BoardTransport::LegacySerial &&
         m_boardFrame.channels[size_t(m_mapping.kp.index)].observedRises>1) return std::nullopt;
     return timestamp(m_boardFrame.channels[size_t(m_mapping.kp.index)], m_mapping.kp);
@@ -1421,6 +1436,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
             : m_plannedWindowComplete ? State::MissingAfterFinish : State::StoppedEarly;
         result.reason = !m_collectionFinished
             ? QStringLiteral("Нет отметок сопоставленных входов")
+            : m_observationInterrupted
+                ? QStringLiteral("Нет измерения: сбор прерван из-за потери связи")
             : m_plannedWindowComplete
                 ? QStringLiteral("Не сработало за время завершённого испытания")
                 : QStringLiteral("Сбор прерван до конца окна; отсутствие срабатывания не оценивается");
@@ -1428,6 +1445,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         result.state = m_collectionFinished && m_plannedWindowComplete
             ? State::PartialAfterFinish : State::Partial;
         result.reason = !m_collectionFinished ? QStringLiteral("Часть входов без отметки")
+            : m_observationInterrupted
+                ? QStringLiteral("Часть входов без оценки: сбор прерван из-за потери связи")
             : m_plannedWindowComplete
                 ? QStringLiteral("После завершения часть входов не сработала")
                 : QStringLiteral("Сбор прерван до конца окна; часть входов без оценки");
@@ -1466,6 +1485,15 @@ QString IntegrationSession::actionResult(const PlannedAction &action) const {
     return lines.join(QStringLiteral("; "));
 }
 
+
+void IntegrationSession::interruptNewBoardObservation() {
+    if (m_options.boardTransport == BoardTransport::LegacySerial || !m_boardArmed ||
+        !m_hasPlan || m_collectionFinished) return;
+    // Фиксируем измерения до любых изменений вооружения; отсутствие отметки
+    // после разрыва связи не доказывает отказ исполнительной цепи.
+    m_observationInterrupted = true;
+    finishCollection(QStringLiteral("Сбор неполный: потеря связи с новой платой"), false);
+}
 
 void IntegrationSession::finishCollection(const QString &reason, bool plannedWindowComplete) {
     if (m_collectionFinished || !m_hasPlan) return;
@@ -1594,6 +1622,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("run_id"), m_runId);
     report.insert(QStringLiteral("collection_finished"), m_collectionFinished);
     report.insert(QStringLiteral("planned_window_complete"), m_plannedWindowComplete);
+    report.insert(QStringLiteral("observation_interrupted"), m_observationInterrupted);
     report.insert(QStringLiteral("upload_state_at_finish"), m_uploadStateAtFinish);
     report.insert(QStringLiteral("execution_permission_observed_at_finish"),
                   m_executionObservedAtFinish);

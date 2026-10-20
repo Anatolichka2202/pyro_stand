@@ -18,6 +18,7 @@ bool FreeRecording::start(const Config &config) {
     m_decoder.reset();
     m_kp.reset();
     m_raw = {}; m_edges = {}; m_baseline = {}; m_bytes = 0;
+    m_rejectedFrames = 0;
     m_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_started = utcNow(); m_stopped.clear();
     m_active = true; m_armed = false;
@@ -41,7 +42,11 @@ void FreeRecording::checkDeadline() {
         stop(QStringLiteral("Остановлено: достигнут предел однозначного интервала счётчика"));
 }
 
-bool FreeRecording::retain(const QByteArray &raw) {
+QString FreeRecording::status() const {
+    return m_rejectedFrames ? m_status + QStringLiteral(" · отклонённых кадров: %1").arg(m_rejectedFrames) : m_status;
+}
+
+bool FreeRecording::retain(const QByteArray &raw, const QString &error) {
     checkDeadline();
     if (!m_active) return false;
     if (raw.size() > maxBytes - m_bytes || m_raw.size() >= maxRecords) {
@@ -49,10 +54,18 @@ bool FreeRecording::retain(const QByteArray &raw) {
         return false;
     }
     m_raw.append(QJsonObject{{"received_at_utc", utcNow()},
+        {"valid", error.isEmpty()}, {"error", error},
         {"raw_base64", QString::fromLatin1(raw.toBase64())},
         {"next_sample_index", QString::number(m_decoder.sampleCount() + 1)}});
     m_bytes += raw.size();
     return true;
+}
+
+void FreeRecording::acceptRejected(const QByteArray &raw, const QString &error) {
+    // Повреждённый кадр сохраняется, но не вооружает сбор и не создаёт измерений.
+    if (!m_active || m_config.legacy) return;
+    if (retain(raw, error.isEmpty() ? QStringLiteral("Кадр отклонён декодером") : error))
+        ++m_rejectedFrames;
 }
 
 void FreeRecording::observe(const BoardFrame &frame, bool legacy, quint32 sampleTick) {
@@ -145,7 +158,10 @@ std::optional<double> FreeRecording::relativeMs(quint32 tick) const {
 QJsonObject FreeRecording::report() const {
     return {{"format", "pyro.free-recording.v1"}, {"recording_id", m_id},
         {"started_at_utc", m_started}, {"stopped_at_utc", m_stopped},
-        {"active", m_active}, {"status", m_status}, {"baseline_observed", m_armed},
+        {"active", m_active}, {"status", status()}, {"baseline_observed", m_armed},
+        {"rejected_frames", m_rejectedFrames},
+        {"raw_scope", m_config.legacy ? "Raw mask chunks of the selected COM"
+            : "Validated frames and rejected UDP datagrams / RS485 candidates; not a complete serial byte stream"},
         {"baseline", m_baseline},
         {"source", m_config.source}, {"protocol", m_config.legacy ? "legacy-mask-1ms" : "AA55-963-CRC8"},
         {"yps", m_config.legacy ? 0 : m_config.group + 1}, {"selected_mask", int(m_config.selected)},

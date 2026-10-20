@@ -22,10 +22,29 @@
 #include <QMessageBox>
 #include <QTemporaryDir>
 #include <QFileDialog>
+#include <QtEndian>
+
+namespace {
+void acceptSaveDialog(const QString &path, QObject *context) {
+    // Ожидаем видимый диалог, а не предполагаем фиксированное время его создания.
+    auto *timer = new QTimer(context);
+    QObject::connect(timer, &QTimer::timeout, context, [timer, path] {
+        auto *picker = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+        if (!picker || !picker->isVisible()) return;
+        timer->stop(); timer->deleteLater();
+        auto *name = picker->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+        if (!name) return;
+        name->setText(path);
+        QMetaObject::invokeMethod(picker, "accept", Qt::QueuedConnection);
+    });
+    timer->start(20);
+}
+}
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void freeRegistrationRetainsRejectedFrames();
     void freeRegistrationWithoutPlan();
     void startupAndLiveKpCalculation();
     void initTestCase(){
@@ -56,6 +75,59 @@ private slots:
     void peerClockDoesNotTruncateTimeline();
     void finishWithoutKpFreezesVisualUtcClock();
 };
+
+void OperatorGuiTest::freeRegistrationRetainsRejectedFrames() {
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QTemporaryDir archive; QVERIFY(archive.isValid());
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = options.bindIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.show(); bool checked = false;
+    QTimer answer;
+    connect(&answer, &QTimer::timeout, &window, [] {
+        if (auto *message = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+            if (auto *yes = message->button(QMessageBox::Yes)) yes->click();
+    }); answer.start(20);
+    QTimer::singleShot(30, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>(QStringLiteral("freeRecordingDialog")); QVERIFY(dialog);
+        auto *source = dialog->findChild<QComboBox *>(QStringLiteral("freeSource"));
+        source->setCurrentIndex(source->findData(QStringLiteral("main:0")));
+        dialog->findChild<QPushButton *>(QStringLiteral("freeStart"))->click();
+        auto packet = [](quint32 tick) {
+            QByteArray bytes(963, 0); bytes[0] = char(0xaa); bytes[1] = char(0x55);
+            bytes[2] = tick ? 1 : 0;
+            qToLittleEndian(tick, reinterpret_cast<uchar *>(bytes.data() + 4));
+            quint8 crc = 0;
+            for (int i = 0; i < 962; ++i) {
+                crc ^= quint8(bytes[i]);
+                for (int bit = 0; bit < 8; ++bit)
+                    crc = crc & 0x80 ? quint8((crc << 1) ^ 0x31) : quint8(crc << 1);
+            }
+            bytes[962] = char(crc); return bytes;
+        };
+        const auto valid = packet(1000);
+        auto invalid = valid; invalid[962] = char(quint8(invalid[962]) ^ 1);
+        window.m_session.processFrame(packet(0)); window.m_session.processFrame(valid);
+        window.m_session.processFrame(invalid); window.m_session.processFrame(valid);
+        dialog->findChild<QPushButton *>(QStringLiteral("freeStop"))->click();
+        acceptSaveDialog(archive.filePath(QStringLiteral("rejected.json")), dialog);
+        dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->click();
+        QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->isEnabled(), 2000);
+        QFile file(archive.filePath(QStringLiteral("rejected.json"))); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto report = QJsonDocument::fromJson(file.readAll()).object();
+        const auto records = report.value("raw_records").toArray();
+        QCOMPARE(records.size(), 4);
+        QVERIFY(!records[2].toObject().value("valid").toBool());
+        QVERIFY(!records[2].toObject().value("error").toString().isEmpty());
+        QCOMPARE(records[2].toObject().value("raw_base64").toString(), QString::fromLatin1(invalid.toBase64()));
+        QCOMPARE(report.value("rejected_frames").toInt(), 1);
+        QCOMPARE(report.value("edges").toArray().size(), 1);
+        checked = true; dialog->reject();
+    });
+    QTimer::singleShot(3000, &window, [&] {
+        if (auto *dialog = window.findChild<QDialog *>(QStringLiteral("freeRecordingDialog"))) dialog->reject();
+    });
+    window.openFreeRecording(); QVERIFY(checked);
+}
 
 void OperatorGuiTest::freeRegistrationWithoutPlan() {
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -92,12 +164,7 @@ void OperatorGuiTest::freeRegistrationWithoutPlan() {
         QVERIFY(status->text().contains(QStringLiteral("граница сбора")));
         QVERIFY(!dialog->findChild<QComboBox *>(QStringLiteral("freeSource"))->isEnabled());
         QVERIFY(!dialog->findChild<QPushButton *>(QStringLiteral("freeStop"))->isEnabled());
-        QTimer::singleShot(30, dialog, [&] {
-            if (auto *picker = qobject_cast<QFileDialog *>(QApplication::activeModalWidget())) {
-                picker->selectFile(archive.filePath(QStringLiteral("free.json")));
-                QMetaObject::invokeMethod(picker, "accept", Qt::QueuedConnection);
-            }
-        });
+        acceptSaveDialog(archive.filePath(QStringLiteral("free.json")), dialog);
         dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->click();
         QTRY_VERIFY_WITH_TIMEOUT(dialog->findChild<QPushButton *>(QStringLiteral("freeSave"))->isEnabled(), 2000);
         QFile file(archive.filePath(QStringLiteral("free.json"))); QVERIFY(file.open(QIODevice::ReadOnly));

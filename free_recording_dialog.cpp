@@ -150,6 +150,10 @@ void IntegrationWindow::openFreeRecording() {
                 everReceived = true; recording.acceptFrame(frame, raw);
             }
         });
+        connect(session, &IntegrationSession::frameRejected, &dialog, [&, session](const QByteArray &raw, const QString &error) {
+            if (session == selectedSession && recording.active() && !recording.config().legacy)
+                recording.acceptRejected(raw, error);
+        });
         connect(session, &IntegrationSession::legacyBytesObserved, &dialog, [&, session](const QByteArray &raw, int stream) {
             if (session == selectedSession && recording.active() && recording.config().legacy && stream == selectedStream) {
                 everReceived = true; recording.acceptLegacy(raw);

@@ -22,7 +22,7 @@ static bool wait(const std::function<bool()> &ready, int timeoutMs = 3000) {
     }
     return false;
 }
-// Physical hardware is not accessed. The real KASU publisher and stand consumer are linked.
+// Проверяем настоящий издатель КАСУПП и потребитель стенда без обращения к оборудованию.
 class IntegrationTest {
   public:
     static int run() {
@@ -80,7 +80,7 @@ class IntegrationTest {
         unlock.bcvmPacket = 43;
         unlock.live.validFrames = 100;
         bus.publish(unlock);
-        // A bare UNLOCK is deliberately insufficient in the current Debug contract.
+        // Одного UNLOCK недостаточно: требуется подтверждённый контекст загрузки и исполнения.
         if (wait([&] { return modern.executionPermissionObserved() || old.executionPermissionObserved(); }, 100))
             return 10;
         unlock.readbackVerified = true;
@@ -91,7 +91,7 @@ class IntegrationTest {
                 return modern.executionPermissionObserved() && old.executionPermissionObserved();
             }))
             return 6;
-        // Synthetic event timestamps and UART masks exercise independent physical-zero rules.
+        // Искусственные отметки и маски UART проверяют независимые физические опоры времени.
         modern.m_boardArmed = true;
         modern.m_hasBoardFrame = true;
         modern.m_boardFrame.channels[7] = {true, false, 500000, 0};

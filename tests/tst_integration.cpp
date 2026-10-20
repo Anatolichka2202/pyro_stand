@@ -543,7 +543,7 @@ void IntegrationTest::workingTxtProvenanceAndReordering() {
     const auto commented = std::find_if(plan.actions.cbegin(),plan.actions.cend(),[](const auto &a){return a.ordinal==4;});
     QCOMPARE(commented->rawValue, QString("-7980"));
     QCOMPARE(commented->comment, QString::fromUtf8(" Первое срабатывание БКД-А"));
-    // Reorder the physical file: mappings still refer to the same logical signals.
+    // Перестановка строк исходного файла не меняет назначение физических сигналов.
     auto lines=bytes.split('\n');
     std::swap(lines[2],lines[4]);
     CyclogramPlan reordered;
@@ -593,7 +593,7 @@ void IntegrationTest::kpTimeVectors() {
     session.m_executionObserved=true;session.m_boardArmed=true;session.m_hasBoardFrame=true;
     const auto action=*std::find_if(session.plan().actions.cbegin(),session.plan().actions.cend(),[](const auto &a){return a.key.startsWith("IGNITE");});
     session.m_boardFrame.channels[0]={true,false,tick,0};
-    // Pre-KP observations remain available for retrospective evaluation.
+    // Отметки до КП сохраняются для последующего расчёта относительно физической опоры.
     QCOMPARE(session.measureAction(action).state,ActionMeasurement::State::WaitingForKp);
     session.m_boardFrame.channels[7]={true,false,kp,0};
     auto result=session.measureAction(action);
@@ -674,21 +674,21 @@ void IntegrationTest::signalWiringAcrossGroups() {
     const auto action=mapping.actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12");
     QCOMPARE(action.inputs.size(),2);QCOMPARE(action.inputs[0].index,1);QCOMPARE(action.inputs[1].index,19);
     QVERIFY(action.inputs[1].falling);
-    const auto incomplete=profile.mid(0); // remove one complete binding, leaving a valid but incomplete profile
+    const auto incomplete=profile.mid(0); // Удаляем одно назначение: синтаксис карты остаётся правильным, набор сигналов — неполным.
     auto json=QJsonDocument::fromJson(incomplete).object();auto bindings=json["bindings"].toArray();
     bindings.removeAt(1);json["bindings"]=bindings;
     QVERIFY(StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
     QVERIFY(!mapping.actions.contains("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"));
     json["bindings"]=QJsonArray{QJsonObject{{"signal_id","invented.output"},{"yps",1},{"channel",1}}};
     QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
-    // A KP field without a matching physical reference signal must never grade.
+    // КП без соответствующего физического сигнала не позволяет оценивать допуск.
     json=QJsonDocument::fromJson(profile).object();bindings=json["bindings"].toArray();bindings.removeLast();json["bindings"]=bindings;
     QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
     json=QJsonDocument::fromJson(profile).object();bindings=json["bindings"].toArray();
     auto kpCollision=bindings.last().toObject();kpCollision["yps"]=1;kpCollision["channel"]=2;bindings[2]=kpCollision;
     json["bindings"]=bindings;json["kp"]=QJsonObject{{"yps",1},{"channel",2}};
     QVERIFY(!StandProtocol::parseMapping(QJsonDocument(json).toJson(),&mapping,&error));
-    // Legacy positional maps are retained for inspection, but are not definitions.
+    // Прежние позиционные карты доступны для просмотра, но не подтверждают назначение сигналов.
     const auto legacy=R"({"version":"legacy","kp":{"yps":1,"channel":8},"actions":[{"key":"IGNITE_PYRO_CANDLES_ENGINES_1_TO_8","inputs":[{"yps":1,"channel":1}]}]})";
     QVERIFY(StandProtocol::parseMapping(legacy,&mapping,&error));
     QVERIFY(!mapping.actions.cbegin()->definitionConfirmed);
@@ -718,7 +718,7 @@ void IntegrationTest::conflictingFileIdentity() {
     session.processDebug(enabled);QVERIFY(!session.executionPermissionObserved());
     auto upload=contract("CYCLOGRAM_UPLOAD_STATE",4,"run","stream");upload["upload_id"]="same-id";upload["upload_state"]="CONFIRMED";
     session.processDebug(upload);enabled["seq"]="5";session.processDebug(enabled);
-    session.m_boardArmed=true; // even a fresh physical collection cannot repair corrupt file identity
+    session.m_boardArmed=true; // Новый сбор не исправляет нарушенную идентичность файла ПЗ.
     QVERIFY(!session.measurementEligible());
     event["seq"]="6";event["upload_id"]="new-id";publish(cyclogram());
     QVERIFY(session.m_fileIdentityValid);QVERIFY(!session.boardArmed());
@@ -739,7 +739,7 @@ void IntegrationTest::builtInBenchProfile() {
     QCOMPARE(mapped.actions.value("IGNITE_PYRO_CANDLE").inputs[0].index, 64);
     QCOMPARE(mapped.actions.value("SHUTDOWN_ENGINE_BLOCK_B").inputs[1].index, 70);
     QCOMPARE(mapped.actions.value("SHUTDOWN_ENGINE_BLOCK_B").toleranceMs.value(), 1.0);
-    // Item numbers refer to original cyclogram order, not sorted display order.
+    // Номера относятся к исходному порядку ПЗ, а не к сортировке отображаемых событий.
     QCOMPARE(plan.actions[0].ordinal, 3);
     const auto unassigned = StandProtocol::benchMapping(0, 0, 0, plan);
     QVERIFY(unassigned.actions.isEmpty());
@@ -791,7 +791,7 @@ void IntegrationTest::legacyDecoder() {
     QCOMPARE(frame.channels[0].fallUs, quint32(5000));
     QVERIFY(!frame.channels[0].ready);
     QCOMPARE(decoder.sampleCount(), quint64(5));
-    decoder.append(0x81); // repeated pulse does not overwrite the first front
+    decoder.append(0x81); // Повторный импульс не перезаписывает первый фронт.
     const auto repeatedFrame=decoder.append(0x81);
     QCOMPARE(repeatedFrame.channels[0].riseUs, quint32(2000));
     QCOMPARE(repeatedFrame.channels[0].observedRises,quint64(2));
@@ -820,13 +820,13 @@ void IntegrationTest::legacyIndependentCounters() {
     session.processDebug(upload);
     QJsonObject enabled = contract("BCVM_EXECUTION_ENABLED", 3, "run", "stream");
     enabled.insert("upload_id", "upload"); session.processDebug(enabled);
-    session.m_awaitReset = true; // local collection request, no physical UART in this test
+    session.m_awaitReset = true; // Локальный запрос сбора; физический UART в тесте не используется.
     QByteArray first(15, char(0));
     for (int i = 6; i < first.size(); ++i) first[i] = char(i == 6 ? 1 : 3);
     for (int i = 9; i < first.size(); ++i) first[i] = char(quint8(first[i]) | 0x80);
     session.processLegacyBytes(first.first(8), 0);
     session.processLegacyBytes(first.mid(8), 0);
-    QVERIFY(!session.boardArmed()); // second COM has no baseline yet
+    QVERIFY(!session.boardArmed()); // На втором COM ещё нет подтверждённого чистого начала.
     QByteArray second(35, char(0));
     for (int i = 26; i < second.size(); ++i) second[i] = char(i == 26 ? 1 : 3);
     for (int i = 29; i < second.size(); ++i) second[i] = char(quint8(second[i]) | 0x80);
@@ -842,7 +842,7 @@ void IntegrationTest::legacyIndependentCounters() {
     session.processLegacyBytes(second.mid(29), 1);
     QCOMPARE(session.measureAction(secondAction).channels[0].actualMs.value(), -3.0);
     QCOMPARE(session.measureAction(secondAction).channels[1].actualMs.value(), -2.0);
-    QCOMPARE(session.measuredPositionMs().value(), 5.0); // delivery of the other UART cannot move A's clock
+    QCOMPARE(session.measuredPositionMs().value(), 5.0); // Приём другого UART не сдвигает шкалу первого прибора.
     QCOMPARE(session.measureAction(firstAction).channels[1].deviationMs.value(), 1.0);
     // Повтор КП второго COM не отменяет независимую опору первого.
     session.processLegacyBytes(QByteArray::fromHex("0080"),1);
@@ -855,10 +855,10 @@ void IntegrationTest::legacyIndependentCounters() {
     QVERIFY(session.saveReport(repeatedKpPath,&repeatedKpError));
     QFile repeatedKpReport(repeatedKpPath);QVERIFY(repeatedKpReport.open(QIODevice::ReadOnly));
     QVERIFY(QJsonDocument::fromJson(repeatedKpReport.readAll()).object().value("second_legacy_kp_time_us").isNull());
-    session.m_boardArmed = false; // a UART error / detected gap invalidates the collection
+    session.m_boardArmed = false; // Ошибка UART или разрыв потока нарушают достоверность сбора.
     QCOMPARE(session.measureAction(firstAction).state, ActionMeasurement::State::BoardNotArmed);
 
-    // One old eight-channel board can be assigned to either block, without a JSON file.
+    // Одну старую восьмиканальную плату можно назначить любому блоку без JSON-профиля.
     options.secondLegacySerialPort.clear();
     for (bool blockB : {false, true}) {
         options.legacySecondStage = blockB;
@@ -895,8 +895,8 @@ void IntegrationTest::legacyStreamHealth() {
     QVERIFY(session.boardReceiving());
     QVERIFY(session.boardArmed());
 
-    // Only the second serial feed times out. First feed may still appear
-    // healthy, but the combined collection is no longer valid.
+    // Таймаут возникает только во втором потоке; приём первого не доказывает
+    // достоверность общего сбора после разрыва второго.
     session.m_legacyWatchdog[1].setInterval(15);
     session.m_legacyWatchdog[1].start();
     QTRY_VERIFY(!session.legacyStreamReceiving(1));
@@ -905,7 +905,7 @@ void IntegrationTest::legacyStreamHealth() {
     QVERIFY(!session.boardArmed());
     session.processLegacyBytes(QByteArray(4, char(0)), 1);
     QVERIFY(session.boardReceiving());
-    QVERIFY(!session.boardArmed()); // receiving again cannot silently re-arm
+    QVERIFY(!session.boardArmed()); // Возобновление приёма не должно автоматически подтверждать новый сбор.
 }
 
 void IntegrationTest::evidenceIsolation() {
@@ -937,9 +937,9 @@ void IntegrationTest::evidenceIsolation() {
     QVERIFY(oldEvidence.open(QIODevice::ReadOnly));
     QVERIFY(!oldEvidence.readAll().isEmpty());
 
-    // A new collection starts without carrying forward a previous board
-    // frame, even if the KASU upload is unchanged.
-    QVERIFY(session.resetBoard()); // sends reset to loopback; no hardware ACK required
+    // Новый сбор не наследует кадры прежнего прогона,
+    // даже если загрузка КАСУПП не изменилась.
+    QVERIFY(session.resetBoard()); // Сброс отправляется только на loopback; аппаратного подтверждения в тесте нет.
     const QString freshCollection = session.m_collectionId;
     QVERIFY(!freshCollection.isEmpty());
     QVERIFY(freshCollection != oldCollection);
@@ -968,7 +968,7 @@ void IntegrationTest::evidenceIsolation() {
     QVERIFY(nextEvidence.open(QIODevice::ReadOnly));
     QVERIFY(nextEvidence.readAll().isEmpty());
 
-    // The KASU run boundary is also an evidence boundary.
+    // Граница сеанса КАСУПП начинает отдельную историю доказательств.
     session.processFrame(frame(3000000U, 3020000U));
     QCOMPARE(session.acceptedFrames(), quint64(1));
     session.resetDebugState();

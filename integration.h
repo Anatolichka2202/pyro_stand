@@ -30,9 +30,9 @@ struct WiringAnnotation {
 struct PlannedAction {
     QString key;
     qint32 offsetMs = 0;
-    int ordinal = 0; // presentation only; never selects a hardware input
+    int ordinal = 0; // Номер для отображения; аппаратный вход по нему не выбирается.
     int sourceLine = 0;
-    QString actionId; // SHA256(raw file):physical line
+    QString actionId; // SHA256 исходного файла и номер строки в нём.
     QString rawValue;
     QString comment;
     QByteArray rawLine;
@@ -67,14 +67,14 @@ struct InputRef {
 struct ActionMapping {
     QVector<InputRef> inputs;
     std::optional<double> toleranceMs;
-    bool definitionConfirmed = false; // complete expected-signal set from the catalogue
+    bool definitionConfirmed = false; // Все ожидаемые сигналы подтверждены каталогом.
 };
 
 struct StandMapping {
     QString version;
     QStringList warnings;
     InputRef kp;
-    // Type -> expected signals -> inputs, independent of action occurrences.
+    // Тип команды связан с ожидаемыми сигналами и входами отдельно от конкретных вхождений.
     QHash<QString, ActionMapping> actions;
     QHash<QString, InputRef> signalBindings;
     QString kpActionKey = QStringLiteral("LIFT_OFF_CONTACT");
@@ -87,8 +87,8 @@ struct StandMapping {
     }
 };
 
-// Old tester: one eight-bit state mask per hardware millisecond.
-// No PC clock or UART delivery time participates in the measurement.
+// Старый тестер передаёт восьмибитную маску входов каждую аппаратную миллисекунду.
+// Часы ПК и время доставки UART не участвуют в расчёте измеренных интервалов.
 class LegacyTesterDecoder {
 public:
     void reset();
@@ -101,7 +101,7 @@ private:
 };
 
 
-// Evaluation is based on mapped cyclogram events, not raw tester diagnostics.
+// Оценка относится к назначенным событиям ПЗ; сырая диагностика прибора хранится отдельно.
 struct ChannelMeasurement {
     InputRef input;
     std::optional<double> actualMs;
@@ -140,22 +140,22 @@ public:
     enum class BoardTransport { Udp, Serial, LegacySerial };
     struct Options {
         QString debugSocket = QStringLiteral("kasupp-debug-events-v1");
-        QString wiringProfilePath; // optional; empty selects the built-in historical variant
+        QString wiringProfilePath; // Необязательный профиль; пустое значение выбирает встроенную карту.
         QString comparisonWiringProfilePath;
         BoardTransport boardTransport = BoardTransport::Udp;
         QString serialPort;
-        QString comparisonLegacyPort; // independent legacy observer alongside a new tester
+        QString comparisonLegacyPort; // Дополнительный старый тестер со своей шкалой времени.
         bool comparisonLegacySecondStage = true;
         bool comparisonLegacyHasKp = false;
         bool legacyHasKp = true;
-        QString secondLegacySerialPort; // optional simultaneous БКД-Б; own channel-8 KP
+        QString secondLegacySerialPort; // Необязательный второй COM для БКД-Б; собственный КП на входе 8.
         QHostAddress boardIp = QHostAddress(QStringLiteral("192.168.17.144"));
         QHostAddress bindIp = QHostAddress::AnyIPv4;
         quint16 telemetryPort = 5000;
         quint16 commandPort = 101;
-        int firstStageYps = 0;  // 0 = wiring not selected, never guess a YPS number
+        int firstStageYps = 0;  // Ноль означает отсутствие назначения ЯПС.
         int secondStageYps = 0;
-        int kpYps = 0;         // physical KP is always channel 8
+        int kpYps = 0;         // Встроенная карта ПЗ использует КП на входе 8.
         bool legacySecondStage = false;
     };
 

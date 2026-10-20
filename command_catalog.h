@@ -3,8 +3,8 @@
 #include <QStringList>
 #include <array>
 
-// Source-code behavior, not a claim about installed firmware or electrical wiring.
-// BCVM HEAD c8e14dcfe6e13d703044beca58c3dc2ee2a8c32b, cyclo_actions.c.
+// Назначения взяты из исходников БЦВМ; установленная прошивка и проводка проверяются отдельно.
+// Источник: cyclo_actions.c БЦВМ, ревизия c8e14dcfe6e13d703044beca58c3dc2ee2a8c32b.
 struct CommandDefinition {
     const char *key;
     const char *peer;

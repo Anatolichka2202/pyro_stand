@@ -167,7 +167,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
             last.count++;
             if (te.isT0) last.hasT0 = true;
             last.monitored |= te.monitored;
-            // fail > late > ok
+            // Приоритет: отказ, затем отклонение, затем норма.
             if (te.status == "fail") last.status = "fail";
             else if (last.status != "fail" && te.status == "late") last.status = "late";
             else if (last.status != "fail" && last.status != "late" && te.status == "ok") last.status = "ok";

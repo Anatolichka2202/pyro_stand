@@ -2,7 +2,7 @@
 REM Qt 6 и Ninja должны быть доступны через PATH/CMAKE_PREFIX_PATH.
 setlocal
 set SCRIPT_DIR=%~dp0
-set BUILD_DIR=%SCRIPT_DIR%build\stand
+set BUILD_DIR=%SCRIPT_DIR%..\build\pyro_stand
 cmake -S "%SCRIPT_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
 cmake --build "%BUILD_DIR%" --target pyro_stand || exit /b 1
 where windeployqt >nul 2>nul

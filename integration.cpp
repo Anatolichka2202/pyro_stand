@@ -128,7 +128,7 @@ void LegacyTesterDecoder::reset() {
 }
 
 BoardFrame LegacyTesterDecoder::append(quint8 mask) {
-    // Start at 1 ms so a real first sample is distinct from an absent timestamp.
+    // Первый отсчёт имеет время 1 мс, чтобы ноль обозначал отсутствие отметки.
     const quint32 timeUs = quint32(++m_samples * 1000);
     for (int bit = 0; bit < 8; ++bit) {
         auto &channel = m_frame.channels[size_t(bit)];
@@ -161,8 +161,8 @@ StandMapping StandProtocol::benchMapping(int firstStageYps, int secondStageYps, 
         for (int channel : channels) action.inputs.append({(yps - 1) * 8 + channel - 1, false});
         result.actions.insert(key, action);
     };
-    // This is the historical wiring variant, explicitly selected by the operator.
-    // Functional identities come from BCVM outputs, never from file ordinals.
+    // Встроенная карта применяется только после выбора оператором.
+    // Сигналы определяются выходами БЦВМ, а не порядковыми номерами строк ПЗ.
     for (const auto &definition : kCommandDefinitions) {
         const int yps = QString::fromLatin1(definition.peer) == QStringLiteral("bkhoa")
             ? firstStageYps : secondStageYps;
@@ -198,7 +198,7 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
     QTime time;
     parsed.sourceBytes = bytes;
     parsed.sha256 = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
-    // Preserve physical line numbers, including blank lines. CRLF is one delimiter.
+    // Сохраняем номера исходных строк, включая пустые; CRLF считаем одним разделителем.
     QStringDecoder decoder(QStringDecoder::Utf8);
     const QString decoded = decoder(bytes);
     if (decoder.hasError()) return fail(error, QStringLiteral("ПЗ не является корректным UTF-8"));
@@ -380,7 +380,7 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
         if (key.isEmpty() || parsed.actions.contains(key) || !inputs.isArray() || inputs.toArray().isEmpty())
             return fail(error, QStringLiteral("Неверный или повторный ключ действия"));
         ActionMapping action;
-        // Bench default: +/- 1 ms. An approved mapping may specify an override.
+        // Допуск профиля по умолчанию — ±1 мс; карта может задать другое значение.
         action.toleranceMs = 1.0;
         for (const QJsonValue &input : inputs.toArray()) {
             const auto parsedInput = parseInput(input);
@@ -407,8 +407,8 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
         }
         parsed.actions.insert(key, action);
     }
-    // Old action maps remain readable, but cannot prove an electrical assignment
-    // from positional input lists. Only a complete, named signal set is gradeable.
+    // Прежние позиционные карты можно читать, но для оценки нужны
+    // все ожидаемые сигналы с явными идентификаторами.
     for (auto it = parsed.actions.begin(); it != parsed.actions.end(); ++it) {
         const auto *definition = findCommand(it.key());
         if (!definition || definition->mask == 0) continue;
@@ -876,8 +876,8 @@ void IntegrationSession::processDebug(const QJsonObject &object) {
         }
         if (id != m_uploadId) {
             m_fileIdentityValid = true;
-            // New upload, even within the same KASU run: previous board frames
-            // and evidence must never appear in the next flight report.
+            // При новой загрузке ПЗ прежние кадры и доказательства не должны
+            // попадать в следующий отчёт, даже если сеанс КАСУПП тот же.
             resetCollectionEvidence(true);
             if(!appendDebugEvidence(object)) return;
             m_boardFrame = {};
@@ -1187,7 +1187,7 @@ bool IntegrationSession::loadMapping(const QString &path) {
         setError(QStringLiteral("КП старого тестера: поддерживается только фронт входа 8 основного COM; второй COM использует свою опору 8"));
         return false;
     }
-    // A new profile must not reinterpret observations collected under the old one.
+    // После смены профиля нельзя переоценивать измерения, полученные с прежними назначениями.
     resetCollectionEvidence(false);
     m_boardArmed = false;
     m_awaitReset = false;
@@ -1322,8 +1322,8 @@ std::optional<double> IntegrationSession::measuredPositionMs() const {
         if (samples * 1000 >= (quint64(1) << 31)) return std::nullopt;
         return double(qint32(quint32(samples * 1000) - *kp)) / 1000.0;
     }
-    // New frames contain event timestamps, not a frame's current counter value.
-    // Show only the latest known mapped event; never extrapolate with the PC clock.
+    // Кадры новой платы содержат отметки событий, а не текущее значение счётчика.
+    // Показываем последнее измеренное событие без экстраполяции по часам ПК.
     double latest = 0;
     for (const auto &mapped : m_mapping.actions) {
         for (const auto &input : mapped.inputs) {
@@ -1419,8 +1419,8 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         sample.input = input;
         const auto stamp = timestamp(m_boardFrame.channels[size_t(input.index)], input);
         if (stamp) {
-            // The board and КП share one uint32 microsecond counter.
-            // Signed subtraction handles a single wrap; longer intervals are ambiguous.
+            // Событие и КП относятся к одному 32-битному счётчику микросекунд прибора.
+            // Вычитание со знаком учитывает переполнение только в пределах полуоборота счётчика.
             const auto inputKp = dualLegacy && input.index >= 8 ? secondKp : kp;
             if (quint32(*stamp - *inputKp) == (quint32(1) << 31))
                 return blocked(State::AmbiguousInterval, QStringLiteral("Интервал ровно в половину оборота счётчика"));
@@ -1599,8 +1599,8 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         m_evidenceValid = false;
         return fail(error, QStringLiteral("Журнал доказательств не удалось записать на диск"));
     }
-    // Export through an independent reader: every failure leaves the writer
-    // at its append position so later measurements cannot overwrite evidence.
+    // Для экспорта используем отдельный файловый дескриптор, чтобы ошибка чтения
+    // не сместила позицию записи и следующие кадры не затёрли уже сохранённые.
     QFile evidenceReader(m_frameEvidence.fileName());
     if (!evidenceReader.open(QIODevice::ReadOnly))
         return fail(error, evidenceReader.errorString());

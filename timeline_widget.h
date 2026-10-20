@@ -37,11 +37,11 @@ private:
     struct TimelineEvent {
         int     id        = 0;
         int64_t time_ms   = 0;
-        QString status;   // "" | "ok" | "fail"
+        QString status;   // Состояние метки: пустое, норма или отказ.
         QString description;
         bool monitored = false;
-        bool    isT0      = false;  // LIFT_OFF_CONTACT (time_ms == 0)
-        int     displayIdx = 0;     // 1-based index among timeline events
+        bool    isT0      = false;  // Опорное событие КП на плановой шкале.
+        int     displayIdx = 0;     // Номер события на шкале, начиная с 1.
     };
 
     // Преобразует время в пиксельную X-координату.
@@ -53,4 +53,4 @@ private:
     int64_t m_playheadMs = INT64_MIN;  // INT64_MIN = не показывать
 };
 
-#endif // TIMELINE_WIDGET_H
+#endif // Граница защиты заголовка от повторного включения.

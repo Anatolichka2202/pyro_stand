@@ -7,7 +7,7 @@
 #include <QSaveFile>
 #include <cstdio>
 #include <QMap>
-// Passive, opt-in equipment check: no reset, upload, permission or outbound commands.
+// Пассивная проверка запускается явно и не отправляет сброс, ПЗ или команды управления.
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     QCommandLineParser parser;

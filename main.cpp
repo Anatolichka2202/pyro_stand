@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
 
     QApplication a(argc, argv);
     a.setApplicationName("pyro_stand");
-    // Portable distributions keep their preferences next to the executable.
+    // Переносимая поставка хранит настройки рядом с исполняемым файлом.
     if (QFileInfo::exists(QCoreApplication::applicationDirPath() + QStringLiteral("/portable.mode"))) {
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,

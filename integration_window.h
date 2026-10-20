@@ -18,8 +18,8 @@ class QPushButton;
 class QDialog;
 class QComboBox;
 
-// Event-oriented operator HMI accepted in V3; data comes from
-// IntegrationSession, never from the legacy Stand/serial transfer path.
+// Операторское окно показывает события и результаты, полученные от
+// IntegrationSession; декодирование и оценка измерений принадлежат сессии.
 class IntegrationWindow final : public QMainWindow {
     friend class OperatorGuiTest;
     Q_OBJECT

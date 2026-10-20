@@ -105,7 +105,7 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                        p.fontMetrics().elidedText(g.id+"  "+g.title,Qt::ElideRight,cw-155));
             p.setPen(QColor("#e8edf1"));
             p.drawText(QRect(x + cw - 145, y, 139, 24), Qt::AlignRight | Qt::AlignVCenter, g.plan);
-            // Columns reserve numeric widths before allocating the role text.
+            // Сначала выделяем место числам, оставшуюся ширину отдаём названию сигнала.
             const int widths[] = {40, cw - 370, 92, 96, 64, 78};
             int colX = x;
             const QStringList heads = {QStringLiteral("ВХ."),      g.source,

@@ -51,7 +51,7 @@ QString signedMs(double value) {
            QString::number(value, 'f', 3);
 }
 
-// Operator-facing fallback when the source action has no comment.
+// Название для оператора, если в строке ПЗ нет комментария.
 QString eventName(const QString &key) {
     if (key == QStringLiteral("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12"))
         return QStringLiteral("Зажигание пиросвечей двигателей 9–12");
@@ -137,7 +137,7 @@ qint64 presentationOffset(const IntegrationSession &session, const PlannedAction
     return qint64(action.offsetMs) - kp.value_or(0);
 }
 
-} // namespace
+} // Конец пространства имён.
 
 IntegrationWindow::IntegrationWindow(IntegrationSession::Options options,
                                      QWidget *parent)
@@ -553,7 +553,7 @@ void IntegrationWindow::refreshCanvas() {
             std::sort(v.begin(), v.end());
             return v.size() % 2 ? v[v.size() / 2] : (v[v.size() / 2 - 1] + v[v.size() / 2]) / 2;
         };
-        // Forecast only from unambiguous, armed, permitted observations awaiting physical KP.
+        // Прогноз до физического КП допустим только по однозначным отметкам готового и разрешённого сбора.
         for (const auto &action : session.plan().actions) {
             if (action.key == "LIFT_OFF_CONTACT")
                 continue;
@@ -877,7 +877,7 @@ void IntegrationWindow::refreshCanvas() {
 void IntegrationWindow::appendJournal(const QString &level, const QString &message,
                                       const QString &color) {
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
-    // Qt rich text has no reliable border-left; use the spec's visible ▌ glyph.
+    // Вертикальный маркер журнала рисуем символом: свойство border-left поддерживается не всеми версиями Qt.
     m_eventLog->append(
         QStringLiteral("<span style=\"color:%1;\">▌</span>  "
                        "<span style=\"color:#8b949e;\">%2</span>  "
@@ -1374,7 +1374,7 @@ void IntegrationWindow::refresh() {
         m_eventLog->clear();
     }
 
-    // Complete flight-task view: one row per occurrence; no diagnostic input matrix.
+    // Полный план содержит отдельную строку для каждого вхождения команды.
     m_planTable->setRowCount(m_session.plan().actions.size());
     int planRow = 0;
     for (const auto &action : m_session.plan().actions) {

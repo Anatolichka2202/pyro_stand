@@ -1,35 +1,37 @@
-# Build output
-/build/
-/build_new/
-build*/
+# Сборки и файлы компилятора
+/build*/
 *-build-*/
 cmake-build-*/
-
-# Qt Creator / CMake user files
-*.user
-*.user.*
-CMakeLists.txt.user*
 CMakeCache.txt
 CMakeFiles/
+*.o
+*.obj
+*.pdb
+*.exe
+*.dll
+*.a
+*.so
 
-# Visual Studio
+# Локальные настройки IDE
+.qtcreator/
 .vs/
+*.user
+*.user.*
 *.ipch
 *.VC.db
 *.suo
 *.sln.docstates
 
-# Compiled objects (vendored SDK .dll/.a/.exe are kept intentionally)
-*.o
-*.obj
-*.pdb
+# Результаты испытаний и пакеты поставки хранятся вне исходников
+*.frames.jsonl
+*.pcap
+*.pcapng
+*.log
+*.zip
+*.7z
 
-# OS junk
+# Временные файлы
+__pycache__/
 Thumbs.db
 .DS_Store
-
-# Claude Code internal state (worktrees only; commands/ is tracked)
 .claude/worktrees/
-
-# Кеши локальных Python-проверок
-__pycache__/

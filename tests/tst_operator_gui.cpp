@@ -320,7 +320,7 @@ void OperatorGuiTest::invalidIpShowsSpecificError() {
                 !error->text().contains(QStringLiteral("разные группы ЯПС"));
             dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-invalid-ip.png");
         }
-        // Force rejection even if validation regresses: never apply ports or change user settings.
+        // Отклоняем диалог даже при ошибке проверки: тест не меняет порты и пользовательские настройки.
         dialog->reject();
     });
     window.configureTester();QVERIFY(correctError);
@@ -330,7 +330,7 @@ void OperatorGuiTest::invalidIpShowsSpecificError() {
 void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
     IntegrationSession::Options options;options.debugSocket.clear();options.telemetryPort=0;
     options.wiringProfilePath="NONEXISTENT_PROFILE_A";options.comparisonWiringProfilePath="NONEXISTENT_PROFILE_B";
-    options.boardIp=QHostAddress(QStringLiteral("17.0.0.144")); // reproduces the saved-address error
+    options.boardIp=QHostAddress(QStringLiteral("17.0.0.144")); // Воспроизводит ошибку сохранённого адреса.
     IntegrationWindow window(options);
     bool cleared=false, collapsed=false, correctScheme=false;
     QTimer::singleShot(0,&window,[&] {
@@ -398,7 +398,7 @@ void OperatorGuiTest::channelLabelsUseSourceComments() {
         }
     }
     QCOMPARE(commented,2);QCOMPARE(fallback,2);
-    // Presentation trims whitespace without modifying the source or matching identity.
+    // Отображение убирает лишние пробелы, не меняя исходный файл и идентичность действия.
     QCOMPARE(session.m_plan.sourceBytes,source);
     QVERIFY(session.m_plan.actions[0].comment.contains(comment));
     // Явная карта файла имеет приоритет: заголовок не должен повторять пресет 8/7.
@@ -476,7 +476,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
         "START_UTC_TIME = 12:00:00\n"
         "OTHER_1 = 0\nOTHER_2 = 1\n"
         "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12 = 20\n"
-        "CLOSE_MAIN_VALVES_ENGINES_1_TO_8 = 40000\n"; // intentionally NOT mapped
+        "CLOSE_MAIN_VALVES_ENGINES_1_TO_8 = 40000\n"; // Команда намеренно оставлена без назначения.
     QJsonObject available;
     available.insert(QStringLiteral("contract"), QStringLiteral("kasu.pp.debug.stand.v1"));
     available.insert(QStringLiteral("type"), QStringLiteral("CYCLOGRAM_AVAILABLE"));
@@ -492,7 +492,7 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     client->flush();
 
     // One mapped action, its two input subrows, and the physical КП reference; never 96 channels
-    // and never an unassigned cyclogram command in the execution table.
+    // Неназначенные команды не должны появляться в таблице измерений.
     QTRY_COMPARE(table->rowCount(), 4);
     QStringList names;
     for (int row = 0; row < table->rowCount(); ++row)
@@ -588,7 +588,7 @@ void OperatorGuiTest::kpClusterDoesNotHideFailure() {
     QCoreApplication::processEvents();
     const QImage image = timeline.grab().toImage();
     QVERIFY(!image.isNull());
-    // The rendered failure must remain visible even when its node shares KP.
+    // Отказ остаётся виден, даже если его узел совпадает на шкале с КП.
     bool visibleFailure = false;
     // Сравнение по доминирующему красному каналу устойчиво к сглаживанию Qt.
     for (int y = 0; y < image.height(); ++y)
@@ -643,7 +643,7 @@ void OperatorGuiTest::commonKpOnlyOnNewBoard() {
     QCOMPARE(window.m_session.mapping().actions.value("IGNITE_PYRO_CANDLES_ENGINES_9_TO_12").inputs.first().index,64);
     auto &old=*window.m_peer;old.m_legacyArmed[0]=true;
     old.m_boardFrame.channels[0]={true,false,1000000,0};old.m_boardFrame.channels[1]={true,false,1001000,0};
-    // An incidental bit 8 in B must never be mistaken for the physical KP on A.
+    // Случайный бит 8 блока Б не является физическим КП блока А.
     old.m_boardFrame.channels[7]={true,false,999000,0};
     QVERIFY(!old.kpTimeUs());QVERIFY(!old.legacyStreamKpObserved(0));
     const auto action=std::find_if(old.plan().actions.cbegin(),old.plan().actions.cend(),[](const auto &a){return a.ordinal==20;});

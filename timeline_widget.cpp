@@ -4,8 +4,11 @@
 #include <QFontMetrics>
 #include <QHelpEvent>
 #include <QToolTip>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <algorithm>
 #include <climits>
+#include <limits>
 #include <cmath>
 
 // ─── Оформление ───────────────────────────────────────────────────────────────
@@ -36,6 +39,9 @@ TimelineWidget::TimelineWidget(QWidget *parent)
     setMaximumHeight(72);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setFocusPolicy(Qt::StrongFocus);
+    setAccessibleName(QStringLiteral("Полная циклограмма"));
+    setAccessibleDescription(QStringLiteral("Стрелки — выбор пункта, Home и End — начало и конец плана"));
 }
 
 // ─── Публичный API ────────────────────────────────────────────────────────────
@@ -43,6 +49,7 @@ TimelineWidget::TimelineWidget(QWidget *parent)
 void TimelineWidget::setEvents(const QVector<EventRow> &events)
 {
     m_events.clear();
+    m_selected = -1;
 
     int idx = 1;
     for (const auto &e : events) {
@@ -74,6 +81,45 @@ void TimelineWidget::setEvents(const QVector<EventRow> &events)
 
     m_playheadMs = INT64_MIN;
     update();
+}
+
+void TimelineWidget::selectIndex(int index) {
+    if (index < 0 || index >= m_events.size()) return;
+    m_selected = index;
+    const auto &selected = m_events[index];
+    setAccessibleDescription(QStringLiteral("%1 · %2 · %3 мс · %4")
+        .arg(selected.id).arg(selected.description).arg(selected.time_ms)
+        .arg(selected.monitored ? QStringLiteral("контроль") : QStringLiteral("информация")));
+    update();
+    emit eventSelected(selected.id);
+}
+
+void TimelineWidget::keyPressEvent(QKeyEvent *event) {
+    if (m_events.isEmpty()) { QWidget::keyPressEvent(event); return; }
+    switch (event->key()) {
+    case Qt::Key_Home: selectIndex(0); break;
+    case Qt::Key_End: selectIndex(m_events.size() - 1); break;
+    case Qt::Key_Right: selectIndex(std::min(m_selected + 1, int(m_events.size()) - 1)); break;
+    case Qt::Key_Left: selectIndex(std::max(m_selected - 1, 0)); break;
+    default: QWidget::keyPressEvent(event); return;
+    }
+    event->accept();
+}
+
+void TimelineWidget::mousePressEvent(QMouseEvent *event) {
+    if (event->button() != Qt::LeftButton || m_events.isEmpty()) {
+        QWidget::mousePressEvent(event); return;
+    }
+    int nearest = 0;
+    double distance = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < m_events.size(); ++i) {
+        const double candidate = std::abs(msToX(m_events[i].time_ms, width()) - event->position().x());
+        if (candidate < distance) { nearest = i; distance = candidate; }
+    }
+    // Совпавшие отметки доступны по одной клавишами, без потери пунктов в кластере.
+    selectIndex(nearest);
+    setFocus(Qt::MouseFocusReason);
+    event->accept();
 }
 
 void TimelineWidget::setPlayheadMs(int64_t msFromT0)
@@ -109,6 +155,7 @@ void TimelineWidget::markEventFired(int eventId, const QString &status)
 
 void TimelineWidget::reset()
 {
+    m_selected = -1;
     for (auto &te : m_events)
         te.status = "";
     m_playheadMs = INT64_MIN;
@@ -137,6 +184,15 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
 
     // Фон
     p.fillRect(0, 0, W, H, BG_COLOR);
+    if (hasFocus()) {
+        p.setPen(QPen(PLAYHEAD_COLOR, 1, Qt::DotLine));
+        p.drawRect(rect().adjusted(1, 1, -2, -2));
+    }
+    if (m_selected >= 0 && m_selected < m_events.size()) {
+        const int x = int(std::round(msToX(m_events[m_selected].time_ms, W)));
+        p.setPen(QPen(PLAYHEAD_COLOR, 2));
+        p.drawLine(x, 0, x, H);
+    }
 
     // Горизонтальная ось
     p.setPen(QPen(AXIS_COLOR, 2));

@@ -77,7 +77,10 @@ private:
     QLabel *m_streamStatus = nullptr;
     QLabel *m_eventCaption = nullptr;
     QLabel *m_summaryLabel = nullptr;
+    QLabel *m_finishReason = nullptr;
+    QLabel *m_selectedPlanEvent = nullptr;
     QPushButton *m_resetButton = nullptr;
+    QPushButton *m_finishButton = nullptr;
 
     TimelineWidget *m_timeline = nullptr;
     QTableWidget *m_eventTable = nullptr;

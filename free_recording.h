@@ -22,6 +22,11 @@ public:
     void checkDeadline();
     bool active() const { return m_active; }
     bool armed() const { return m_armed; }
+    bool hasRecord() const { return !m_id.isEmpty(); }
+    qsizetype recordCount() const { return m_raw.size(); }
+    qsizetype edgeCount() const { return m_edges.size(); }
+    qsizetype retainedBytes() const { return m_bytes; }
+    int rejectedFrames() const { return m_rejectedFrames; }
     QString status() const;
     const BoardFrame &frame() const { return m_frame; }
     const Config &config() const { return m_config; }

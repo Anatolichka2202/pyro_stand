@@ -30,6 +30,7 @@
 #include <QMenu>
 #include <QTextDocument>
 #include <QFileInfo>
+#include <QStyle>
 #include <cstdint>
 #include <limits>
 
@@ -197,6 +198,7 @@ void IntegrationWindow::setupUi() {
     m_resetButton = new QPushButton(QStringLiteral("Новый сбор"), surface);
     m_resetButton->setObjectName("resetBtn");
     auto *finish = new QPushButton(QStringLiteral("Завершить сбор"), surface);
+    m_finishButton = finish;
     finish->setObjectName("finishCollectionBtn");
     auto *live = new QPushButton(QStringLiteral("Живые каналы"), surface);
     live->setObjectName("liveChannelsBtn");
@@ -252,7 +254,18 @@ void IntegrationWindow::setupUi() {
     status->addWidget(statusChip(surface, QStringLiteral("Разрешение"), &m_bcvmDot, &m_bcvmStatus));
     m_phaseLabel = new QLabel(surface);
     status->addWidget(m_phaseLabel, 1);
+    auto *free = new QPushButton(QStringLiteral("Свободная запись…"), surface);
+    free->setObjectName(QStringLiteral("freeRecordingBtn"));
+    free->setToolTip(QStringLiteral("Регистрация входов без ПЗ и КАСУПП; КП необязателен"));
+    connect(free, &QPushButton::clicked, this, &IntegrationWindow::openFreeRecording);
+    status->addWidget(free);
     main->addLayout(status);
+    m_finishReason = new QLabel(surface);
+    m_finishReason->setObjectName(QStringLiteral("finishReason"));
+    m_finishReason->setTextFormat(Qt::PlainText);
+    m_finishReason->setWordWrap(true);
+    m_finishReason->hide();
+    main->addWidget(m_finishReason);
     m_uploadStatus = new QLabel(surface);
     m_mappingStatus = new QLabel(surface);
     m_clockStatus = new QLabel(surface);
@@ -272,15 +285,58 @@ void IntegrationWindow::setupUi() {
     m_timeline->setObjectName("eventTimeline");
     m_timeline->setFixedHeight(48);
     main->addWidget(m_timeline);
+    auto *selectedEvent = new QLabel(surface);
+    m_selectedPlanEvent = selectedEvent;
+    selectedEvent->setObjectName(QStringLiteral("selectedPlanEvent"));
+    selectedEvent->setTextFormat(Qt::PlainText);
+    selectedEvent->setWordWrap(true);
+    selectedEvent->hide();
+    main->addWidget(selectedEvent);
+    connect(m_timeline, &TimelineWidget::eventSelected, this, [this, selectedEvent](int id) {
+        for (const auto &action : m_session.plan().actions) {
+            if (action.ordinal != id) continue;
+            selectedEvent->setText(QStringLiteral("%1 · %2 · план %3 мс · %4")
+                .arg(id).arg(eventName(action)).arg(presentationOffset(m_session, action))
+                .arg(m_session.mapping().hasAction(action) || (m_peer && m_peer->mapping().hasAction(action))
+                    ? QStringLiteral("контролируется") : QStringLiteral("без назначения входов")));
+            selectedEvent->show();
+            return;
+        }
+    });
     m_canvas = new EventCanvas(surface);
     auto *workspace=new QSplitter(Qt::Horizontal,surface);
     workspace->setObjectName("measurementWorkspace");workspace->setChildrenCollapsible(false);
-    auto *diagram=new QScrollArea(workspace);
+    auto *detailsPanel = new QWidget(workspace);
+    auto *detailsLayout = new QVBoxLayout(detailsPanel);
+    detailsLayout->setContentsMargins(0, 0, 0, 0);
+    auto *detailScope = new QComboBox(detailsPanel);
+    detailScope->setObjectName(QStringLiteral("channelDetailScope"));
+    detailScope->addItems({QStringLiteral("Все назначенные входы"), QStringLiteral("Входы выбранного события")});
+    detailScope->setAccessibleName(QStringLiteral("Область поканального обзора"));
+    detailsLayout->addWidget(detailScope);
+    auto *diagram=new QScrollArea(detailsPanel);
+    diagram->setObjectName(QStringLiteral("channelDetailsScroll"));
+    detailsLayout->addWidget(diagram, 1);
     diagram->setWidgetResizable(true);diagram->setWidget(m_canvas);
-    diagram->setFrameShape(QFrame::NoFrame);diagram->setMinimumWidth(480);
-    diagram->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    diagram->setFrameShape(QFrame::NoFrame);
+    diagram->setMinimumWidth(540 + diagram->style()->pixelMetric(QStyle::PM_ScrollBarExtent));
+    // В узкой панели крайние значения остаются доступны, даже если их ширина выросла.
+    diagram->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_eventTable = new QTableWidget(0, 7, surface);
     m_eventTable->setObjectName("eventTable");
+    connect(detailScope, &QComboBox::currentIndexChanged, this, [this](int index) {
+        m_canvas->setSelectedOnly(index == 1);
+    });
+    connect(m_eventTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+        if (row < 0 || !m_eventTable->item(row, 0)) return;
+        QString key = m_eventTable->item(row, 0)->data(Qt::UserRole).toString();
+        // Подстрока входа относится к ближайшему заголовку группы выше неё.
+        while (key.isEmpty() && row > 0) {
+            const auto *parent = m_eventTable->item(--row, 0);
+            if (parent) key = parent->data(Qt::UserRole).toString();
+        }
+        m_canvas->setSelectedEvent(key);
+    });
     m_eventTable->setHorizontalHeaderLabels(
         {"#", QStringLiteral("СОБЫТИЕ"), QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
          QStringLiteral("ОТ КП, МС"), QStringLiteral("Δ, МС"), QStringLiteral("СТАТУС")});
@@ -291,9 +347,8 @@ void IntegrationWindow::setupUi() {
     m_eventTable->setWordWrap(false);m_eventTable->setTextElideMode(Qt::ElideRight);
     m_eventTable->verticalHeader()->hide();m_eventTable->setMinimumWidth(410);
     m_eventTable->setColumnHidden(0,true);m_eventTable->setColumnHidden(2,true);m_eventTable->setColumnHidden(3,true);
-    m_eventTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_eventTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_eventTable->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
-    m_eventTable->setColumnWidth(4,83);m_eventTable->setColumnWidth(5,75);m_eventTable->setColumnWidth(6,110);
     m_eventTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     QFont tableFont("Segoe UI");tableFont.setPixelSize(12);m_eventTable->setFont(tableFont);
     m_eventTable->setStyleSheet("QTableWidget{background:#10161c;color:#e8edf1;gridline-color:#35434f;} "
@@ -301,11 +356,31 @@ void IntegrationWindow::setupUi() {
         "QHeaderView::section{background:#19222b;color:#a6b3be;padding:4px;}");
     workspace->addWidget(m_eventTable);workspace->setStretchFactor(0,6);workspace->setStretchFactor(1,4);
     workspace->setSizes({650,460});main->addWidget(workspace,1);
-    connect(m_eventTable,&QTableWidget::cellClicked,this,[this](int row,int){
+    const auto toggleEvent = [this](int row,int){
         const auto key=m_eventTable->item(row,0)->data(Qt::UserRole).toString();
         if(key.isEmpty()) return;
         if(m_expandedEvents.contains(key)) m_expandedEvents.remove(key);else m_expandedEvents.insert(key);
         refreshEventTable();
+    };
+    connect(m_eventTable, &QTableWidget::cellClicked, this, toggleEvent);
+    connect(m_eventTable, &QTableWidget::cellActivated, this, toggleEvent);
+    connect(m_timeline, &TimelineWidget::eventSelected, this, [this](int id) {
+        for (int row = 0; row < m_eventTable->rowCount(); ++row) {
+            const auto *item = m_eventTable->item(row, 0);
+            if (item->text() == QString::number(id) ||
+                (item->text() == QStringLiteral("КП") &&
+                 std::any_of(m_session.plan().actions.cbegin(), m_session.plan().actions.cend(),
+                     [id](const PlannedAction &action) {
+                         return action.ordinal == id && action.key == QStringLiteral("LIFT_OFF_CONTACT");
+                     }))) {
+                m_eventTable->setCurrentCell(row, 1);
+                m_eventTable->scrollToItem(m_eventTable->item(row, 1));
+                return;
+            }
+        }
+        m_eventTable->setCurrentCell(-1, -1);
+        m_eventTable->clearSelection();
+        m_canvas->setSelectedEvent(QString());
     });
     m_summaryLabel = new QLabel(surface);
     m_summaryLabel->setWordWrap(true);
@@ -543,7 +618,7 @@ void IntegrationWindow::refreshLive() {
 void IntegrationWindow::refreshCanvas() {
     m_forecastPosition.reset();
     QVector<CanvasEvent> groups;
-    int measured = 0, estimate = 0, bad = 0, total = 0;
+    int measured = 0, estimate = 0, bad = 0, missing = 0, total = 0;
     const auto add = [&](IntegrationSession &session, const QString &source) {
         const int begin = groups.size();
         const bool legacy =
@@ -680,7 +755,7 @@ void IntegrationWindow::refreshCanvas() {
                         eval.state == ActionMeasurement::State::PartialAfterFinish;
                     row.status = missed ? QStringLiteral("НЕ СРАБОТАЛ") : QStringLiteral("без оценки");
                     row.color = missed ? kRed : kAmber;
-                    if (missed) ++bad;
+                    if (missed) ++missing;
                 }
                 if(session.collectionFinished() && row.actual==QStringLiteral("—") &&
                    eval.state!=ActionMeasurement::State::MissingAfterFinish &&
@@ -866,12 +941,13 @@ void IntegrationWindow::refreshCanvas() {
                     .arg(expectedIndex / 8 + 1));
         }
     }
-    m_summaryLabel->setText(QStringLiteral("КАНАЛЫ · измерено %1/%2 · вне допуска %3 · расчётных "
-                                           "%4 · допуск расчётом не подтверждается")
+    m_summaryLabel->setText(QStringLiteral("Входы: измерено %1/%2 · отклонение %3 · не зарегистрировано %4 · без оценки %5%6")
                                 .arg(measured)
                                 .arg(total)
                                 .arg(bad)
-                                .arg(estimate));
+                                .arg(missing)
+                                .arg(total - measured - missing - estimate)
+                                .arg(estimate ? QStringLiteral(" · прогноз %1 (без оценки допуска)").arg(estimate) : QString()));
 }
 
 void IntegrationWindow::appendJournal(const QString &level, const QString &message,
@@ -1267,8 +1343,10 @@ void IntegrationWindow::refresh() {
     QString phaseText;
     QString phaseColor = QStringLiteral("#8b949e");
     if (m_session.collectionFinished()) {
-        phaseText = QStringLiteral("СБОР ЗАВЕРШЁН");
-        phaseColor = QStringLiteral("#81b6d0");
+        phaseText = m_session.plannedWindowComplete() ? QStringLiteral("СБОР ЗАВЕРШЁН")
+            : QStringLiteral("СБОР ЗАВЕРШЁН · НЕПОЛНЫЙ");
+        phaseColor = m_session.plannedWindowComplete() ? QStringLiteral("#81b6d0")
+            : QStringLiteral("#e3b341");
         m_phaseLabel->setToolTip(m_session.finishReason());
     } else if (!hasPlan) {
         phaseText = QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ");
@@ -1294,10 +1372,14 @@ void IntegrationWindow::refresh() {
         phaseColor = QStringLiteral("#58a6ff");
     }
     m_phaseLabel->setText(QStringLiteral("● ") + phaseText);
+    m_finishReason->setVisible(m_session.collectionFinished());
+    m_finishReason->setText(m_session.finishReason());
+    m_finishReason->setStyleSheet(QStringLiteral("color:%1;").arg(phaseColor));
+    m_finishButton->setEnabled(hasPlan && !m_session.collectionFinished());
     m_phaseLabel->setStyleSheet(QStringLiteral(
         "font-size:13px; font-weight:600; letter-spacing:0.08em; color:%1;").arg(phaseColor));
     m_startTimeLabel->setText(hasPlan
-        ? m_session.plan().t0Utc.toString(QStringLiteral("dd.MM HH:mm:ss"))
+        ? QStringLiteral("T0 %1 UTC").arg(m_session.plan().t0Utc.toString(QStringLiteral("dd.MM HH:mm:ss")))
         : QStringLiteral("--:--:--"));
     m_startTimeLabel->setToolTip(hasPlan ? m_session.plan().t0Utc.toString(Qt::ISODateWithMs)
                                         : QString());
@@ -1411,6 +1493,7 @@ void IntegrationWindow::refresh() {
         m_session.plan().sha256 + m_session.collectionId();
     if (signature != m_timelineSignature) {
         m_timelineSignature = signature;
+        m_selectedPlanEvent->hide();
         QVector<EventRow> events;
         for (const auto &action : m_session.plan().actions) {
             EventRow event;

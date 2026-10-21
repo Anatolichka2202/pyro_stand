@@ -6,7 +6,7 @@
 #include "types.h"
 
 // TimelineWidget — горизонтальная шкала времени с маркерами событий и плейхедом.
-// Отображает только события с hasChannels == true.
+// Сохраняет полное задание; контролируемые события отмечены отдельно.
 class TimelineWidget : public QWidget
 {
     Q_OBJECT
@@ -26,12 +26,18 @@ public:
     // Сбрасывает в начальное состояние.
     void reset();
 
+signals:
+    void eventSelected(int eventId);
+
+public:
     QSize sizeHint()        const override { return QSize(800, 72); }
     QSize minimumSizeHint() const override { return QSize(200, 72); }
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     bool event(QEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
 
 private:
     struct TimelineEvent {
@@ -46,8 +52,10 @@ private:
 
     // Преобразует время в пиксельную X-координату.
     double msToX(int64_t ms, int width) const;
+    void selectIndex(int index);
 
     QVector<TimelineEvent> m_events;
+    int m_selected = -1;
     int64_t m_rangeMin = -2000;  // мс
     int64_t m_rangeMax =  2000;  // мс
     int64_t m_playheadMs = INT64_MIN;  // INT64_MIN = не показывать

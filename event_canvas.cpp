@@ -10,8 +10,30 @@ EventCanvas::EventCanvas(QWidget *p) : QWidget(p) {
 }
 void EventCanvas::setEvents(QVector<CanvasEvent> e) {
     m_events = std::move(e);
+    updatePresentation();
+}
+void EventCanvas::setSelectedEvent(const QString &key) {
+    if (m_selectedKey == key) return;
+    m_selectedKey = key;
+    if (m_selectedOnly) updatePresentation();
+}
+void EventCanvas::setSelectedOnly(bool selectedOnly) {
+    if (m_selectedOnly == selectedOnly) return;
+    m_selectedOnly = selectedOnly;
+    updatePresentation();
+}
+void EventCanvas::updatePresentation() {
+    const bool selectionExists = std::any_of(m_events.cbegin(), m_events.cend(), [this](const CanvasEvent &group) {
+        return group.source + u'/' + group.id == m_selectedKey;
+    });
+    if (!selectionExists) m_selectedKey.clear();
+    m_visibleEvents.clear();
+    for (const auto &group : m_events) {
+        if (!m_selectedOnly || group.source + u'/' + group.id == m_selectedKey)
+            m_visibleEvents.append(group);
+    }
     QStringList text;
-    for (const auto &g : m_events) {
+    for (const auto &g : m_visibleEvents) {
         text << g.id + " " + g.title + " " + g.source + " " + g.plan;
         for (const auto &r : g.channels)
             text << r.input + " " + r.role + " " + r.rawTick + " " + r.actual + " " + r.delta +
@@ -19,26 +41,53 @@ void EventCanvas::setEvents(QVector<CanvasEvent> e) {
     }
     setAccessibleDescription(text.join("; "));
     int contentHeight=24;
-    for(const auto &group:m_events) contentHeight+=groupHeight(group)+8;
+    for(const auto &group:m_visibleEvents) contentHeight+=groupHeight(group)+8;
     setMinimumHeight(std::max(220,contentHeight));
+    const auto widths = columnWidths(0);
+    int minimumWidth = 0;
+    for (int width : widths) minimumWidth += width;
+    setMinimumWidth(std::max(540, minimumWidth));
     setToolTip(text.join(QStringLiteral("\n")).toHtmlEscaped());
     update();
 }
 int EventCanvas::groupHeight(const CanvasEvent &e) const { return 42 + e.channels.size() * 24; }
 int EventCanvas::channelCount() const {
     int n = 0;
-    for (const auto &e : m_events)
+    for (const auto &e : m_visibleEvents)
         n += e.channels.size();
     return n;
 }
+QVector<int> EventCanvas::columnWidths(int availableWidth) const {
+    QFont textFont(QStringLiteral("Segoe UI")); textFont.setPixelSize(13);
+    QFont numberFont(QStringLiteral("Consolas")); numberFont.setPixelSize(13);
+    QFont statusFont(QStringLiteral("Segoe UI")); statusFont.setPixelSize(11);
+    const QFontMetrics text(textFont), number(numberFont), status(statusFont);
+    QVector<int> widths{40, 80, text.horizontalAdvance(QStringLiteral("ТИК, МКС")) + 12,
+        text.horizontalAdvance(QStringLiteral("ОТ КП, МС")) + 12,
+        text.horizontalAdvance(QStringLiteral("Δ, МС")) + 12,
+        text.horizontalAdvance(QStringLiteral("ОЦЕНКА")) + 12};
+    for (const auto &group : m_visibleEvents) {
+        for (const auto &channel : group.channels) {
+            widths[0] = std::max(widths[0], text.horizontalAdvance(channel.input) + 12);
+            widths[2] = std::max(widths[2], number.horizontalAdvance(channel.rawTick) + 12);
+            widths[3] = std::max(widths[3], number.horizontalAdvance(channel.actual) + 12);
+            widths[4] = std::max(widths[4], number.horizontalAdvance(channel.delta) + 12);
+            widths[5] = std::max(widths[5], status.horizontalAdvance(channel.status) + 12);
+        }
+    }
+    int reserved = 0;
+    for (int i = 0; i < widths.size(); ++i) if (i != 1) reserved += widths[i];
+    widths[1] = std::max(80, availableWidth - reserved);
+    return widths;
+}
 QVector<int> EventCanvas::breaks(int columns) const {
-    const int n = m_events.size();
+    const int n = m_visibleEvents.size();
     columns = std::min(columns, n);
     if (!n)
         return {0};
     QVector<int> sums(n + 1);
     for (int i = 0; i < n; i++)
-        sums[i + 1] = sums[i] + groupHeight(m_events[i]) + 8;
+        sums[i + 1] = sums[i] + groupHeight(m_visibleEvents[i]) + 8;
     QVector<QVector<int>> dp(columns + 1, QVector<int>(n + 1, std::numeric_limits<int>::max() / 2)),
         cuts = dp;
     dp[0][0] = 0;
@@ -67,7 +116,7 @@ int EventCanvas::columnCount() const {
         for (int j = 0; j + 1 < b.size(); j++) {
             int h = 0;
             for (int i = b[j]; i < b[j + 1]; i++)
-                h += groupHeight(m_events[i]) + 8;
+                h += groupHeight(m_visibleEvents[i]) + 8;
             ok &= h - 8 <= height() - 24;
         }
         if (ok)
@@ -80,7 +129,7 @@ bool EventCanvas::fits() const {
     for (int j = 0; j + 1 < b.size(); j++) {
         int h = 0;
         for (int i = b[j]; i < b[j + 1]; i++)
-            h += groupHeight(m_events[i]) + 8;
+            h += groupHeight(m_visibleEvents[i]) + 8;
         if (h - 8 > height() - 24)
             return false;
     }
@@ -93,11 +142,12 @@ void EventCanvas::paintEvent(QPaintEvent *) {
     f.setPixelSize(13);
     p.setFont(f);
     const int columns = columnCount(), gap = 14, cw = (width() - (columns - 1) * gap) / columns;
+    const auto widths = columnWidths(cw);
     auto b = breaks(columns);
     for (int c = 0; c + 1 < b.size(); c++) {
         int y = 24, x = c * (cw + gap);
         for (int i = b[c]; i < b[c + 1]; i++) {
-            const auto &g = m_events[i];
+            const auto &g = m_visibleEvents[i];
             const int h = groupHeight(g);
             p.fillRect(QRect(x, y, cw, 24), QColor("#19222b"));
             p.setPen(QColor("#81b6d0"));
@@ -106,7 +156,6 @@ void EventCanvas::paintEvent(QPaintEvent *) {
             p.setPen(QColor("#e8edf1"));
             p.drawText(QRect(x + cw - 145, y, 139, 24), Qt::AlignRight | Qt::AlignVCenter, g.plan);
             // Сначала выделяем место числам, оставшуюся ширину отдаём названию сигнала.
-            const int widths[] = {40, cw - 370, 92, 96, 64, 78};
             int colX = x;
             const QStringList heads = {QStringLiteral("ВХ."),      g.source,
                                        QStringLiteral("ТИК, МКС"), QStringLiteral("ОТ КП, МС"),
@@ -148,7 +197,8 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                    .arg(columns)
                    .arg(fits() ? QString()
                                : QStringLiteral(" · увеличьте окно: все строки не помещаются")));
-    if (m_events.isEmpty())
+    if (m_visibleEvents.isEmpty())
         p.drawText(rect(), Qt::AlignCenter,
-                   QStringLiteral("Ожидание циклограммы и назначения входов"));
+                   m_selectedOnly ? QStringLiteral("Нет выбранных назначенных входов")
+                                  : QStringLiteral("Ожидание циклограммы и назначения входов"));
 }

@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTest>
+#include <QSignalSpy>
 #include <QFontDatabase>
 #include <QUuid>
 #include <QDialog>
@@ -19,6 +20,8 @@
 #include <QDialogButtonBox>
 #include <QToolButton>
 #include <QScrollBar>
+#include <QScrollArea>
+#include <QSplitter>
 #include <QMessageBox>
 #include <QTemporaryDir>
 #include <QFileDialog>
@@ -74,7 +77,144 @@ private slots:
     void timelineShowsFullPlan();
     void peerClockDoesNotTruncateTimeline();
     void finishWithoutKpFreezesVisualUtcClock();
+    void summarySeparatesMissingInputs();
+    void finishReasonIsVisible();
+    void freeRecordingHasDirectEntry();
+    void timelineKeyboardSelection();
+    void numericColumnsKeepFullValues();
+    void focusedChannelsKeepFullResults();
 };
+
+void OperatorGuiTest::summarySeparatesMissingInputs() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    options.firstStageYps = 1; options.secondStageYps = 0; options.kpYps = 1;
+    IntegrationWindow window(options);
+    auto &session = window.m_session;
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-21\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n", &session.m_plan, &error));
+    session.m_hasPlan = true; session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true; session.m_boardArmed = true;
+    session.m_hasBoardFrame = true; session.updateBenchMapping();
+    session.m_boardFrame.channels[7] = {true, false, 1000000, 0};
+    session.m_boardFrame.channels[0] = {true, false, 1018000, 0};
+    session.finishCollection(QStringLiteral("Тест: полное окно наблюдения"), true);
+    window.refresh();
+    QVERIFY(window.m_summaryLabel->text().contains(QStringLiteral("отклонение 1")));
+    QVERIFY(window.m_summaryLabel->text().contains(QStringLiteral("не зарегистрировано 1")));
+    QVERIFY(!window.m_summaryLabel->text().contains(QStringLiteral("вне допуска 2")));
+}
+
+void OperatorGuiTest::finishReasonIsVisible() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    window.m_session.m_hasPlan = true;
+    const QString reason = QStringLiteral("Сбор неполный: потеря связи с новой платой");
+    window.m_session.finishCollection(reason, false);
+    window.refresh();
+    auto *label = window.findChild<QLabel *>(QStringLiteral("finishReason"));
+    QVERIFY(label);
+    QVERIFY(!label->isHidden());
+    QCOMPARE(label->text(), reason);
+    QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("НЕПОЛНЫЙ")));
+}
+
+void OperatorGuiTest::freeRecordingHasDirectEntry() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.show();
+    auto *button = window.findChild<QPushButton *>(QStringLiteral("freeRecordingBtn"));
+    QVERIFY(button);
+    QVERIFY(button->isVisible());
+    QVERIFY(button->isEnabled());
+}
+
+void OperatorGuiTest::timelineKeyboardSelection() {
+    TimelineWidget timeline;
+    QVector<EventRow> events(3);
+    for (int i = 0; i < events.size(); ++i) {
+        events[i].id = i + 1;
+        events[i].time_ms = i * 1000;
+        events[i].description = QStringLiteral("Пункт %1").arg(i + 1);
+    }
+    timeline.setEvents(events); timeline.show(); timeline.setFocus();
+    QSignalSpy selected(&timeline, SIGNAL(eventSelected(int)));
+    QVERIFY(selected.isValid());
+    QTest::keyClick(&timeline, Qt::Key_Home);
+    QTest::keyClick(&timeline, Qt::Key_Right);
+    QCOMPARE(selected.last().first().toInt(), 2);
+    QTest::keyClick(&timeline, Qt::Key_End);
+    QCOMPARE(selected.last().first().toInt(), 3);
+}
+
+void OperatorGuiTest::numericColumnsKeepFullValues() {
+    EventCanvas canvas;
+    CanvasEvent group;
+    group.channels.append({QStringLiteral("12:8"), QStringLiteral("Контролируемый сигнал"),
+        QStringLiteral("4294967295"), QStringLiteral("-2147483.647"),
+        QStringLiteral("+2147483.647"), QStringLiteral("НЕ СРАБОТАЛ"), QColor(Qt::red)});
+    canvas.setEvents({group});
+    const auto widths = canvas.columnWidths(canvas.minimumWidth());
+    QFont font(QStringLiteral("Consolas")); font.setPixelSize(13);
+    QFontMetrics metrics(font);
+    QVERIFY(widths[2] >= metrics.horizontalAdvance(group.channels[0].rawTick) + 6);
+    QVERIFY(widths[3] >= metrics.horizontalAdvance(group.channels[0].actual) + 6);
+    QVERIFY(widths[4] >= metrics.horizontalAdvance(group.channels[0].delta) + 6);
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.resize(1100, 700); window.show();
+    window.m_canvas->setEvents({group});
+    auto *split = window.findChild<QSplitter *>(QStringLiteral("measurementWorkspace")); QVERIFY(split);
+    split->setSizes({480, 580});
+    auto *scroll = window.findChild<QScrollArea *>(QStringLiteral("channelDetailsScroll")); QVERIFY(scroll);
+    QTest::qWait(20);
+    QVERIFY(scroll->viewport()->width() >= window.m_canvas->width() ||
+        (scroll->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOff && scroll->horizontalScrollBar()->maximum() > 0));
+}
+
+void OperatorGuiTest::focusedChannelsKeepFullResults() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    options.firstStageYps = 8; options.secondStageYps = 7; options.kpYps = 8;
+    IntegrationWindow window(options); window.resize(1100, 700); window.show();
+    auto &session = window.m_session;
+    QString error;
+    QVERIFY(StandProtocol::parseCyclogram(
+        "START_UTC_DATE=2026-10-21\nSTART_UTC_TIME=12:00:00\n"
+        "IGNITE_PYRO_CANDLES_ENGINES_9_TO_12=-8000 # Зажигание А\n"
+        "LIFT_OFF_CONTACT=0 # КП\nINFO_ONLY=10000 # Информационный пункт\nIGNITE_PYRO_CANDLE=20000 # Зажигание Б\n",
+        &session.m_plan, &error));
+    session.m_hasPlan = true; session.updateBenchMapping(); window.refresh();
+    auto *scope = window.findChild<QComboBox *>(QStringLiteral("channelDetailScope")); QVERIFY(scope);
+    const auto count = window.m_eventTable->rowCount();
+    window.m_timeline->setFocus();
+    QTest::keyClick(window.m_timeline, Qt::Key_End);
+    scope->setCurrentIndex(1);
+    QCOMPARE(window.m_canvas->channelCount(), 2);
+    QCOMPARE(window.m_canvas->events().size(), 3);
+    window.refresh();
+    QCOMPARE(window.m_eventTable->rowCount(), count);
+    QCOMPARE(window.m_canvas->channelCount(), 2);
+    auto *selected = window.findChild<QLabel *>(QStringLiteral("selectedPlanEvent")); QVERIFY(selected);
+    QVERIFY(selected->text().contains(QStringLiteral("Зажигание Б")));
+    window.grab().save(QCoreApplication::applicationDirPath() + "/operator-focused.png");
+    QTest::keyClick(window.m_timeline, Qt::Key_Left);
+    QVERIFY(selected->text().contains(QStringLiteral("Информационный пункт")));
+    QCOMPARE(window.m_canvas->channelCount(), 0);
+    QVERIFY(window.m_eventTable->selectedItems().isEmpty());
+    window.refresh();
+    QCOMPARE(window.m_canvas->channelCount(), 0);
+    scope->setCurrentIndex(0);
+    QCOMPARE(window.m_canvas->channelCount(), 5);
+}
 
 void OperatorGuiTest::freeRegistrationRetainsRejectedFrames() {
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -121,6 +261,9 @@ void OperatorGuiTest::freeRegistrationRetainsRejectedFrames() {
         QCOMPARE(records[2].toObject().value("raw_base64").toString(), QString::fromLatin1(invalid.toBase64()));
         QCOMPARE(report.value("rejected_frames").toInt(), 1);
         QCOMPARE(report.value("edges").toArray().size(), 1);
+        auto *evidence = dialog->findChild<QLabel *>(QStringLiteral("freeEvidence")); QVERIFY(evidence);
+        QVERIFY(evidence->text().contains(QStringLiteral("отклонено кадров: 1")));
+        QVERIFY(evidence->text().contains(QStringLiteral("архив сохранён")));
         checked = true; dialog->reject();
     });
     QTimer::singleShot(3000, &window, [&] {

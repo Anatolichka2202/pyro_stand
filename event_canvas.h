@@ -18,9 +18,12 @@ class EventCanvas final : public QWidget {
   public:
     explicit EventCanvas(QWidget *parent = nullptr);
     void setEvents(QVector<CanvasEvent> events);
+    void setSelectedEvent(const QString &key);
+    void setSelectedOnly(bool selectedOnly);
     int channelCount() const;
     int columnCount() const;
     bool fits() const;
+    QVector<int> columnWidths(int availableWidth) const;
     const QVector<CanvasEvent> &events() const { return m_events; }
     QSize minimumSizeHint() const override { return {540, 220}; }
 
@@ -30,5 +33,9 @@ class EventCanvas final : public QWidget {
   private:
     QVector<int> breaks(int columns) const;
     int groupHeight(const CanvasEvent &) const;
+    void updatePresentation();
     QVector<CanvasEvent> m_events;
+    QVector<CanvasEvent> m_visibleEvents;
+    QString m_selectedKey;
+    bool m_selectedOnly = false;
 };

@@ -61,6 +61,11 @@ void IntegrationWindow::openFreeRecording() {
     layout->addWidget(table);
     auto *status = new QLabel(QStringLiteral("Готово к независимой регистрации"), &dialog);
     status->setWordWrap(true); status->setObjectName(QStringLiteral("freeStatus")); layout->addWidget(status);
+    auto *evidence = new QLabel(&dialog);
+    evidence->setObjectName(QStringLiteral("freeEvidence"));
+    evidence->setTextFormat(Qt::PlainText);
+    evidence->setWordWrap(true);
+    layout->addWidget(evidence);
     auto *buttons = new QDialogButtonBox(&dialog);
     auto *start = buttons->addButton(QStringLiteral("Начать"), QDialogButtonBox::ActionRole);
     auto *stop = buttons->addButton(QStringLiteral("Остановить"), QDialogButtonBox::ActionRole);
@@ -92,13 +97,21 @@ void IntegrationWindow::openFreeRecording() {
     const auto update = [&] {
         recording.checkDeadline();
         const bool active = recording.active();
-        const bool hasRecord = !recording.report().value("recording_id").toString().isEmpty();
+        const bool hasRecord = recording.hasRecord();
         source->setEnabled(!hasRecord && !saving); kp->setEnabled(!hasRecord && !saving); edge->setEnabled(!hasRecord && !saving);
         start->setEnabled(!active && !saving); stop->setEnabled(active);
         start->setText(hasRecord ? QStringLiteral("Новая запись") : QStringLiteral("Начать"));
         save->setEnabled(!active && !saving && hasRecord);
         status->setText(saving ? QStringLiteral("Сохранение архива…") : recording.status().isEmpty()
             ? QStringLiteral("Готово к независимой регистрации") : recording.status());
+        evidence->setText(!hasRecord ? QStringLiteral("Запись не начата. Выберите прибор, входы и необязательный КП.")
+            : QStringLiteral("Порций данных: %1 · переходов: %2 · отклонено кадров: %3 · исходных байт: %4\n%5 · %6")
+                .arg(recording.recordCount()).arg(recording.edgeCount())
+                .arg(recording.rejectedFrames()).arg(recording.retainedBytes())
+                .arg(recording.config().kp < 0 ? QStringLiteral("КП не выбран — только исходные тики")
+                    : recording.kp() ? QStringLiteral("Физический КП: %1 мкс").arg(*recording.kp())
+                                     : QStringLiteral("КП ожидается — относительное время недоступно"))
+                .arg(saved ? QStringLiteral("архив сохранён") : QStringLiteral("архив не сохранён")));
         for (int row = 0; row < 8; ++row) {
             auto *selection = table->item(row, 0);
             selection->setFlags(hasRecord ? selection->flags() & ~Qt::ItemIsUserCheckable : selection->flags() | Qt::ItemIsUserCheckable);
@@ -120,7 +133,7 @@ void IntegrationWindow::openFreeRecording() {
     connect(start, &QPushButton::clicked, &dialog, [&] {
         if (!saved && QMessageBox::question(&dialog, QStringLiteral("Новая запись"),
             QStringLiteral("Предыдущая запись не сохранена. Заменить её?")) != QMessageBox::Yes) return;
-        if (!recording.report().value("recording_id").toString().isEmpty()) {
+        if (recording.hasRecord()) {
             recording = {}; selectedSession = nullptr; saved = true; update(); return;
         }
         selectedSession = sessionForChoice();

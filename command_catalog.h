@@ -3,8 +3,7 @@
 #include <QStringList>
 #include <array>
 
-// Назначения взяты из исходников БЦВМ; установленная прошивка и проводка проверяются отдельно.
-// Источник: cyclo_actions.c БЦВМ, ревизия c8e14dcfe6e13d703044beca58c3dc2ee2a8c32b.
+
 struct CommandDefinition {
     const char *key;
     const char *peer;

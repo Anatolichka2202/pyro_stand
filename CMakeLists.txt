@@ -10,7 +10,7 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network SerialPort Test Concurrent)
 qt_standard_project_setup()
 
-# Один операторский продукт. Старая реализация сохранена в истории Git.
+
 set(PYRO_SOURCES
     main.cpp
     integration.cpp

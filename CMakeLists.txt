@@ -8,7 +8,11 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network SerialPort Test Concurrent)
-qt_standard_project_setup()
+# На Linux CI Qt 6.2 не предоставляет эту вспомогательную команду.
+# AUTOUIC/AUTOMOC/AUTORCC уже включены выше явно.
+if(COMMAND qt_standard_project_setup)
+    qt_standard_project_setup()
+endif()
 
 
 set(PYRO_SOURCES

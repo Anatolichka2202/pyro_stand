@@ -19,6 +19,8 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QToolButton>
+#include <QMenu>
+#include <QAction>
 #include <QScrollBar>
 #include <QScrollArea>
 #include <QSplitter>

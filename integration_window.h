@@ -38,6 +38,7 @@ private:
     void configureTester();
     void refreshLive();
     void openFreeRecording();
+    void launchCyclogramEditor(const QString &documentPath);
     void appendJournal(const QString &level, const QString &message, const QString &color);
 
     IntegrationSession m_session;

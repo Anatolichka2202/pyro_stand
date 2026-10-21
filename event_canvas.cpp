@@ -22,6 +22,11 @@ void EventCanvas::setSelectedOnly(bool selectedOnly) {
     m_selectedOnly = selectedOnly;
     updatePresentation();
 }
+void EventCanvas::setShowRawTicks(bool show) {
+    if (m_showRawTicks == show) return;
+    m_showRawTicks = show;
+    updatePresentation();
+}
 void EventCanvas::updatePresentation() {
     const bool selectionExists = std::any_of(m_events.cbegin(), m_events.cend(), [this](const CanvasEvent &group) {
         return group.source + u'/' + group.id == m_selectedKey;
@@ -75,6 +80,7 @@ QVector<int> EventCanvas::columnWidths(int availableWidth) const {
             widths[5] = std::max(widths[5], status.horizontalAdvance(channel.status) + 12);
         }
     }
+    if (!m_showRawTicks) widths[2] = 0;
     int reserved = 0;
     for (int i = 0; i < widths.size(); ++i) if (i != 1) reserved += widths[i];
     widths[1] = std::max(80, availableWidth - reserved);
@@ -162,6 +168,7 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                                        QStringLiteral("Δ, МС"),    QStringLiteral("ОЦЕНКА")};
             p.setPen(QColor("#a6b3be"));
             for (int j = 0; j < 6; j++) {
+                if (!widths[j]) continue;
                 p.drawText(QRect(colX + 3, y + 24, widths[j] - 6, 18),
                            (j >= 2 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter, heads[j]);
                 colX += widths[j];
@@ -171,6 +178,7 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                 QStringList vals = {r.input, r.role, r.rawTick, r.actual, r.delta, r.status};
                 colX = x;
                 for (int j = 0; j < 6; j++) {
+                    if (!widths[j]) continue;
                     QFont rf(j >= 2 && j <= 4 ? "Consolas" : "Segoe UI");
                     rf.setPixelSize(j == 5 ? 11 : 13);
                     p.setFont(rf);
@@ -192,9 +200,8 @@ void EventCanvas::paintEvent(QPaintEvent *) {
     }
     p.setPen(QColor(fits() ? "#a6b3be" : "#e5bd78"));
     p.drawText(QRect(0, 0, width(), 20), Qt::AlignVCenter,
-               QStringLiteral("%1 входов · %2 столбца%3")
+               QStringLiteral("Назначенных входов: %1%2")
                    .arg(channelCount())
-                   .arg(columns)
                    .arg(fits() ? QString()
                                : QStringLiteral(" · увеличьте окно: все строки не помещаются")));
     if (m_visibleEvents.isEmpty())

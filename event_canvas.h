@@ -20,6 +20,7 @@ class EventCanvas final : public QWidget {
     void setEvents(QVector<CanvasEvent> events);
     void setSelectedEvent(const QString &key);
     void setSelectedOnly(bool selectedOnly);
+    void setShowRawTicks(bool show);
     int channelCount() const;
     int columnCount() const;
     bool fits() const;
@@ -38,4 +39,5 @@ class EventCanvas final : public QWidget {
     QVector<CanvasEvent> m_visibleEvents;
     QString m_selectedKey;
     bool m_selectedOnly = false;
+    bool m_showRawTicks = false;
 };

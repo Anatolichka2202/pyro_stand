@@ -83,6 +83,9 @@ private slots:
     void timelineKeyboardSelection();
     void numericColumnsKeepFullValues();
     void focusedChannelsKeepFullResults();
+    void rawTicksAreOptionalPresentation();
+    void operatorDesign_data();
+    void operatorDesign();
 };
 
 void OperatorGuiTest::summarySeparatesMissingInputs() {
@@ -155,6 +158,7 @@ void OperatorGuiTest::timelineKeyboardSelection() {
 
 void OperatorGuiTest::numericColumnsKeepFullValues() {
     EventCanvas canvas;
+    canvas.setShowRawTicks(true);
     CanvasEvent group;
     group.channels.append({QStringLiteral("12:8"), QStringLiteral("Контролируемый сигнал"),
         QStringLiteral("4294967295"), QStringLiteral("-2147483.647"),
@@ -177,6 +181,82 @@ void OperatorGuiTest::numericColumnsKeepFullValues() {
     QTest::qWait(20);
     QVERIFY(scroll->viewport()->width() >= window.m_canvas->width() ||
         (scroll->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOff && scroll->horizontalScrollBar()->maximum() > 0));
+}
+
+void OperatorGuiTest::rawTicksAreOptionalPresentation() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    CanvasEvent group;
+    group.channels.append({QStringLiteral("8:1"), QStringLiteral("Зажигание"),
+        QStringLiteral("4294967295"), QStringLiteral("-8.000"), QStringLiteral("+0.500"),
+        QStringLiteral("отклонение"), QColor(Qt::red)});
+    window.m_canvas->setEvents({group});
+    auto *toggle = window.findChild<QCheckBox *>(QStringLiteral("showRawTicks")); QVERIFY(toggle);
+    QVERIFY(!toggle->isChecked());
+    QCOMPARE(window.m_canvas->columnWidths(640)[2], 0);
+    toggle->setChecked(true);
+    QVERIFY(window.m_canvas->columnWidths(640)[2] > 0);
+    QCOMPARE(window.m_canvas->events()[0].channels[0].rawTick, QStringLiteral("4294967295"));
+    toggle->setChecked(false);
+    QCOMPARE(window.m_canvas->events()[0].channels[0].actual, QStringLiteral("-8.000"));
+}
+
+void OperatorGuiTest::operatorDesign_data() {
+    QTest::addColumn<QSize>("size");
+    QTest::newRow("1100") << QSize(1100, 700);
+    QTest::newRow("1280") << QSize(1280, 800);
+    QTest::newRow("1920") << QSize(1920, 1080);
+}
+
+void OperatorGuiTest::operatorDesign() {
+    QFETCH(QSize, size);
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    options.firstStageYps = 8; options.secondStageYps = 7; options.kpYps = 8;
+    IntegrationWindow window(options); window.resize(size); window.show();
+    auto &session = window.m_session;
+    QFile file(QFINDTESTDATA("data/working_20261014.txt")); QVERIFY(file.open(QIODevice::ReadOnly));
+    QString error; QVERIFY(StandProtocol::parseCyclogram(file.readAll(), &session.m_plan, &error));
+    session.m_hasPlan = true; session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true; session.m_boardArmed = true;
+    session.m_hasBoardFrame = true; session.updateBenchMapping();
+    constexpr quint32 kpTick = 30000000;
+    session.m_boardFrame.channels[63] = {true, false, kpTick, 0};
+    int signal = 0;
+    for (const auto &action : session.m_plan.actions) {
+        if (action.key == QStringLiteral("LIFT_OFF_CONTACT")) continue;
+        for (const auto &input : session.mapping().forAction(action).inputs) {
+            ++signal;
+            if (signal == 5 || signal == 12) continue;
+            const qint64 deltaUs = signal < 3 ? 500 : signal < 8 ? 2500 : 0;
+            const auto tick = quint32(qint64(kpTick) + qint64(action.offsetMs) * 1000 + deltaUs);
+            session.m_boardFrame.channels[size_t(input.index)] = {true, false, tick, 0};
+        }
+    }
+    session.finishCollection(QStringLiteral("Виртуальный прогон: окно наблюдения завершено"), true);
+    window.refresh(); QTest::qWait(20);
+    QCOMPARE(window.size(), size);
+    QVERIFY(window.m_summaryLabel->text().contains(QStringLiteral("не зарегистрировано 2")));
+    QVERIFY(window.findChild<QWidget *>(QStringLiteral("timePanel"))->height() < 110);
+    QVERIFY(window.m_firstClock->isHidden());
+    QFont titleFont(window.m_eventTable->font()); titleFont.setPixelSize(16);
+    QFont detailFont(window.m_eventTable->font()); detailFont.setPixelSize(12);
+    QVERIFY(window.m_eventTable->rowHeight(0) >= QFontMetrics(titleFont).height() * 2 +
+        QFontMetrics(detailFont).height() + 10);
+    QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
+        QStringLiteral("/operator-design-%1.png").arg(size.width())));
+    auto *scope = window.findChild<QComboBox *>(QStringLiteral("channelDetailScope")); QVERIFY(scope);
+    for (int row = 0; row < window.m_eventTable->rowCount(); ++row) {
+        if (window.m_eventTable->item(row, 6)->text() != QStringLiteral("Не все входы")) continue;
+        window.m_eventTable->setCurrentCell(row, 1); break;
+    }
+    scope->setCurrentIndex(1);
+    QTest::qWait(10);
+    QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
+        QStringLiteral("/operator-design-focus-%1.png").arg(size.width())));
 }
 
 void OperatorGuiTest::focusedChannelsKeepFullResults() {
@@ -715,6 +795,9 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     QTest::qWait(30);
     window.updatePlannedClock();
     QCOMPARE(window.m_session.measuredPositionMs(), hardwarePosition);
+    window.m_session.finishCollection();
+    window.updatePlannedClock();
+    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("КОНЕЦ СБОРА ОТ КП")));
 }
 
 void OperatorGuiTest::kpClusterDoesNotHideFailure() {

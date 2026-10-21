@@ -3,6 +3,7 @@
 #include "timeline_widget.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QColor>
 #include <QDateTime>
 #include <QComboBox>
@@ -31,6 +32,9 @@
 #include <QTextDocument>
 #include <QFileInfo>
 #include <QStyle>
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QTextLayout>
 #include <cstdint>
 #include <limits>
 
@@ -45,6 +49,92 @@ const QColor kNeutral("#e6edf3");
 const QColor kGreen("#3fb950");
 const QColor kAmber("#e3b341");
 const QColor kRed("#f85149");
+
+void drawItemFocus(QPainter *painter, const QStyleOptionViewItem &option) {
+    if (!(option.state & QStyle::State_HasFocus)) return;
+    painter->setPen(QPen(QColor(QStringLiteral("#81b6d0")), 1, Qt::DotLine));
+    painter->setBrush(Qt::NoBrush);
+    painter->drawRect(option.rect.adjusted(1, 1, -2, -2));
+}
+
+// Название события читается первым; план и прибор остаются второй, спокойной строкой.
+class EventTitleDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        auto size = QStyledItemDelegate::sizeHint(option, index);
+        QFont title(option.font); title.setPixelSize(16);
+        QFont detail(option.font); detail.setPixelSize(12);
+        size.setHeight(QFontMetrics(title).height() * 2 + QFontMetrics(detail).height() + 14);
+        return size;
+    }
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        painter->save();
+        QStyleOptionViewItem background(option);
+        initStyleOption(&background, index);
+        // initStyleOption заменяет перевод строки разделителем Unicode; берём исходный текст.
+        const auto parts = index.data(Qt::DisplayRole).toString().split(u'\n');
+        background.text.clear();
+        const auto *style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawPrimitive(QStyle::PE_PanelItemViewItem, &background, painter, option.widget);
+        painter->setClipRect(option.rect);
+        const QRect content = option.rect.adjusted(8, 5, -8, -4);
+        QFont titleFont(option.font); titleFont.setPixelSize(16);
+        painter->setFont(titleFont);
+        painter->setPen(kNeutral);
+        const QFontMetrics metrics(titleFont);
+        const QString title = parts.value(0);
+        QTextLayout layout(title, titleFont);
+        QTextOption wrap; wrap.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(wrap);
+        layout.beginLayout();
+        auto line = layout.createLine();
+        if (line.isValid()) line.setLineWidth(std::max(1, content.width()));
+        layout.endLayout();
+        if (line.isValid()) {
+            line.draw(painter, content.topLeft());
+            const QString rest = title.mid(line.textLength());
+            if (!rest.isEmpty())
+                painter->drawText(content.left(), content.top() + metrics.height() + metrics.ascent(),
+                    metrics.elidedText(rest, Qt::ElideRight, content.width()));
+        }
+        QFont detailFont(option.font); detailFont.setPixelSize(12);
+        painter->setFont(detailFont); painter->setPen(kDim);
+        painter->drawText(QRect(content.left(), content.bottom() - 14, content.width(), 15),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            QFontMetrics(detailFont).elidedText(parts.value(1), Qt::ElideRight, content.width()));
+        drawItemFocus(painter, option);
+        painter->restore();
+    }
+};
+
+class ResultStatusDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        QFont font(option.font); font.setPixelSize(12); font.setWeight(QFont::Medium);
+        return {QFontMetrics(font).horizontalAdvance(index.data().toString()) + 28, 30};
+    }
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        painter->save();
+        painter->setClipRect(option.rect);
+        const QColor color = index.data(Qt::ForegroundRole).value<QBrush>().color();
+        QColor fill = color; fill.setAlpha(24);
+        const QRect badge = option.rect.adjusted(6, (option.rect.height() - 24) / 2, -6,
+            -(option.rect.height() - 24) / 2);
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen); painter->setBrush(fill);
+        painter->drawRoundedRect(badge, 4, 4);
+        QFont font(option.font); font.setPixelSize(12); font.setWeight(QFont::Medium);
+        painter->setFont(font); painter->setPen(color);
+        painter->drawText(badge.adjusted(4, 0, -4, 0), Qt::AlignCenter,
+            QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, std::max(0, badge.width() - 8)));
+        drawItemFocus(painter, option);
+        painter->restore();
+    }
+};
 
 QString signedMs(double value) {
     if (std::abs(value) < 0.0005) value = 0.0;
@@ -102,13 +192,13 @@ QFrame *statusChip(QWidget *parent, const QString &title, QLabel **dotOut, QLabe
     chip->setStyleSheet(QStringLiteral(
         "QFrame#connectionChip { background:#161b22; border:1px solid #30363d; border-radius:4px; }"));
     auto *lay = new QHBoxLayout(chip);
-    lay->setContentsMargins(8, 6, 9, 6);
-    lay->setSpacing(8);
+    lay->setContentsMargins(8, 5, 8, 5);
+    lay->setSpacing(6);
     auto *dot = new QLabel(chip);
     dot->setFixedSize(9, 9);
     dot->setStyleSheet(QStringLiteral("background:#484f58; border:0; border-radius:4px;"));
-    auto *col = new QVBoxLayout;
-    col->setSpacing(1);
+    auto *col = new QHBoxLayout;
+    col->setSpacing(6);
     auto *caption = new QLabel(title, chip);
     caption->setStyleSheet(QStringLiteral(
         "font-size:12px; font-weight:600; color:#e6edf3; background:transparent; border:0;"));
@@ -192,7 +282,6 @@ void IntegrationWindow::setupUi() {
     header->addWidget(title);
     header->addStretch();
     m_startTimeLabel = new QLabel(surface);
-    header->addWidget(m_startTimeLabel);
     auto *map = new QPushButton(QStringLiteral("Подключение"), surface);
     map->setObjectName("testerConfigurationBtn");
     m_resetButton = new QPushButton(QStringLiteral("Новый сбор"), surface);
@@ -204,11 +293,15 @@ void IntegrationWindow::setupUi() {
     live->setObjectName("liveChannelsBtn");
     auto *save = new QPushButton(QStringLiteral("Отчёт"), surface);
     save->setObjectName("reportBtn");
+    auto *free = new QPushButton(QStringLiteral("Свободная запись…"), surface);
+    free->setObjectName(QStringLiteral("freeRecordingBtn"));
+    free->setToolTip(QStringLiteral("Регистрация входов без ПЗ и КАСУПП; КП необязателен"));
+    connect(free, &QPushButton::clicked, this, &IntegrationWindow::openFreeRecording);
     auto *log = new QPushButton(QStringLiteral("Журнал"), surface);
     log->setObjectName("journalBtn");
     auto *planButton = new QPushButton(QStringLiteral("Полный план"), surface);
     planButton->setObjectName("fullPlanBtn");
-    for (auto *button : {map, m_resetButton, finish, live, save})
+    for (auto *button : {map, m_resetButton, finish, live, free, save})
         header->addWidget(button);
     auto *more=new QToolButton(surface);
     more->setText(QStringLiteral("Ещё"));more->setObjectName("secondaryCommandsBtn");
@@ -221,16 +314,22 @@ void IntegrationWindow::setupUi() {
     more->setMenu(menu);header->addWidget(more);
     log->hide();planButton->hide();
     main->addLayout(header);
-    auto *clocks = new QHBoxLayout;
+    auto *timePanel = new QFrame(surface);
+    timePanel->setObjectName(QStringLiteral("timePanel"));
+    timePanel->setStyleSheet(QStringLiteral("QFrame#timePanel{background:#161f27;border:1px solid #2c3944;border-radius:5px;}"));
+    auto *clocks = new QHBoxLayout(timePanel);
+    clocks->setContentsMargins(12, 8, 12, 8);
     m_firstClock = new QLabel(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"), surface);
     m_firstClock->setObjectName("firstEventClock");
     clocks->addWidget(m_firstClock, 1);
     auto *time = new QVBoxLayout;
     m_clockCaption = new QLabel(surface);
+    m_clockCaption->setWordWrap(true);
     m_timerLabel = new QLabel("--:--", surface);
     m_timerLabel->setObjectName("timerLabel");
     m_clockSource = new QLabel(surface);
     m_clockSource->setObjectName("clockSource");
+    m_clockSource->setWordWrap(true);
     time->setSpacing(0);
     time->addWidget(m_clockCaption);
     time->addWidget(m_timerLabel);
@@ -242,24 +341,20 @@ void IntegrationWindow::setupUi() {
     m_peerStatus = new QLabel(surface);
     m_peerStatus->setObjectName("comparisonStatus");
     m_peerStatus->setWordWrap(true);
+    reference->addWidget(m_startTimeLabel);
     reference->addWidget(m_kpStatus);
     reference->addWidget(m_peerStatus);
     clocks->addLayout(reference, 2);
-    main->addLayout(clocks);
+    main->addWidget(timePanel);
     auto *status = new QHBoxLayout;
     status->addWidget(
-        statusChip(surface, QStringLiteral("Debug КАСУ"), &m_debugDot, &m_debugStatus));
+        statusChip(surface, QStringLiteral("КАСУПП"), &m_debugDot, &m_debugStatus));
     status->addWidget(
-        statusChip(surface, QStringLiteral("Основной пиротестер"), &m_boardDot, &m_boardStatus));
-    status->addWidget(statusChip(surface, QStringLiteral("Разрешение"), &m_bcvmDot, &m_bcvmStatus));
+        statusChip(surface, QStringLiteral("Пиротестер"), &m_boardDot, &m_boardStatus));
+    status->addWidget(statusChip(surface, QStringLiteral("Исполнение"), &m_bcvmDot, &m_bcvmStatus));
     m_phaseLabel = new QLabel(surface);
     status->addWidget(m_phaseLabel, 1);
-    auto *free = new QPushButton(QStringLiteral("Свободная запись…"), surface);
-    free->setObjectName(QStringLiteral("freeRecordingBtn"));
-    free->setToolTip(QStringLiteral("Регистрация входов без ПЗ и КАСУПП; КП необязателен"));
-    connect(free, &QPushButton::clicked, this, &IntegrationWindow::openFreeRecording);
-    status->addWidget(free);
-    main->addLayout(status);
+    main->insertLayout(1, status);
     m_finishReason = new QLabel(surface);
     m_finishReason->setObjectName(QStringLiteral("finishReason"));
     m_finishReason->setTextFormat(Qt::PlainText);
@@ -313,7 +408,14 @@ void IntegrationWindow::setupUi() {
     detailScope->setObjectName(QStringLiteral("channelDetailScope"));
     detailScope->addItems({QStringLiteral("Все назначенные входы"), QStringLiteral("Входы выбранного события")});
     detailScope->setAccessibleName(QStringLiteral("Область поканального обзора"));
-    detailsLayout->addWidget(detailScope);
+    auto *detailTools = new QHBoxLayout;
+    detailTools->addWidget(detailScope, 1);
+    auto *rawTicks = new QCheckBox(QStringLiteral("Тики"), detailsPanel);
+    rawTicks->setObjectName(QStringLiteral("showRawTicks"));
+    rawTicks->setToolTip(QStringLiteral("Показывать исходные аппаратные отметки, мкс"));
+    connect(rawTicks, &QCheckBox::toggled, m_canvas, &EventCanvas::setShowRawTicks);
+    detailTools->addWidget(rawTicks);
+    detailsLayout->addLayout(detailTools);
     auto *diagram=new QScrollArea(detailsPanel);
     diagram->setObjectName(QStringLiteral("channelDetailsScroll"));
     detailsLayout->addWidget(diagram, 1);
@@ -350,10 +452,12 @@ void IntegrationWindow::setupUi() {
     m_eventTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_eventTable->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
     m_eventTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    QFont tableFont("Segoe UI");tableFont.setPixelSize(12);m_eventTable->setFont(tableFont);
+    QFont tableFont("Segoe UI");tableFont.setPixelSize(14);m_eventTable->setFont(tableFont);
+    m_eventTable->setItemDelegateForColumn(1, new EventTitleDelegate(m_eventTable));
+    m_eventTable->setItemDelegateForColumn(6, new ResultStatusDelegate(m_eventTable));
     m_eventTable->setStyleSheet("QTableWidget{background:#10161c;color:#e8edf1;gridline-color:#35434f;} "
         "QTableWidget::item{background:#10161c;} QTableWidget::item:selected{background:#1c2d3a;} "
-        "QHeaderView::section{background:#19222b;color:#a6b3be;padding:4px;}");
+        "QHeaderView::section{background:#19222b;color:#a6b3be;padding:6px 4px;font-size:11px;border:0;border-bottom:1px solid #35434f;}");
     workspace->addWidget(m_eventTable);workspace->setStretchFactor(0,6);workspace->setStretchFactor(1,4);
     workspace->setSizes({650,460});main->addWidget(workspace,1);
     const auto toggleEvent = [this](int row,int){
@@ -974,6 +1078,7 @@ void IntegrationWindow::appendMessage(const QString &message) {
 void IntegrationWindow::updatePlannedClock() {
     auto &source = clockSession();
     if (!source.hasPlan()) {
+        m_firstClock->hide();
         m_timerLabel->setText("--:--");
         m_firstClock->setText(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"));
         m_clockCaption->setText(QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ"));
@@ -982,6 +1087,7 @@ void IntegrationWindow::updatePlannedClock() {
         return;
     }
     if (!source.boardArmed() && !source.collectionFinished()) {
+        m_firstClock->hide();
         m_timerLabel->setText(QStringLiteral("—"));
         m_firstClock->setText(QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\n—"));
         m_clockCaption->setText(QStringLiteral("ПОДГОТОВКА СБОРА"));
@@ -1032,14 +1138,20 @@ void IntegrationWindow::updatePlannedClock() {
         QStringLiteral("font:28px 'Consolas';color:%1").arg(measured ? "#81b6d0" : "#e5bd78"));
     m_clockCaption->setText(source.collectionFinished() && !measured
                                 ? QStringLiteral("СБОР ЗАВЕРШЁН · ОПОРНОГО КП НЕТ")
-                                : measured ? QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП")
+                                : measured ? (source.collectionFinished()
+                                    ? (source.options().boardTransport == IntegrationSession::BoardTransport::LegacySerial
+                                        ? QStringLiteral("КОНЕЦ СБОРА ОТ КП")
+                                        : QStringLiteral("ПОСЛЕДНЯЯ ОТМЕТКА ОТ КП"))
+                                    : QStringLiteral("ПОСЛЕ ФИЗИЧЕСКОГО КП"))
                             : !kpPlan ? QStringLiteral("ОТ ПЛАНОВОГО T0 · КП НЕ ОПРЕДЕЛЁН")
                             : position < 0
                                 ? (m_forecastPosition ? QStringLiteral("ДО РАСЧЁТНОГО КП")
                                                       : QStringLiteral("ДО ПЛАНОВОГО КП"))
                                 : QStringLiteral("ПОСЛЕ ПЛАНОВОГО КП"));
     m_clockSource->setText(
-        measured ? QStringLiteral("Опора платы + индикация ПК; факты не интерполируются")
+        measured ? (source.collectionFinished()
+            ? QStringLiteral("Аппаратное время от КП · зафиксировано")
+            : QStringLiteral("Опора платы + индикация ПК; факты не интерполируются"))
         : source.collectionFinished() ? QStringLiteral("Зафиксировано по часам ПК; это не измерение от КП")
         : m_forecastPosition ? QStringLiteral("Прогноз КП по отметкам + ПК · неточный")
                              : QStringLiteral("Расчёт по UTC / часам ПК · неточный"));
@@ -1053,6 +1165,7 @@ void IntegrationWindow::updatePlannedClock() {
                                              ? show(first - position)
                                              : QStringLiteral("первое событие пройдено"))
                               : QStringLiteral("ДО ПЕРВОГО СОБЫТИЯ\nнет назначений"));
+    m_firstClock->setVisible(std::isfinite(first) && position < first && !source.collectionFinished());
     m_timeline->setPlayheadMs(qint64(position));
 }
 
@@ -1532,9 +1645,9 @@ void IntegrationWindow::refreshEventTable() {
         cell(m_eventTable,row,2,group.source);
         cell(m_eventTable,row,3,QString::number(group.offsetMs));
         cell(m_eventTable,row,4,group.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
-        cell(m_eventTable,row,5,group.delta,group.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
+        cell(m_eventTable,row,5,group.delta,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,6,group.status,group.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
-        m_eventTable->setRowHeight(row,46);m_eventTable->setRowHidden(row,false);++row;
+        m_eventTable->resizeRowToContents(row);m_eventTable->setRowHidden(row,false);++row;
         if(group.channels.size()>1) for(const auto &channel:group.channels) {
             cell(m_eventTable,row,0,QString());m_eventTable->item(row,0)->setData(Qt::UserRole,QString());
             cell(m_eventTable,row,1,QStringLiteral("   ↳ ")+channel.input,kDim);
@@ -1542,7 +1655,7 @@ void IntegrationWindow::refreshEventTable() {
             cell(m_eventTable,row,4,channel.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,5,channel.delta,channel.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,6,channel.status,channel.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
-            m_eventTable->setRowHeight(row,25);m_eventTable->setRowHidden(row,!expanded);++row;
+            m_eventTable->setRowHeight(row,30);m_eventTable->setRowHidden(row,!expanded);++row;
         }
         const QString state=group.status+u'|'+group.actual+u'|'+group.delta;
         if(m_loggedStates.value(key)!=state) {

@@ -31,6 +31,8 @@
 #include <QMenu>
 #include <QTextDocument>
 #include <QFileInfo>
+#include <QCoreApplication>
+#include <QProcess>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QPainter>
@@ -311,6 +313,18 @@ void IntegrationWindow::setupUi() {
     menu->addAction(planButton->text(),planButton,&QPushButton::click);
     auto *freeAction = menu->addAction(QStringLiteral("Свободная регистрация…"), this, &IntegrationWindow::openFreeRecording);
     freeAction->setObjectName(QStringLiteral("freeRecordingAction"));
+    auto *editorAction = menu->addAction(
+        QStringLiteral("Редактор циклограмм…"), this,
+        [this] { launchCyclogramEditor({}); });
+    editorAction->setObjectName(QStringLiteral("cyclogramEditorAction"));
+    auto *openInEditor = menu->addAction(
+        QStringLiteral("Открыть файл в редакторе…"), this, [this] {
+            const QString file = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Выбрать циклограмму для редактора"), {},
+                QStringLiteral("Циклограммы и проекты (*.txt *.ini project.json);;Все файлы (*)"));
+            if (!file.isEmpty()) launchCyclogramEditor(file);
+        });
+    openInEditor->setObjectName(QStringLiteral("cyclogramEditorOpenFileAction"));
     more->setMenu(menu);header->addWidget(more);
     log->hide();planButton->hide();
     main->addLayout(header);
@@ -615,6 +629,65 @@ void IntegrationWindow::setupUi() {
         appendMessage(
             QStringLiteral("Отчёты сохранены с отдельными аппаратными шкалами: %1").arg(path));
     });
+}
+
+void IntegrationWindow::launchCyclogramEditor(const QString &documentPath) {
+    // Редактор является внешней программой. Эта операция не выбирает локальное
+    // ПЗ для исполнения и никак не меняет состояние сбора или обмена с БЦВМ.
+    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    QString executable = settings.value(QStringLiteral("editor/executable")).toString();
+    const auto executableExists = [](const QString &path) {
+        const QFileInfo file(path);
+        return file.isFile() && file.isExecutable();
+    };
+    if (!executableExists(executable)) {
+#ifdef Q_OS_WIN
+        const QString adjacent = QCoreApplication::applicationDirPath() +
+            QStringLiteral("/cyclogram-editor.exe");
+#else
+        const QString adjacent = QCoreApplication::applicationDirPath() +
+            QStringLiteral("/cyclogram-editor");
+#endif
+        if (executableExists(adjacent)) {
+            executable = adjacent;
+        } else {
+            executable = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Укажите программу редактора циклограмм"),
+                QCoreApplication::applicationDirPath(),
+#ifdef Q_OS_WIN
+                QStringLiteral("Программы (*.exe);;Все файлы (*)")
+#else
+                QStringLiteral("Исполняемые файлы (*)")
+#endif
+            );
+            if (executable.isEmpty()) return;
+        }
+    }
+    if (!executableExists(executable)) {
+        QMessageBox::warning(this, QStringLiteral("Редактор циклограмм"),
+            QStringLiteral("Выбранный файл не является исполняемой программой редактора."));
+        return;
+    }
+
+    QStringList arguments;
+    if (!documentPath.isEmpty()) {
+        const QFileInfo file(documentPath);
+        if (!file.isFile()) {
+            QMessageBox::warning(this, QStringLiteral("Редактор циклограмм"),
+                QStringLiteral("Файл циклограммы не найден: %1").arg(documentPath));
+            return;
+        }
+        arguments << QStringLiteral("--open") << file.absoluteFilePath();
+    }
+    // QProcess передаёт argv без интерпретации shell: пробелы в пути безопасны.
+    if (!QProcess::startDetached(executable, arguments, QFileInfo(executable).absolutePath())) {
+        QMessageBox::warning(this, QStringLiteral("Редактор циклограмм"),
+            QStringLiteral("Не удалось запустить редактор: %1").arg(executable));
+        return;
+    }
+    settings.setValue(QStringLiteral("editor/executable"), executable);
+    appendMessage(QStringLiteral("Редактор циклограмм открыт отдельно"
+                                 " · это не загрузка и не разрешение ПЗ БЦВМ"));
 }
 
 void IntegrationWindow::configurePeer() {

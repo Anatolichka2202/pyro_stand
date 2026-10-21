@@ -27,6 +27,7 @@
 #include <QMessageBox>
 #include <QTemporaryDir>
 #include <QFileDialog>
+#include <QFile>
 #include <QtEndian>
 
 namespace {
@@ -83,6 +84,7 @@ private slots:
     void finishReasonIsVisible();
     void freeRecordingHasDirectEntry();
     void editorLaunchIsSeparatedFromFlightExecution();
+    void localPlanIsVisiblyUnconfirmed();
     void timelineKeyboardSelection();
     void numericColumnsKeepFullValues();
     void focusedChannelsKeepFullResults();
@@ -1042,6 +1044,33 @@ void OperatorGuiTest::editorLaunchIsSeparatedFromFlightExecution() {
     // Наличие команд редактора не делает локальный план подтверждённым БЦВМ.
     QVERIFY(!window.m_session.hasPlan());
     QVERIFY(!window.m_session.measurementEligible());
+}
+
+void OperatorGuiTest::localPlanIsVisiblyUnconfirmed() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("локальный план.txt"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QVERIFY(file.write(
+        "START_UTC_DATE=2026-10-21\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n") > 0);
+    file.close();
+
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    options.localPlanPath = path;
+    IntegrationWindow window(options);
+    QVERIFY(window.m_session.hasPlan());
+    QVERIFY(window.m_session.localPlanMode());
+    QVERIFY(!window.m_session.executionEnabled());
+    QVERIFY(!window.m_session.measurementEligible());
+    window.refresh();
+    QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН")));
+    QVERIFY(window.m_bcvmStatus->text().contains(QStringLiteral("БЦВМ не подтверждала")));
+    QCOMPARE(window.m_planTable->rowCount(), 2);
+    QVERIFY(window.m_startTimeLabel->text().contains(QStringLiteral("ЛОКАЛЬНО")));
 }
 
 QTEST_MAIN(OperatorGuiTest)

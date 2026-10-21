@@ -157,6 +157,7 @@ public:
         int secondStageYps = 0;
         int kpYps = 0;         // Встроенная карта ПЗ использует КП на входе 8.
         bool legacySecondStage = false;
+        QString localPlanPath; // Явный режим локального ПЗ без Debug и подтверждения БЦВМ.
     };
 
     explicit IntegrationSession(Options options, QObject *parent = nullptr);
@@ -165,6 +166,7 @@ public:
     void configureBoard(const Options &options);
     const Options &options() const { return m_options; }
     bool loadMapping(const QString &path);
+    bool loadLocalPlan(const QString &path); // Только отдельный сеанс без Debug.
     bool resetBoard();
     bool saveReport(const QString &path, QString *error);
 
@@ -181,6 +183,8 @@ public:
     bool legacyStreamKpObserved(int stream) const;
     bool boardArmed() const { return m_boardArmed; }
     bool hasPlan() const { return m_hasPlan; }
+    bool localPlanMode() const { return m_localPlanMode; }
+    QString localPlanPath() const { return m_localPlanPath; }
     bool hasBoardFrame() const { return m_hasBoardFrame; }
     const CyclogramPlan &plan() const { return m_plan; }
     const BoardFrame &boardFrame() const { return m_boardFrame; }
@@ -300,6 +304,8 @@ private:
     bool m_prePermissionActivity = false;
     bool m_awaitReset = false;
     bool m_hasPlan = false;
+    bool m_localPlanMode = false;
+    QString m_localPlanPath;
     bool m_hasBoardFrame = false;
     CyclogramPlan m_plan;
     BoardFrame m_boardFrame;

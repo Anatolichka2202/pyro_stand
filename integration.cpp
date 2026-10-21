@@ -554,6 +554,7 @@ IntegrationSession::IntegrationSession(Options options, QObject *parent)
     }
     updateBenchMapping();
     if (!m_options.wiringProfilePath.isEmpty()) loadMapping(m_options.wiringProfilePath);
+    if (!m_options.localPlanPath.isEmpty()) loadLocalPlan(m_options.localPlanPath);
 }
 
 IntegrationSession::~IntegrationSession() {
@@ -573,8 +574,8 @@ IntegrationSession::~IntegrationSession() {
 }
 
 void IntegrationSession::start() {
-    if (!m_reconnect.isActive()) m_reconnect.start();
-    connectDebug();
+    if (!m_options.debugSocket.isEmpty() && !m_reconnect.isActive()) m_reconnect.start();
+    if (!m_localPlanMode) connectDebug();
     if (m_options.boardTransport == BoardTransport::Udp) {
         if (!m_udp.bind(m_options.bindIp, m_options.telemetryPort,
                         QUdpSocket::DontShareAddress))
@@ -855,6 +856,9 @@ void IntegrationSession::readDebug() {
 }
 
 void IntegrationSession::processDebug(const QJsonObject &object) {
+    // Локальный план физически отделён от Debug: ни одно сообщение КАСУПП
+    // не должно заменить файл или придать ему статус подтверждённого ПЗ.
+    if (m_localPlanMode) return;
     const QString type = object.value(QStringLiteral("type")).toString();
     const QString id = object.value(QStringLiteral("upload_id")).toString();
     if (type == QStringLiteral("CYCLOGRAM_AVAILABLE")) {
@@ -1168,6 +1172,67 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
         m_evidenceValid = false;
         setError(QStringLiteral("Не удалось записать кадр в журнал доказательств"));
     }
+}
+
+bool IntegrationSession::loadLocalPlan(const QString &path) {
+    if (!m_options.debugSocket.isEmpty() || m_debug.state() != QLocalSocket::UnconnectedState) {
+        setError(QStringLiteral("Локальную циклограмму разрешено открывать только в сеансе без Debug КАСУПП"));
+        return false;
+    }
+    if (m_hasPlan || m_localPlanMode || m_acceptedFrames != 0 ||
+        m_collectionFinished) {
+        setError(QStringLiteral("Для локальной циклограммы требуется новый независимый сеанс"));
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setError(QStringLiteral("Локальная циклограмма: %1").arg(file.errorString()));
+        return false;
+    }
+    if (file.size() <= 0 || file.size() > 8192) {
+        setError(QStringLiteral("Локальная циклограмма должна иметь размер 1..8192 байт"));
+        return false;
+    }
+    const QByteArray bytes = file.read(8193);
+    CyclogramPlan parsed;
+    QString error;
+    if (!StandProtocol::parseCyclogram(bytes, &parsed, &error)) {
+        setError(QStringLiteral("Локальная циклограмма: %1").arg(error));
+        return false;
+    }
+    // Нет присвоения upload_id/CONFIRMED/executionObserved. Факты прибора
+    // архивируются, но не считаются подтверждением исполнения ПЗ БЦВМ.
+    resetCollectionEvidence(false);
+    m_plan = parsed;
+    m_cyclogramBytes = bytes;
+    m_cyclogramSha = parsed.sha256;
+    m_hasPlan = true;
+    m_localPlanMode = true;
+    m_localPlanPath = QFileInfo(file).absoluteFilePath();
+    m_options.localPlanPath = m_localPlanPath;
+    m_runId = QStringLiteral("local-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_uploadId.clear();
+    m_uploadState = QStringLiteral("LOCAL_ONLY");
+    m_executionEnabled = false;
+    m_executionObserved = false;
+    m_lockState = QStringLiteral("UNKNOWN");
+    m_bcvmUtc.clear();
+    m_boardFrame = {};
+    m_hasBoardFrame = false;
+    m_boardArmed = false;
+    m_prePermissionActivity = false;
+    updateBenchMapping();
+    m_localEvidence.append(QJsonObject{
+        {"type", "LOCAL_PLAN_LOADED"},
+        {"file", m_localPlanPath},
+        {"collection_id", m_collectionId},
+        {"at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}
+    });
+    emit message(QStringLiteral(
+        "Локальная циклограмма открыта: БЦВМ не подтверждала загрузку или исполнение; "
+        "оценка пока недоступна, регистрируются аппаратные сигналы"));
+    emit changed();
+    return true;
 }
 
 bool IntegrationSession::loadMapping(const QString &path) {
@@ -1634,6 +1699,9 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("udp_last_sender"), m_lastUdpSender);
     report.insert(QStringLiteral("collection_id"), m_collectionId);
     report.insert(QStringLiteral("upload_id"), m_uploadId);
+    report.insert(QStringLiteral("plan_origin"), m_localPlanMode
+        ? QStringLiteral("local_file_unconfirmed") : QStringLiteral("kasu_debug"));
+    report.insert(QStringLiteral("local_plan_path"), m_localPlanPath);
     report.insert(QStringLiteral("upload_state"), m_uploadState);
     report.insert(QStringLiteral("file_identity_valid"), m_fileIdentityValid);
     report.insert(QStringLiteral("bcvm_lock_state"), m_lockState);

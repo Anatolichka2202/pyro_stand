@@ -3,6 +3,8 @@
 #include <QScreen>
 #include <QSettings>
 #include <QFileInfo>
+#include <QFile>
+#include <QDebug>
 #include <utility>
 #include "integration_window.h"
 
@@ -26,6 +28,7 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addOption({"debug-socket", "Имя локального сокета Debug КАСУ ПП", "name",
                       "kasupp-debug-events-v1"});
+    parser.addOption({"local-cyclogram", "Открыть локальное ПЗ для наблюдения без Debug БЦВМ", "txt"});
     parser.addOption({"wiring-profile", "Профиль сигналов основного источника (необязательно)", "json"});
     parser.addOption({"compare-wiring-profile", "Профиль сигналов дополнительного COM (необязательно)", "json"});
     parser.addOption({"board-ip", "IP платы пиротестера", "ip", "192.168.17.144"});
@@ -76,6 +79,23 @@ int main(int argc, char *argv[])
         else parser.showHelp(2);
     }
     options.debugSocket = parser.value("debug-socket");
+    if (parser.isSet("local-cyclogram")) {
+        // Явный взаимоисключающий режим. Никогда не объявляем локальный файл
+        // загруженным или разрешённым БЦВМ.
+        if (parser.isSet("debug-socket"))
+            parser.showHelp(2);
+        options.localPlanPath = QFileInfo(parser.value("local-cyclogram")).absoluteFilePath();
+        QFile local(options.localPlanPath);
+        CyclogramPlan parsed;
+        QString error;
+        if (!local.open(QIODevice::ReadOnly) || local.size() <= 0 || local.size() > 8192 ||
+            !StandProtocol::parseCyclogram(local.read(8193), &parsed, &error)) {
+            qCritical("Локальная циклограмма недоступна или некорректна: %s",
+                      qPrintable(error.isEmpty() ? local.errorString() : error));
+            return 2;
+        }
+        options.debugSocket.clear();
+    }
     options.boardIp = QHostAddress(parser.isSet("board-ip") ? parser.value("board-ip")
         : settings.value(QStringLiteral("tester/ip"), parser.value("board-ip")).toString());
     options.bindIp = QHostAddress(parser.value("bind-ip"));

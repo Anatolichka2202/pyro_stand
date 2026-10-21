@@ -1523,8 +1523,10 @@ void IntegrationWindow::refresh() {
                                               : legacy ? QStringLiteral("COM-потоки идут")
                                                        : QStringLiteral("кадры идут"));
     setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(),
-            m_session.executionEnabled() ? QStringLiteral("разрешено")
-                                         : QStringLiteral("не разрешено"));
+            m_session.localPlanMode()
+                ? QStringLiteral("локальный план · БЦВМ не подтверждала")
+                : m_session.executionEnabled() ? QStringLiteral("разрешено")
+                                               : QStringLiteral("не разрешено"));
 
     QString phaseText;
     QString phaseColor = QStringLiteral("#8b949e");
@@ -1536,6 +1538,12 @@ void IntegrationWindow::refresh() {
         m_phaseLabel->setToolTip(m_session.finishReason());
     } else if (!hasPlan) {
         phaseText = QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ");
+    } else if (m_session.localPlanMode()) {
+        phaseText = !m_session.boardArmed()
+            ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · ОЖИДАНИЕ ЧИСТОГО СБОРА")
+            : firstKp ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · КП ЕСТЬ · ИСПОЛНЕНИЕ НЕ ПОДТВЕРЖДЕНО")
+                      : QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · ОЖИДАНИЕ КП");
+        phaseColor = QStringLiteral("#e3b341");
     } else if (!uploaded) {
         phaseText = QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА");
         phaseColor = QStringLiteral("#e3b341");
@@ -1565,13 +1573,16 @@ void IntegrationWindow::refresh() {
     m_phaseLabel->setStyleSheet(QStringLiteral(
         "font-size:13px; font-weight:600; letter-spacing:0.08em; color:%1;").arg(phaseColor));
     m_startTimeLabel->setText(hasPlan
-        ? QStringLiteral("T0 %1 UTC").arg(m_session.plan().t0Utc.toString(QStringLiteral("dd.MM HH:mm:ss")))
+        ? QStringLiteral("%1T0 %2 UTC")
+            .arg(m_session.localPlanMode() ? QStringLiteral("ЛОКАЛЬНО · ") : QString(),
+                 m_session.plan().t0Utc.toString(QStringLiteral("dd.MM HH:mm:ss")))
         : QStringLiteral("--:--:--"));
     m_startTimeLabel->setToolTip(hasPlan ? m_session.plan().t0Utc.toString(Qt::ISODateWithMs)
                                         : QString());
 
     m_uploadStatus->setText(QStringLiteral("ЦИКЛОГРАММА · %1")
-        .arg(uploaded ? QStringLiteral("ЗАГРУЗКА ПОДТВЕРЖДЕНА")
+        .arg(m_session.localPlanMode() ? QStringLiteral("ЛОКАЛЬНЫЙ ФАЙЛ · БЦВМ НЕ ПОДТВЕРЖДАЛА")
+            : uploaded ? QStringLiteral("ЗАГРУЗКА ПОДТВЕРЖДЕНА")
                       : QStringLiteral("ЗАГРУЗКА НЕ ПОДТВЕРЖДЕНА")));
     m_uploadStatus->setToolTip(QStringLiteral("Состояние: %1\nID загрузки: %2")
         .arg(m_session.uploadState(), m_session.uploadId()));

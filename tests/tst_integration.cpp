@@ -124,6 +124,7 @@ private slots:
     void actual33ActionCyclogramHasUnambiguousChannels();
     void completedActionStateIsFrozenAcrossLateDebugChanges();
     void transientKpRemainsAfterNextUdpFrame();
+    void localPlanDoesNotImpersonateBcvmPermission();
 };
 
 void IntegrationTest::rejectedObserversCoverUdpAndSerial() {
@@ -1630,6 +1631,83 @@ void IntegrationTest::resetDoesNotCarryOldFrameIntoNewRun() {
     QCOMPARE(session.boardFrame().channels[0].riseUs,quint32(2000000));
     QCOMPARE(session.boardFrame().channels[1].riseUs,quint32(2020000));
 }
+
+void IntegrationTest::localPlanDoesNotImpersonateBcvmPermission() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("local plan.txt"));
+    const QByteArray source = benchCyclogram();
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(source), source.size());
+    file.close();
+
+    IntegrationSession::Options local;
+    local.debugSocket.clear();
+    local.telemetryPort = 0;
+    local.localPlanPath = path;
+    IntegrationSession session(local);
+    QVERIFY(session.hasPlan());
+    QVERIFY(session.localPlanMode());
+    QCOMPARE(session.plan().sourceBytes, source);
+    QCOMPARE(session.uploadState(), QStringLiteral("LOCAL_ONLY"));
+    QVERIFY(session.uploadId().isEmpty());
+    QVERIFY(!session.executionEnabled());
+    QVERIFY(!session.executionPermissionObserved());
+    QVERIFY(!session.measurementEligible());
+
+    // Даже корректное контрактное сообщение КАСУПП не заменяет локальное ПЗ.
+    QJsonObject injected;
+    injected.insert(QStringLiteral("type"), QStringLiteral("CYCLOGRAM_UPLOAD_STATE"));
+    injected.insert(QStringLiteral("upload_id"), QStringLiteral("foreign-id"));
+    injected.insert(QStringLiteral("upload_state"), QStringLiteral("CONFIRMED"));
+    session.processDebug(injected);
+    QVERIFY(session.localPlanMode());
+    QCOMPARE(session.uploadState(), QStringLiteral("LOCAL_ONLY"));
+    QCOMPARE(session.plan().sourceBytes, source);
+
+    session.processFrame(frame(1'000'000U, 1'020'000U));
+    QCOMPARE(session.acceptedFrames(), quint64(1));
+    QVERIFY(!session.measurementEligible());
+    QString error;
+    const QString reportPath = dir.filePath(QStringLiteral("local-report.json"));
+    QVERIFY2(session.saveReport(reportPath, &error), qPrintable(error));
+    QFile report(reportPath);
+    QVERIFY(report.open(QIODevice::ReadOnly));
+    const QJsonObject json = QJsonDocument::fromJson(report.readAll()).object();
+    QCOMPARE(json.value(QStringLiteral("plan_origin")).toString(),
+             QStringLiteral("local_file_unconfirmed"));
+    QCOMPARE(json.value(QStringLiteral("upload_state")).toString(),
+             QStringLiteral("LOCAL_ONLY"));
+    QVERIFY(!json.value(QStringLiteral("execution_enabled_confirmed")).toBool());
+
+    // Штатный сеанс с Debug не должен принимать локальный план.
+    IntegrationSession::Options official;
+    official.debugSocket = QStringLiteral("kasu-contract-test");
+    official.telemetryPort = 0;
+    official.localPlanPath = path;
+    IntegrationSession other(official);
+    QVERIFY(!other.hasPlan());
+    QVERIFY(!other.localPlanMode());
+    QVERIFY(!other.loadLocalPlan(path));
+    QVERIFY(other.lastError().contains(QStringLiteral("без Debug")));
+
+    // Повреждённый файл не должен появиться в операторской модели даже в
+    // полностью изолированном локальном режиме.
+    const QString badPath = dir.filePath(QStringLiteral("damaged.txt"));
+    QFile damaged(badPath);
+    QVERIFY(damaged.open(QIODevice::WriteOnly));
+    damaged.write("NOT_A_CYCLOGRAM");
+    damaged.close();
+    IntegrationSession::Options invalid;
+    invalid.debugSocket.clear();
+    invalid.localPlanPath = badPath;
+    IntegrationSession rejected(invalid);
+    QVERIFY(!rejected.hasPlan());
+    QVERIFY(!rejected.localPlanMode());
+    QCOMPARE(rejected.uploadState(), QStringLiteral("NONE"));
+}
+
 
 QTEST_GUILESS_MAIN(IntegrationTest)
 #include "tst_integration.moc"

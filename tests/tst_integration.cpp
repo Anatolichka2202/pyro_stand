@@ -1685,10 +1685,27 @@ void IntegrationTest::localPlanDoesNotImpersonateBcvmPermission() {
     IntegrationSession::Options official;
     official.debugSocket = QStringLiteral("kasu-contract-test");
     official.telemetryPort = 0;
+    official.localPlanPath = path;
     IntegrationSession other(official);
-    QVERIFY(!other.loadLocalPlan(path));
     QVERIFY(!other.hasPlan());
     QVERIFY(!other.localPlanMode());
+    QVERIFY(!other.loadLocalPlan(path));
+    QVERIFY(other.lastError().contains(QStringLiteral("без Debug")));
+
+    // Повреждённый файл не должен появиться в операторской модели даже в
+    // полностью изолированном локальном режиме.
+    const QString badPath = dir.filePath(QStringLiteral("damaged.txt"));
+    QFile damaged(badPath);
+    QVERIFY(damaged.open(QIODevice::WriteOnly));
+    damaged.write("NOT_A_CYCLOGRAM");
+    damaged.close();
+    IntegrationSession::Options invalid;
+    invalid.debugSocket.clear();
+    invalid.localPlanPath = badPath;
+    IntegrationSession rejected(invalid);
+    QVERIFY(!rejected.hasPlan());
+    QVERIFY(!rejected.localPlanMode());
+    QCOMPARE(rejected.uploadState(), QStringLiteral("NONE"));
 }
 
 

@@ -80,6 +80,7 @@ private slots:
     void summarySeparatesMissingInputs();
     void finishReasonIsVisible();
     void freeRecordingHasDirectEntry();
+    void editorLaunchIsSeparatedFromFlightExecution();
     void timelineKeyboardSelection();
     void numericColumnsKeepFullValues();
     void focusedChannelsKeepFullResults();
@@ -1018,6 +1019,27 @@ void OperatorGuiTest::kpOnDifferentYpsIsShownAsMappingDiagnostic() {
     window.refresh();
     QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("Сырой фронт КП")));
     QVERIFY(window.m_kpStatus->text().contains(QStringLiteral("не подтверждена загрузка")));
+}
+
+void OperatorGuiTest::editorLaunchIsSeparatedFromFlightExecution() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear();
+    options.telemetryPort = 0;
+    IntegrationWindow window(options);
+    auto *more = window.findChild<QToolButton *>(QStringLiteral("secondaryCommandsBtn"));
+    QVERIFY(more);
+    QVERIFY(more->menu());
+    const auto *editor = more->menu()->findChild<QAction *>(
+        QStringLiteral("cyclogramEditorAction"));
+    const auto *openFile = more->menu()->findChild<QAction *>(
+        QStringLiteral("cyclogramEditorOpenFileAction"));
+    QVERIFY(editor);
+    QVERIFY(openFile);
+    QVERIFY(editor->text().contains(QStringLiteral("Редактор")));
+    QVERIFY(openFile->text().contains(QStringLiteral("Открыть")));
+    // Наличие команд редактора не делает локальный план подтверждённым БЦВМ.
+    QVERIFY(!window.m_session.hasPlan());
+    QVERIFY(!window.m_session.measurementEligible());
 }
 
 QTEST_MAIN(OperatorGuiTest)

@@ -325,6 +325,20 @@ void IntegrationWindow::setupUi() {
             if (!file.isEmpty()) launchCyclogramEditor(file);
         });
     openInEditor->setObjectName(QStringLiteral("cyclogramEditorOpenFileAction"));
+    auto *overlayAction = menu->addAction(QStringLiteral("Переоценка карты и наблюдений…"), this, [this] {
+        const QString path = QFileDialog::getSaveFileName(this,
+            QStringLiteral("Снимок текущих наблюдений для редактора"),
+            QStringLiteral("measurement_snapshot.json"), QStringLiteral("JSON (*.json)"));
+        if (path.isEmpty()) return;
+        QString error;
+        if (!m_session.saveReport(path, &error)) {
+            QMessageBox::warning(this, QStringLiteral("Наблюдения"), error);
+            return;
+        }
+        // An external overlay never changes the live plan, mapping or Debug state.
+        launchCyclogramEditor(path, true);
+    });
+    overlayAction->setObjectName(QStringLiteral("measurementOverlayEditorAction"));
     more->setMenu(menu);header->addWidget(more);
     log->hide();planButton->hide();
     main->addLayout(header);
@@ -631,7 +645,7 @@ void IntegrationWindow::setupUi() {
     });
 }
 
-void IntegrationWindow::launchCyclogramEditor(const QString &documentPath) {
+void IntegrationWindow::launchCyclogramEditor(const QString &documentPath, bool measurementReport) {
     // Редактор является внешней программой. Эта операция не выбирает локальное
     // ПЗ для исполнения и никак не меняет состояние сбора или обмена с БЦВМ.
     QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
@@ -677,7 +691,8 @@ void IntegrationWindow::launchCyclogramEditor(const QString &documentPath) {
                 QStringLiteral("Файл циклограммы не найден: %1").arg(documentPath));
             return;
         }
-        arguments << QStringLiteral("--open") << file.absoluteFilePath();
+        arguments << (measurementReport ? QStringLiteral("--measurement-report") : QStringLiteral("--open"))
+                  << file.absoluteFilePath();
     }
     // QProcess передаёт argv без интерпретации shell: пробелы в пути безопасны.
     if (!QProcess::startDetached(executable, arguments, QFileInfo(executable).absolutePath())) {

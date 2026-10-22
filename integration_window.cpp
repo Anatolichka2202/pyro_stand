@@ -706,6 +706,15 @@ void IntegrationWindow::configurePeer() {
     legacy.legacySecondStage = options.comparisonLegacySecondStage;
     legacy.legacyHasKp = options.comparisonLegacyHasKp;
     m_peer = std::make_unique<IntegrationSession>(legacy, this);
+    if (m_session.localPlanMode() && (!m_peer->localPlanMode() ||
+        m_peer->plan().sha256 != m_session.plan().sha256)) {
+        // Редактор мог изменить файл после открытия основной сессии.
+        // Не запускаем второй поток с другим снимком полётного задания.
+        appendMessage(QStringLiteral("ПЗ дополнительного прибора отличается от открытого локального плана. "
+            "Дополнительный прибор не подключён; откройте новый сеанс с нужной версией файла."));
+        m_peer.reset();
+        return;
+    }
     connect(m_peer.get(), &IntegrationSession::changed, this, [this] {
         if (!m_refreshTimer.isActive())
             m_refreshTimer.start();
@@ -1524,7 +1533,7 @@ void IntegrationWindow::refresh() {
                                                        : QStringLiteral("кадры идут"));
     setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(),
             m_session.localPlanMode()
-                ? QStringLiteral("локальный план · БЦВМ не подтверждала")
+                ? QStringLiteral("БЦВМ не подтверждала")
                 : m_session.executionEnabled() ? QStringLiteral("разрешено")
                                                : QStringLiteral("не разрешено"));
 
@@ -1540,8 +1549,8 @@ void IntegrationWindow::refresh() {
         phaseText = QStringLiteral("ОЖИДАНИЕ ЦИКЛОГРАММЫ");
     } else if (m_session.localPlanMode()) {
         phaseText = !m_session.boardArmed()
-            ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · ОЖИДАНИЕ ЧИСТОГО СБОРА")
-            : firstKp ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · КП ЕСТЬ · ИСПОЛНЕНИЕ НЕ ПОДТВЕРЖДЕНО")
+            ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · ОЖИДАНИЕ СБОРА")
+            : firstKp ? QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · КП ПОЛУЧЕН")
                       : QStringLiteral("ЛОКАЛЬНЫЙ ПЛАН · ОЖИДАНИЕ КП");
         phaseColor = QStringLiteral("#e3b341");
     } else if (!uploaded) {

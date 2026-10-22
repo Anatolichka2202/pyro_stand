@@ -21,6 +21,8 @@ namespace {
 constexpr int kFrameSize = 2 + 96 * 10 + 1;
 constexpr int kMaxDebugLine = 4 * 1024 * 1024;
 constexpr qsizetype kMaxDebugEvidence = 16 * 1024 * 1024;
+// Мягкий предел локального JSONL: последняя порция сохраняется целиком.
+constexpr qint64 kLocalArchiveBudgetBytes = 16 * 1024 * 1024;
 
 bool fail(QString *error, const QString &reason) {
     if (error) *error = reason;
@@ -574,8 +576,13 @@ IntegrationSession::~IntegrationSession() {
 }
 
 void IntegrationSession::start() {
-    if (!m_options.debugSocket.isEmpty() && !m_reconnect.isActive()) m_reconnect.start();
-    if (!m_localPlanMode) connectDebug();
+    if (m_localPlanMode) {
+        m_reconnect.stop();
+        m_debug.abort();
+    } else {
+        if (!m_options.debugSocket.isEmpty() && !m_reconnect.isActive()) m_reconnect.start();
+        connectDebug();
+    }
     if (m_options.boardTransport == BoardTransport::Udp) {
         if (!m_udp.bind(m_options.bindIp, m_options.telemetryPort,
                         QUdpSocket::DontShareAddress))
@@ -613,6 +620,11 @@ void IntegrationSession::configureBoard(const Options &options) {
     m_boardWatchdog.stop();
     m_resetWatchdog.stop();
     m_options = options;
+    if (m_localPlanMode) {
+        // Перенастройка прибора не меняет происхождение уже открытого ПЗ.
+        m_options.debugSocket.clear();
+        m_options.localPlanPath = m_localPlanPath;
+    }
     m_boardFrame = {};
     m_liveFrame = {};
     m_kpSeenOnPc.invalidate();
@@ -775,6 +787,7 @@ void IntegrationSession::updateBenchMapping() {
 }
 
 void IntegrationSession::connectDebug() {
+    if (m_localPlanMode) return;
     if (m_debug.state() == QLocalSocket::UnconnectedState && !m_options.debugSocket.isEmpty())
         m_debug.connectToServer(m_options.debugSocket, QIODevice::ReadOnly);
 }
@@ -808,6 +821,11 @@ void IntegrationSession::resetDebugState() {
 }
 
 void IntegrationSession::readDebug() {
+    if (m_localPlanMode) {
+        m_debugBuffer.clear();
+        m_debug.abort();
+        return;
+    }
     m_debugBuffer.append(m_debug.readAll());
     if (m_debugBuffer.size() > kMaxDebugLine && !m_debugBuffer.contains('\n')) {
         setError(QStringLiteral("Слишком длинная строка Debug"));
@@ -1085,6 +1103,7 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
     m_boardReceiving = boardReceiving();
     m_boardWatchdog.start();
     m_acceptedFrames += quint64(raw.size());
+    checkLocalArchiveLimit();
     m_legacyWatchdog[size_t(stream)].start();
     emit legacyBytesObserved(raw, stream);
     emit changed();
@@ -1152,6 +1171,7 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
     if (!m_frameEvidence.isOpen()) {
         m_evidenceValid = false;
         setError(QStringLiteral("Журнал доказательств недоступен; кадр не записан"));
+        checkLocalArchiveLimit();
         return;
     }
     QJsonObject object;
@@ -1172,6 +1192,18 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
         m_evidenceValid = false;
         setError(QStringLiteral("Не удалось записать кадр в журнал доказательств"));
     }
+    checkLocalArchiveLimit();
+}
+
+void IntegrationSession::checkLocalArchiveLimit() {
+    if (!m_localPlanMode || m_collectionFinished) return;
+    if (!m_evidenceValid) {
+        finishCollection(QStringLiteral("Локальная запись прервана: ошибка архива; полный отчёт недоступен"), false);
+        return;
+    }
+    if (m_frameEvidence.pos() >= kLocalArchiveBudgetBytes)
+        finishCollection(QStringLiteral("Локальная запись завершена: достигнут порог архива 16 МиБ; "
+            "последняя порция сохранена целиком"), false);
 }
 
 bool IntegrationSession::loadLocalPlan(const QString &path) {
@@ -1565,7 +1597,7 @@ void IntegrationSession::finishCollection(const QString &reason, bool plannedWin
     m_collectionFinished = true;
     m_samplesAtFinish = {m_legacy[0].sampleCount(), m_legacy[1].sampleCount()};
     m_durationAtFinishMs=m_collectionElapsed.isValid()?m_collectionElapsed.elapsed():0;
-    m_plannedWindowComplete = plannedWindowComplete;
+    m_plannedWindowComplete = !m_localPlanMode && plannedWindowComplete;
     m_uploadStateAtFinish = m_uploadState;
     m_executionObservedAtFinish = m_executionObserved;
     m_finalActionMeasurements.clear();
@@ -1580,7 +1612,7 @@ void IntegrationSession::finishCollection(const QString &reason, bool plannedWin
         {"type", "COLLECTION_FINISHED"},
         {"collection_id", m_collectionId},
         {"reason", reason},
-        {"planned_window_complete", plannedWindowComplete},
+        {"planned_window_complete", m_plannedWindowComplete},
         {"at_utc", m_finishedAtUtc.toString(Qt::ISODateWithMs)}
     });
     emit message(QStringLiteral("Сбор завершён: %1").arg(reason));
@@ -1588,6 +1620,9 @@ void IntegrationSession::finishCollection(const QString &reason, bool plannedWin
 }
 
 void IntegrationSession::checkCompletion() {
+    // У локального файла нет подтверждения исполнения. Его расписание
+    // не определяет длительность регистрации сырых данных.
+    if (m_localPlanMode) return;
     if (m_collectionFinished || !m_hasPlan || !m_boardArmed || !m_hasBoardFrame)
         return;
     const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);

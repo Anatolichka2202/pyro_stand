@@ -234,6 +234,7 @@ private:
     friend class OperatorGuiTest;
     friend class VirtualIoTest;
     void connectDebug();
+    void checkLocalArchiveLimit();
     void readDebug();
     void processDebug(const QJsonObject &object);
     void resetDebugState();

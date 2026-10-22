@@ -85,6 +85,7 @@ private slots:
     void freeRecordingHasDirectEntry();
     void editorLaunchIsSeparatedFromFlightExecution();
     void localPlanIsVisiblyUnconfirmed();
+    void localPeerRejectsChangedFile();
     void timelineKeyboardSelection();
     void numericColumnsKeepFullValues();
     void focusedChannelsKeepFullResults();
@@ -1061,7 +1062,9 @@ void OperatorGuiTest::localPlanIsVisiblyUnconfirmed() {
     options.debugSocket.clear();
     options.telemetryPort = 0;
     options.localPlanPath = path;
+    options.firstStageYps = 1; options.kpYps = 1;
     IntegrationWindow window(options);
+    window.resize(1100, 700); window.show();
     QVERIFY(window.m_session.hasPlan());
     QVERIFY(window.m_session.localPlanMode());
     QVERIFY(!window.m_session.executionEnabled());
@@ -1071,6 +1074,33 @@ void OperatorGuiTest::localPlanIsVisiblyUnconfirmed() {
     QVERIFY(window.m_bcvmStatus->text().contains(QStringLiteral("БЦВМ не подтверждала")));
     QCOMPARE(window.m_planTable->rowCount(), 2);
     QVERIFY(window.m_startTimeLabel->text().contains(QStringLiteral("ЛОКАЛЬНО")));
+    QTest::qWait(20);
+    QCOMPARE(window.size(), QSize(1100, 700));
+    window.m_session.m_boardArmed = true; window.m_session.m_hasBoardFrame = true;
+    window.m_session.m_boardFrame.channels[7] = {true, false, 1000, 0};
+    window.refresh(); QTest::qWait(20);
+    QCOMPARE(window.size(), QSize(1100, 700));
+}
+
+void OperatorGuiTest::localPeerRejectsChangedFile() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    const auto path = dir.filePath(QStringLiteral("local.txt"));
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray bytes = "START_UTC_DATE=2026-10-22\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n";
+    QCOMPARE(file.write(bytes), bytes.size()); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.localPlanPath = path; options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost; options.bindIp = QHostAddress::LocalHost;
+    options.comparisonLegacyPort = QStringLiteral("NONEXISTENT_LOCAL_PEER_TEST");
+    IntegrationWindow window(options);
+    QVERIFY(window.m_peer); QVERIFY(window.m_peer->localPlanMode());
+    QCOMPARE(window.m_session.plan().sha256, window.m_peer->plan().sha256);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(bytes + "IGNITE_PYRO_CANDLE=20\n"); file.close();
+    window.configurePeer();
+    QCOMPARE(window.m_session.plan().sourceBytes, bytes);
+    QVERIFY(!window.m_peer);
+    QVERIFY(window.m_eventLog->toPlainText().contains(QStringLiteral("отличается")));
 }
 
 QTEST_MAIN(OperatorGuiTest)

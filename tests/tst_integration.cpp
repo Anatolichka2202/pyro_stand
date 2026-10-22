@@ -125,7 +125,122 @@ private slots:
     void completedActionStateIsFrozenAcrossLateDebugChanges();
     void transientKpRemainsAfterNextUdpFrame();
     void localPlanDoesNotImpersonateBcvmPermission();
+    void localPlanRejectsDebugAfterReconfigure();
+    void localPlanKeepsRecordingBeyondPlannedWindow();
+    void localArchiveBudget_data();
+    void localArchiveBudget();
 };
+
+void IntegrationTest::localPlanRejectsDebugAfterReconfigure() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    const auto path = dir.filePath(QStringLiteral("local.txt"));
+    const auto bytes = benchCyclogram();
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(bytes), bytes.size()); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.bindIp = QHostAddress::LocalHost; options.boardIp = QHostAddress::LocalHost;
+    options.localPlanPath = path;
+    IntegrationSession session(options);
+    QLocalServer server;
+    const QString socketName = QStringLiteral("local-plan-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QVERIFY(server.listen(socketName));
+    options.debugSocket = socketName;
+    session.configureBoard(options);
+    session.connectDebug();
+    QTest::qWait(60);
+    if (server.hasPendingConnections()) {
+        auto *client = server.nextPendingConnection();
+        send(client, {{"contract", "kasu.pp.debug.stand.v1"}, {"type", "STATE"},
+            {"seq", "1"}, {"run_id", "foreign-run"}, {"stream_id", "foreign-stream"}});
+        QTest::qWait(30);
+    }
+    QCOMPARE(session.plan().sourceBytes, bytes);
+    QVERIFY(session.localPlanMode());
+    QVERIFY(!session.debugConnected());
+    QVERIFY(!session.m_reconnect.isActive());
+    QVERIFY(session.options().debugSocket.isEmpty());
+}
+
+void IntegrationTest::localPlanKeepsRecordingBeyondPlannedWindow() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    const auto path = dir.filePath(QStringLiteral("local.txt"));
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("START_UTC_DATE=2026-10-22\nSTART_UTC_TIME=12:00:00\n"
+        "LIFT_OFF_CONTACT=0\nIGNITE_PYRO_CANDLES_ENGINES_9_TO_12=20\n"); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.localPlanPath = path;
+    options.firstStageYps = 1; options.kpYps = 1; options.telemetryPort = 0;
+    IntegrationSession session(options);
+    session.m_boardArmed = true; session.m_hasBoardFrame = true;
+    session.m_boardFrame.channels[7] = {true, false, 1000000, 0};
+    session.m_kpSeenOnPc.start();
+    QTest::qWait(5100);
+    session.checkCompletion();
+    QVERIFY(!session.collectionFinished());
+    QVERIFY(!session.plannedWindowComplete());
+    const auto before = session.m_frameEvidence.size();
+    session.processFrame(frame(1000000, 1020000));
+    QVERIFY(session.m_frameEvidence.size() > before);
+    QVERIFY(!session.measurementEligible());
+    session.finishCollection(QStringLiteral("Локальная запись завершена вручную"), true);
+    QVERIFY(!session.plannedWindowComplete());
+    QVERIFY(!session.m_localEvidence.last().toObject().value(QStringLiteral("planned_window_complete")).toBool());
+}
+
+void IntegrationTest::localArchiveBudget_data() {
+    QTest::addColumn<bool>("legacy");
+    QTest::newRow("new-board") << false;
+    QTest::newRow("old-com") << true;
+}
+
+void IntegrationTest::localArchiveBudget() {
+    QFETCH(bool, legacy);
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    const auto path = dir.filePath(QStringLiteral("local.txt"));
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("START_UTC_DATE=2026-10-22\nSTART_UTC_TIME=12:00:00\nLIFT_OFF_CONTACT=0\n"); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.localPlanPath = path;
+    if (legacy) options.boardTransport = IntegrationSession::BoardTransport::LegacySerial;
+    IntegrationSession session(options);
+    const auto packet = legacy ? QByteArray(1, 0) : frame();
+    int recorded = 0;
+    while (!session.collectionFinished() && recorded < 100000) {
+        if (legacy) session.processLegacyBytes(packet, 0);
+        else session.processFrame(packet);
+        ++recorded;
+    }
+    QVERIFY(session.collectionFinished());
+    QVERIFY(!session.plannedWindowComplete());
+    QVERIFY(session.finishReason().contains(QStringLiteral("16 МиБ")));
+    const auto size = session.m_frameEvidence.size();
+    QVERIFY(size >= 16 * 1024 * 1024);
+    QVERIFY(size < 16 * 1024 * 1024 + 4096);
+    if (legacy) session.processLegacyBytes(packet, 0);
+    else session.processFrame(packet);
+    QCOMPARE(session.m_frameEvidence.size(), size);
+    QString error;
+    const auto reportPath = dir.filePath(QStringLiteral("report.json"));
+    QVERIFY2(session.saveReport(reportPath, &error), qPrintable(error));
+    QFile report(reportPath); QVERIFY(report.open(QIODevice::ReadOnly));
+    const auto json = QJsonDocument::fromJson(report.readAll()).object();
+    QCOMPARE(json.value(QStringLiteral("accepted_frames")).toString().toInt(), recorded);
+    QFile archive(reportPath + QStringLiteral(".frames.jsonl")); QVERIFY(archive.open(QIODevice::ReadOnly));
+    int records = 0;
+    while (!archive.atEnd()) {
+        QVERIFY(QJsonDocument::fromJson(archive.readLine()).isObject());
+        ++records;
+    }
+    QCOMPARE(records, recorded);
+    session.resetCollectionEvidence(false);
+    session.m_frameEvidence.close();
+    if (legacy) session.processLegacyBytes(packet, 0);
+    else session.processFrame(packet);
+    QVERIFY(session.collectionFinished());
+    QVERIFY(!session.m_evidenceValid);
+    QVERIFY(session.finishReason().contains(QStringLiteral("ошибка архива")));
+}
 
 void IntegrationTest::rejectedObserversCoverUdpAndSerial() {
     IntegrationSession session({});

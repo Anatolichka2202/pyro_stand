@@ -17,6 +17,7 @@ class TimelineWidget;
 class QPushButton;
 class QDialog;
 class QComboBox;
+class QLineEdit;
 
 // Операторское окно показывает события и результаты, полученные от
 // IntegrationSession; декодирование и оценка измерений принадлежат сессии.
@@ -26,10 +27,16 @@ class IntegrationWindow final : public QMainWindow {
 public:
     explicit IntegrationWindow(IntegrationSession::Options options, QWidget *parent = nullptr);
 
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override;
+
 private:
     void setupUi();
     void refreshCanvas();
     void refreshEventTable();
+    void applyEventFilter();
+    void updateEventSelection(bool scrollToEvent = false);
+    int selectedGroupRow() const;
     void configurePeer();
     IntegrationSession &clockSession();
     void refresh();
@@ -82,6 +89,13 @@ private:
     QLabel *m_selectedPlanEvent = nullptr;
     QPushButton *m_resetButton = nullptr;
     QPushButton *m_finishButton = nullptr;
+    QPushButton *m_expandEventButton = nullptr;
+    QLineEdit *m_eventSearch = nullptr;
+    QLabel *m_eventCount = nullptr;
+    QLabel *m_eventSearchEmpty = nullptr;
+    QWidget *m_workspace = nullptr;
+    QWidget *m_emptyWorkspace = nullptr;
+    QLabel *m_emptyWorkspaceHint = nullptr;
 
     TimelineWidget *m_timeline = nullptr;
     QTableWidget *m_eventTable = nullptr;

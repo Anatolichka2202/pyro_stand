@@ -21,6 +21,7 @@ class EventCanvas final : public QWidget {
     void setSelectedEvent(const QString &key);
     void setSelectedOnly(bool selectedOnly);
     void setShowRawTicks(bool show);
+    QRect selectedEventRect() const;
     int channelCount() const;
     int columnCount() const;
     bool fits() const;

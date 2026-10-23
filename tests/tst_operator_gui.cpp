@@ -69,6 +69,8 @@ private slots:
     void compactLayout_data();
     void compactLayout();
     void tableKeepsWorstChannelDeviation();
+    void eventSearchKeepsUnderlyingResults();
+    void emptyWorkspaceExplainsNextStep();
     void recentJournalFollowsLastMessage();
     void channelLabelsUseSourceComments();
     void nonzeroPlannedKpUsesOneScale();
@@ -323,6 +325,8 @@ void OperatorGuiTest::focusedChannelsKeepFullResults() {
     QCOMPARE(window.m_canvas->channelCount(), 0);
     scope->setCurrentIndex(0);
     QCOMPARE(window.m_canvas->channelCount(), 5);
+    window.m_eventTable->setCurrentCell(0, 1);
+    QVERIFY(selected->isHidden());
 }
 
 void OperatorGuiTest::freeRegistrationRetainsRejectedFrames() {
@@ -509,7 +513,19 @@ void OperatorGuiTest::tableKeepsWorstChannelDeviation() {
     QCOMPARE(table->item(group,6)->text(),QStringLiteral("Отклонение"));
     QVERIFY(table->isRowHidden(group+1));
     QTest::mouseClick(table->viewport(),Qt::LeftButton,Qt::NoModifier,table->visualItemRect(table->item(group,1)).center());
+    QVERIFY(table->isRowHidden(group+1));
+    auto *expand = window.findChild<QPushButton *>(QStringLiteral("toggleEventInputsBtn"));
+    QVERIFY(expand); QVERIFY(expand->isEnabled());
+    expand->click();
     QVERIFY(!table->isRowHidden(group+1));
+    table->setFocus();
+    QTest::keyClick(table, Qt::Key_Return);
+    QVERIFY(table->isRowHidden(group+1));
+    QTest::keyClick(table, Qt::Key_Return);
+    QVERIFY(!table->isRowHidden(group+1));
+    QTest::mouseDClick(table->viewport(), Qt::LeftButton, Qt::NoModifier, table->visualItemRect(table->item(group, 1)).center());
+    QVERIFY(table->isRowHidden(group+1));
+    expand->click();
     session.m_boardFrame.channels[0]={};window.refresh();
     QCOMPARE(table->item(group,6)->text(),QStringLiteral("Не все входы"));
     session.finishCollection();window.refresh();
@@ -1103,6 +1119,50 @@ void OperatorGuiTest::localPlanIsVisiblyUnconfirmed() {
     window.m_session.m_boardFrame.channels[7] = {true, false, 1000, 0};
     window.refresh(); QTest::qWait(20);
     QCOMPARE(window.size(), QSize(1100, 700));
+}
+
+void OperatorGuiTest::emptyWorkspaceExplainsNextStep() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    options.firstStageYps = 8; options.secondStageYps = 7; options.kpYps = 8;
+    IntegrationWindow window(options); window.show();
+    auto *empty = window.findChild<QWidget *>(QStringLiteral("emptyWorkspace"));
+    QVERIFY(empty); QVERIFY(empty->isVisible());
+    auto *hint = window.findChild<QLabel *>(QStringLiteral("emptyWorkspaceHint"));
+    QVERIFY(hint); QVERIFY(hint->text().contains(QStringLiteral("без ПЗ")));
+    QVERIFY(window.findChild<QWidget *>(QStringLiteral("timePanel"))->isHidden());
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("emptyConnectBtn"))->isEnabled());
+    QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/workspace-empty.png")));
+}
+
+void OperatorGuiTest::eventSearchKeepsUnderlyingResults() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.show();
+    CanvasEvent ignition; ignition.id = "3"; ignition.title = QStringLiteral("Зажигание А"); ignition.source = "NEW";
+    window.m_session.m_hasPlan = true;
+    ignition.actual = "-7999.500"; ignition.delta = "+0.500";
+    ignition.channels.append({"8:1", ignition.title, "1000", ignition.actual, ignition.delta, QStringLiteral("измерено"), QColor(Qt::green)});
+    CanvasEvent closing = ignition; closing.id = "16"; closing.title = QStringLiteral("Закрытие клапанов");
+    window.m_canvas->setEvents({ignition, closing}); window.refreshEventTable();
+    auto *search = window.findChild<QLineEdit *>(QStringLiteral("eventSearch"));
+    QVERIFY(search);
+    window.m_eventTable->setCurrentCell(1, 1);
+    QVERIFY(window.m_canvas->selectedEventRect().isValid());
+    QVERIFY(window.m_canvas->accessibleDescription().contains(QStringLiteral("Выбрано: NEW/16")));
+    window.activateWindow(); window.m_eventTable->setFocus(); QTest::qWait(20);
+    QTest::keyClick(&window, Qt::Key_F, Qt::ControlModifier);
+    QTRY_VERIFY(search->hasFocus());
+    search->setText(QStringLiteral("зАжИгАнИе"));
+    QVERIFY(!window.m_eventTable->isRowHidden(0)); QVERIFY(window.m_eventTable->isRowHidden(1));
+    QCOMPARE(window.m_eventTable->rowCount(), 2); QCOMPARE(window.m_canvas->events().size(), 2);
+    QCOMPARE(window.m_eventTable->item(0, 4)->text(), QStringLiteral("-7999.500"));
+    search->setText(QStringLiteral("нет совпадений"));
+    QVERIFY(window.findChild<QLabel *>(QStringLiteral("eventSearchEmpty"))->isVisible());
+    QTest::keyClick(search, Qt::Key_Escape);
+    QVERIFY(search->text().isEmpty());
+    QVERIFY(!window.m_eventTable->isRowHidden(1));
+    QVERIFY(!window.findChild<QLabel *>(QStringLiteral("eventSearchEmpty"))->isVisible());
 }
 
 void OperatorGuiTest::connectionEssentialsAreVisible() {

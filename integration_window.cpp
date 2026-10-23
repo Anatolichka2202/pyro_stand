@@ -12,9 +12,11 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QLineEdit>
+#include <QKeyEvent>
 #include <QSerialPortInfo>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHeaderView>
@@ -339,7 +341,7 @@ void IntegrationWindow::setupUi() {
             QMessageBox::warning(this, QStringLiteral("Наблюдения"), error);
             return;
         }
-        // An external overlay never changes the live plan, mapping or Debug state.
+        // Внешняя переоценка не меняет текущий план, карту или состояние Debug.
         launchCyclogramEditor(path, true);
     });
     overlayAction->setObjectName(QStringLiteral("measurementOverlayEditorAction"));
@@ -432,6 +434,7 @@ void IntegrationWindow::setupUi() {
     });
     m_canvas = new EventCanvas(surface);
     auto *workspace=new QSplitter(Qt::Horizontal,surface);
+    m_workspace = workspace;
     workspace->setObjectName("measurementWorkspace");workspace->setChildrenCollapsible(false);
     auto *detailsPanel = new QWidget(workspace);
     auto *detailsLayout = new QVBoxLayout(detailsPanel);
@@ -448,6 +451,9 @@ void IntegrationWindow::setupUi() {
     connect(rawTicks, &QCheckBox::toggled, m_canvas, &EventCanvas::setShowRawTicks);
     detailTools->addWidget(rawTicks);
     detailsLayout->addLayout(detailTools);
+    auto *detailsCaption = new QLabel(QStringLiteral("ПОКАНАЛЬНЫЙ ОБЗОР · выберите событие справа"), detailsPanel);
+    detailsCaption->setStyleSheet(QStringLiteral("color:#8b949e;font-size:11px;"));
+    detailsLayout->insertWidget(0, detailsCaption);
     auto *diagram=new QScrollArea(detailsPanel);
     diagram->setObjectName(QStringLiteral("channelDetailsScroll"));
     detailsLayout->addWidget(diagram, 1);
@@ -461,15 +467,8 @@ void IntegrationWindow::setupUi() {
     connect(detailScope, &QComboBox::currentIndexChanged, this, [this](int index) {
         m_canvas->setSelectedOnly(index == 1);
     });
-    connect(m_eventTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
-        if (row < 0 || !m_eventTable->item(row, 0)) return;
-        QString key = m_eventTable->item(row, 0)->data(Qt::UserRole).toString();
-        // Подстрока входа относится к ближайшему заголовку группы выше неё.
-        while (key.isEmpty() && row > 0) {
-            const auto *parent = m_eventTable->item(--row, 0);
-            if (parent) key = parent->data(Qt::UserRole).toString();
-        }
-        m_canvas->setSelectedEvent(key);
+    connect(m_eventTable, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) {
+        updateEventSelection(true);
     });
     m_eventTable->setHorizontalHeaderLabels(
         {"#", QStringLiteral("СОБЫТИЕ"), QStringLiteral("КАНАЛЫ"), QStringLiteral("ПЛАН МС"),
@@ -490,16 +489,83 @@ void IntegrationWindow::setupUi() {
     m_eventTable->setStyleSheet("QTableWidget{background:#10161c;color:#e8edf1;gridline-color:#35434f;} "
         "QTableWidget::item{background:#10161c;} QTableWidget::item:selected{background:#1c2d3a;} "
         "QHeaderView::section{background:#19222b;color:#a6b3be;padding:6px 4px;font-size:11px;border:0;border-bottom:1px solid #35434f;}");
-    workspace->addWidget(m_eventTable);workspace->setStretchFactor(0,6);workspace->setStretchFactor(1,4);
+    auto *eventPanel = new QWidget(workspace);
+    auto *eventLayout = new QVBoxLayout(eventPanel);
+    eventLayout->setContentsMargins(0, 0, 0, 0);
+    auto *eventTools = new QHBoxLayout;
+    m_eventCount = new QLabel(eventPanel);
+    m_eventCount->setObjectName(QStringLiteral("controlledEventsCount"));
+    m_eventCount->setToolTip(QStringLiteral("События с назначенными входами. Все пункты циклограммы доступны через «Ещё → Полный план»."));
+    eventTools->addWidget(m_eventCount, 1);
+    m_expandEventButton = new QPushButton(QStringLiteral("Показать входы"), eventPanel);
+    m_expandEventButton->setObjectName(QStringLiteral("toggleEventInputsBtn"));
+    m_expandEventButton->setToolTip(QStringLiteral("Входы выбранного события. Также доступны двойной щелчок и Enter."));
+    m_expandEventButton->setEnabled(false);
+    eventTools->addWidget(m_expandEventButton);
+    eventLayout->addLayout(eventTools);
+    m_eventSearch = new QLineEdit(eventPanel);
+    m_eventSearch->setObjectName(QStringLiteral("eventSearch"));
+    m_eventSearch->setPlaceholderText(QStringLiteral("Найти событие, источник или план…"));
+    m_eventSearch->setAccessibleName(QStringLiteral("Поиск в списке событий"));
+    m_eventSearch->setClearButtonEnabled(true);
+    m_eventSearch->setToolTip(QStringLiteral("Ctrl+F — поиск по названию, источнику или плану. Esc — очистить запрос."));
+    auto *findEvent = new QShortcut(QKeySequence::Find, this);
+    connect(findEvent, &QShortcut::activated, this, [this] {
+        if (m_workspace->isVisible()) { m_eventSearch->setFocus(); m_eventSearch->selectAll(); }
+    });
+    auto *clearSearch = new QShortcut(QKeySequence(Qt::Key_Escape), m_eventSearch);
+    clearSearch->setContext(Qt::WidgetShortcut);
+    connect(clearSearch, &QShortcut::activated, m_eventSearch, &QLineEdit::clear);
+    eventLayout->addWidget(m_eventSearch);
+    m_eventSearchEmpty = new QLabel(QStringLiteral("Совпадений нет. Измените запрос или очистите поиск."), eventPanel);
+    m_eventSearchEmpty->setObjectName(QStringLiteral("eventSearchEmpty"));
+    m_eventSearchEmpty->setWordWrap(true);
+    m_eventSearchEmpty->hide();
+    eventLayout->addWidget(m_eventSearchEmpty);
+    eventLayout->addWidget(m_eventTable, 1);
+    connect(m_eventSearch, &QLineEdit::textChanged, this, &IntegrationWindow::applyEventFilter);
+    workspace->addWidget(eventPanel);workspace->setStretchFactor(0,6);workspace->setStretchFactor(1,4);
     workspace->setSizes({650,460});main->addWidget(workspace,1);
     const auto toggleEvent = [this](int row,int){
+        if (row < 0 || !m_eventTable->item(row, 0)) return;
         const auto key=m_eventTable->item(row,0)->data(Qt::UserRole).toString();
         if(key.isEmpty()) return;
+        m_eventTable->setCurrentCell(row, 1);
         if(m_expandedEvents.contains(key)) m_expandedEvents.remove(key);else m_expandedEvents.insert(key);
         refreshEventTable();
     };
-    connect(m_eventTable, &QTableWidget::cellClicked, this, toggleEvent);
-    connect(m_eventTable, &QTableWidget::cellActivated, this, toggleEvent);
+    connect(m_eventTable, &QTableWidget::cellDoubleClicked, this, toggleEvent);
+    // activated зависит от платформы и может означать одиночный щелчок.
+    // Клавиатурное раскрытие задаём явно, отдельно от выбора строки.
+    m_eventTable->installEventFilter(this);
+    connect(m_expandEventButton, &QPushButton::clicked, this, [this, toggleEvent] {
+        toggleEvent(selectedGroupRow(), 0);
+    });
+    m_emptyWorkspace = new QFrame(surface);
+    m_emptyWorkspace->setObjectName(QStringLiteral("emptyWorkspace"));
+    m_emptyWorkspace->setStyleSheet(QStringLiteral("QFrame#emptyWorkspace{background:#10161c;border:0;}"));
+    auto *emptyLayout = new QVBoxLayout(m_emptyWorkspace);
+    emptyLayout->setContentsMargins(30, 25, 30, 25);
+    emptyLayout->addStretch();
+    auto *emptyTitle = new QLabel(QStringLiteral("Готов к отладке входов"), m_emptyWorkspace);
+    emptyTitle->setStyleSheet(QStringLiteral("font-size:20px;color:#e6edf3;"));
+    emptyLayout->addWidget(emptyTitle);
+    m_emptyWorkspaceHint = new QLabel(m_emptyWorkspace);
+    m_emptyWorkspaceHint->setObjectName(QStringLiteral("emptyWorkspaceHint"));
+    m_emptyWorkspaceHint->setWordWrap(true);
+    emptyLayout->addWidget(m_emptyWorkspaceHint);
+    auto *emptyActions = new QHBoxLayout;
+    for (const auto &entry : {qMakePair(QStringLiteral("Подключить приборы…"), map),
+                              qMakePair(QStringLiteral("Свободная запись без ПЗ…"), free)}) {
+        auto *button = new QPushButton(entry.first, m_emptyWorkspace);
+        button->setObjectName(entry.second == map ? QStringLiteral("emptyConnectBtn") : QStringLiteral("emptyFreeRecordingBtn"));
+        connect(button, &QPushButton::clicked, entry.second, &QPushButton::click);
+        emptyActions->addWidget(button);
+    }
+    emptyActions->addStretch();
+    emptyLayout->addLayout(emptyActions);
+    emptyLayout->addStretch();
+    main->addWidget(m_emptyWorkspace, 1);
     connect(m_timeline, &TimelineWidget::eventSelected, this, [this](int id) {
         for (int row = 0; row < m_eventTable->rowCount(); ++row) {
             const auto *item = m_eventTable->item(row, 0);
@@ -527,6 +593,7 @@ void IntegrationWindow::setupUi() {
                                   "подтверждения допуска · плавные часы: индикация ПК"),
                    surface);
     note->setStyleSheet("font-size:11px;color:#a6b3be");
+    note->setObjectName(QStringLiteral("measurementUnitsHint"));
     main->addWidget(note);
     auto *journal = new QDialog(this);
     journal->setWindowTitle(QStringLiteral("Журнал сессии"));
@@ -1729,6 +1796,9 @@ void IntegrationWindow::refresh() {
     const bool secondOnly = legacy && m_session.options().secondLegacySerialPort.isEmpty() && m_session.options().legacySecondStage;
     m_resetButton->setText(QStringLiteral("Новый сбор"));
     const bool hasPlan = m_session.hasPlan();
+    findChild<QWidget *>(QStringLiteral("timePanel"))->setVisible(hasPlan);
+    findChild<QWidget *>(QStringLiteral("measurementUnitsHint"))->setVisible(hasPlan);
+    m_summaryLabel->setVisible(hasPlan);
     const bool eligible = m_session.measurementEligible();
     const bool dualLegacy = legacy && !m_session.options().secondLegacySerialPort.isEmpty();
     const bool firstKp = legacy ? m_session.legacyStreamKpObserved(0)
@@ -1865,6 +1935,10 @@ void IntegrationWindow::refresh() {
     if (!m_session.mapping().warnings.isEmpty())
         m_mappingStatus->setText(m_mappingStatus->text() + QStringLiteral(" · КАРТА ТРЕБУЕТ ПРОВЕРКИ"));
     m_mappingStatus->setToolTip(m_session.mapping().warnings.join('\n'));
+    if (!hasPlan)
+        m_mappingStatus->setText(connection.boardTransport == IntegrationSession::BoardTransport::Udp
+            ? QStringLiteral("Измеритель: Ethernet %1 · UDP %2").arg(connection.boardIp.toString()).arg(connection.telemetryPort)
+            : QStringLiteral("Измеритель: %1 · 115200, 8N1").arg(connection.serialPort));
     m_clockStatus->setText(QStringLiteral(
         "UTC БЦВМ при загрузке: %1 · синхронизация с платой не подтверждена")
         .arg(m_session.bcvmUtc().isEmpty()
@@ -1878,6 +1952,10 @@ void IntegrationWindow::refresh() {
         m_loggedStates.clear();
         m_timelineSignature.clear();
         m_eventLog->clear();
+        m_expandedEvents.clear();
+        m_eventTable->setCurrentCell(-1, -1);
+        m_eventTable->clearSelection();
+        m_selectedPlanEvent->hide();
     }
 
     // Полный план содержит отдельную строку для каждого вхождения команды.
@@ -1938,6 +2016,7 @@ void IntegrationWindow::refresh() {
 }
 
 void IntegrationWindow::refreshEventTable() {
+    const QSignalBlocker selectionGuard(m_eventTable);
     const auto &groups=m_canvas->events();
     int count=0;
     for(const auto &group:groups) count+=1+(group.channels.size()>1?group.channels.size():0);
@@ -1958,7 +2037,7 @@ void IntegrationWindow::refreshEventTable() {
         cell(m_eventTable,row,4,group.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,5,group.delta,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,6,group.status,group.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
-        m_eventTable->resizeRowToContents(row);m_eventTable->setRowHidden(row,false);++row;
+        m_eventTable->resizeRowToContents(row);++row;
         if(group.channels.size()>1) for(const auto &channel:group.channels) {
             cell(m_eventTable,row,0,QString());m_eventTable->item(row,0)->setData(Qt::UserRole,QString());
             cell(m_eventTable,row,1,QStringLiteral("   ↳ ")+channel.input,kDim);
@@ -1966,7 +2045,7 @@ void IntegrationWindow::refreshEventTable() {
             cell(m_eventTable,row,4,channel.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,5,channel.delta,channel.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,6,channel.status,channel.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
-            m_eventTable->setRowHeight(row,30);m_eventTable->setRowHidden(row,!expanded);++row;
+            m_eventTable->setRowHeight(row,30);++row;
         }
         const QString state=group.status+u'|'+group.actual+u'|'+group.delta;
         if(m_loggedStates.value(key)!=state) {
@@ -1984,4 +2063,78 @@ void IntegrationWindow::refreshEventTable() {
         if(timelineStates.value(id)!="fail") timelineStates.insert(id,status);
     }
     for(auto it=timelineStates.cbegin();it!=timelineStates.cend();++it) m_timeline->markEventFired(it.key(),it.value());
+    applyEventFilter();
+    const bool empty = !m_session.hasPlan() || groups.isEmpty();
+    m_workspace->setVisible(!empty);
+    m_emptyWorkspace->setVisible(empty);
+    m_emptyWorkspaceHint->setText(m_session.hasPlan()
+        ? QStringLiteral("План получен, но контролируемые входы не назначены. Проверьте ## в циклограмме или профиль сигналов в подключении.\nДля исследования отдельных цепей доступна свободная запись без ПЗ и КАСУПП.")
+        : QStringLiteral("Выберите приборы и проверьте поток в «Живых каналах».\nДля контроля циклограммы загрузите ПЗ через КАСУПП. Для регистрации отдельных цепей используйте свободную запись без ПЗ и КАСУПП."));
+}
+
+int IntegrationWindow::selectedGroupRow() const {
+    int row = m_eventTable->currentRow();
+    while (row >= 0) {
+        const auto *item = m_eventTable->item(row, 0);
+        if (item && !item->data(Qt::UserRole).toString().isEmpty()) return row;
+        --row;
+    }
+    return -1;
+}
+
+bool IntegrationWindow::eventFilter(QObject *object, QEvent *event) {
+    if (object == m_eventTable && event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) &&
+            (key->modifiers() == Qt::NoModifier || key->modifiers() == Qt::KeypadModifier)) {
+            if (!key->isAutoRepeat()) m_expandEventButton->click();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(object, event);
+}
+
+void IntegrationWindow::updateEventSelection(bool scrollToEvent) {
+    const int row = selectedGroupRow();
+    if (row >= 0) m_selectedPlanEvent->hide();
+    const QString key = row < 0 ? QString() : m_eventTable->item(row, 0)->data(Qt::UserRole).toString();
+    m_canvas->setSelectedEvent(key);
+    if (m_expandEventButton) {
+        const auto &groups = m_canvas->events();
+        const auto group = std::find_if(groups.cbegin(), groups.cend(), [&](const CanvasEvent &event) {
+            return event.source + u'/' + event.id == key;
+        });
+        m_expandEventButton->setEnabled(group != groups.cend() && group->channels.size() > 1);
+        m_expandEventButton->setText(m_expandedEvents.contains(key) ? QStringLiteral("Скрыть входы") : QStringLiteral("Показать входы"));
+    }
+    if (scrollToEvent) {
+        auto *scroll = findChild<QScrollArea *>(QStringLiteral("channelDetailsScroll"));
+        const auto rectangle = m_canvas->selectedEventRect();
+        if (scroll && rectangle.isValid()) scroll->ensureVisible(rectangle.left() + 30, rectangle.top() + 12, 20, 20);
+    }
+}
+
+void IntegrationWindow::applyEventFilter() {
+    if (!m_eventSearch) return;
+    const QString query = m_eventSearch->text().trimmed();
+    int row = 0, shown = 0;
+    const auto &groups = m_canvas->events();
+    for (const auto &group : groups) {
+        const QString key = group.source + u'/' + group.id;
+        const bool match = (group.title + u' ' + group.source + u' ' + group.plan + u' ' + group.id)
+            .contains(query, Qt::CaseInsensitive);
+        if (match) ++shown;
+        m_eventTable->setRowHidden(row++, !match);
+        if (group.channels.size() > 1)
+            for (int i = 0; i < group.channels.size(); ++i)
+                m_eventTable->setRowHidden(row++, !match || !m_expandedEvents.contains(key));
+    }
+    if (m_eventTable->currentRow() >= 0 && m_eventTable->isRowHidden(m_eventTable->currentRow())) {
+        m_eventTable->setCurrentCell(-1, -1);
+        m_eventTable->clearSelection();
+    }
+    m_eventCount->setText(query.isEmpty() ? QStringLiteral("Событий на контроле: %1").arg(groups.size())
+        : QStringLiteral("Найдено: %1 / %2").arg(shown).arg(groups.size()));
+    m_eventSearchEmpty->setVisible(!query.isEmpty() && shown == 0);
+    updateEventSelection();
 }

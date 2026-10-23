@@ -15,7 +15,7 @@ void EventCanvas::setEvents(QVector<CanvasEvent> e) {
 void EventCanvas::setSelectedEvent(const QString &key) {
     if (m_selectedKey == key) return;
     m_selectedKey = key;
-    if (m_selectedOnly) updatePresentation();
+    updatePresentation();
 }
 void EventCanvas::setSelectedOnly(bool selectedOnly) {
     if (m_selectedOnly == selectedOnly) return;
@@ -44,7 +44,8 @@ void EventCanvas::updatePresentation() {
             text << r.input + " " + r.role + " " + r.rawTick + " " + r.actual + " " + r.delta +
                         " " + r.status;
     }
-    setAccessibleDescription(text.join("; "));
+    setAccessibleDescription((m_selectedKey.isEmpty() ? QString()
+        : QStringLiteral("Выбрано: %1; ").arg(m_selectedKey)) + text.join("; "));
     int contentHeight=24;
     for(const auto &group:m_visibleEvents) contentHeight+=groupHeight(group)+8;
     setMinimumHeight(std::max(220,contentHeight));
@@ -141,6 +142,22 @@ bool EventCanvas::fits() const {
     }
     return true;
 }
+QRect EventCanvas::selectedEventRect() const {
+    const int columns = columnCount(), gap = 14;
+    const int columnWidth = (width() - (columns - 1) * gap) / columns;
+    const auto boundaries = breaks(columns);
+    for (int column = 0; column + 1 < boundaries.size(); ++column) {
+        int y = 24;
+        for (int i = boundaries[column]; i < boundaries[column + 1]; ++i) {
+            const auto &group = m_visibleEvents[i];
+            const int height = groupHeight(group);
+            if (group.source + u'/' + group.id == m_selectedKey)
+                return {column * (columnWidth + gap), y, columnWidth, height};
+            y += height + 8;
+        }
+    }
+    return {};
+}
 void EventCanvas::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.fillRect(rect(), QColor("#10161c"));
@@ -154,11 +171,12 @@ void EventCanvas::paintEvent(QPaintEvent *) {
         int y = 24, x = c * (cw + gap);
         for (int i = b[c]; i < b[c + 1]; i++) {
             const auto &g = m_visibleEvents[i];
+            const bool selected = g.source + u'/' + g.id == m_selectedKey;
             const int h = groupHeight(g);
-            p.fillRect(QRect(x, y, cw, 24), QColor("#19222b"));
+            p.fillRect(QRect(x, y, cw, 24), QColor(selected ? "#203d52" : "#19222b"));
             p.setPen(QColor("#81b6d0"));
             p.drawText(QRect(x + 6, y, cw - 150, 24), Qt::AlignVCenter,
-                       p.fontMetrics().elidedText(g.id+"  "+g.title,Qt::ElideRight,cw-155));
+                       p.fontMetrics().elidedText((selected ? QStringLiteral("> ") : QString())+g.id+"  "+g.title,Qt::ElideRight,cw-155));
             p.setPen(QColor("#e8edf1"));
             p.drawText(QRect(x + cw - 145, y, 139, 24), Qt::AlignRight | Qt::AlignVCenter, g.plan);
             // Сначала выделяем место числам, оставшуюся ширину отдаём названию сигнала.
@@ -193,7 +211,7 @@ void EventCanvas::paintEvent(QPaintEvent *) {
                 rowY += 24;
             }
             p.setFont(f);
-            p.setPen(QColor("#35434f"));
+            p.setPen(QColor(selected ? "#58a6ff" : "#35434f"));
             p.drawRect(x, y, cw - 1, h);
             y += h + 8;
         }

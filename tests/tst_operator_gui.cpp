@@ -28,6 +28,8 @@
 #include <QTemporaryDir>
 #include <QFileDialog>
 #include <QFile>
+#include <QSettings>
+#include <QScopeGuard>
 #include <QtEndian>
 
 namespace {
@@ -49,11 +51,15 @@ void acceptSaveDialog(const QString &path, QObject *context) {
 
 class OperatorGuiTest : public QObject {
     Q_OBJECT
+    QTemporaryDir m_settingsDir;
 private slots:
     void freeRegistrationRetainsRejectedFrames();
     void freeRegistrationWithoutPlan();
     void startupAndLiveKpCalculation();
     void initTestCase(){
+      QVERIFY(m_settingsDir.isValid());
+      QSettings::setDefaultFormat(QSettings::IniFormat);
+      QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settingsDir.path());
 #ifdef Q_OS_WIN
       QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf");
       QFontDatabase::addApplicationFont("C:/Windows/Fonts/consola.ttf");
@@ -69,6 +75,23 @@ private slots:
     void historicalPresetClearsExternalProfiles();
     void invalidIpShowsSpecificError_data();
     void invalidIpShowsSpecificError();
+    void connectionEssentialsAreVisible();
+    void unchangedConnectionKeepsCollection();
+    void unchangedConnectionKeepsCollection_data();
+    void connectionReloadsChangedProfile_data();
+    void connectionReloadsChangedProfile();
+    void connectionRejectsIncompatibleProfile();
+    void connectionRechecksProfileAfterConfirmation_data();
+    void connectionRechecksProfileAfterConfirmation();
+    void twoOldTestersHaveUnambiguousBlocks();
+    void connectionTransportFields_data();
+    void connectionTransportFields();
+    void connectionRejectsDuplicatePorts_data();
+    void connectionRejectsDuplicatePorts();
+    void connectionRequiresAdditionalPort();
+    void connectionChangeCanBeCancelled();
+    void connectionAppliesSingleYpsAndKeepsJournal();
+    void settingsRespectPortableFormat();
     void showsMappedEventsNotRawTesterChannels();
     void showsDualLegacyComStatuses();
     void fullPlanKeepsTableUsableAndHardwareClockStable();
@@ -1080,6 +1103,342 @@ void OperatorGuiTest::localPlanIsVisiblyUnconfirmed() {
     window.m_session.m_boardFrame.channels[7] = {true, false, 1000, 0};
     window.refresh(); QTest::qWait(20);
     QCOMPARE(window.size(), QSize(1100, 700));
+}
+
+void OperatorGuiTest::connectionEssentialsAreVisible() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool visible = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        if (!dialog) return;
+        auto *transport = dialog->findChild<QComboBox *>("testerTransportChoice");
+        auto *address = dialog->findChild<QLineEdit *>("testerBoardIp");
+        visible = transport && transport->isVisible() && address && address->isVisible();
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(visible);
+}
+
+void OperatorGuiTest::unchangedConnectionKeepsCollection_data() {
+    QTest::addColumn<bool>("dormantPort");
+    QTest::newRow("clean") << false;
+    QTest::newRow("saved-inactive-com") << true;
+}
+
+void OperatorGuiTest::unchangedConnectionKeepsCollection() {
+    QFETCH(bool, dormantPort);
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost; options.bindIp = QHostAddress::LocalHost;
+    if (dormantPort) options.secondLegacySerialPort = QStringLiteral("NONEXISTENT_DORMANT_COM");
+    IntegrationWindow window(options);
+    window.m_session.resetCollectionEvidence(false);
+    window.m_session.m_acceptedFrames = 1;
+    const auto id = window.m_session.collectionId();
+    bool accepted = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        if (!dialog) return;
+        QTimer::singleShot(0, dialog, [] {
+            if (auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+                confirmation->done(QMessageBox::Cancel);
+        });
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        accepted = !dialog->isVisible();
+        if (dialog->isVisible()) dialog->reject();
+    });
+    window.configureTester();
+    QCOMPARE(window.m_session.collectionId(), id);
+    QCOMPARE(window.m_session.options(), options);
+    QCOMPARE(window.m_session.acceptedFrames(), quint64(1));
+    QVERIFY(accepted);
+}
+
+void OperatorGuiTest::twoOldTestersHaveUnambiguousBlocks() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool correct = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        auto *transport = dialog->findChild<QComboBox *>("testerTransportChoice");
+        transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::LegacySerial)));
+        auto *block = dialog->findChild<QComboBox *>("primaryLegacyBlockChoice");
+        if (block) {
+            block->setCurrentIndex(block->findData(true));
+            dialog->findChild<QCheckBox *>("additionalTesterEnabled")->setChecked(true);
+            correct = !block->currentData().toBool() && !block->isEnabled();
+        }
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(correct);
+}
+
+void OperatorGuiTest::connectionReloadsChangedProfile_data() {
+    QTest::addColumn<bool>("peer");
+    QTest::newRow("main-profile") << false;
+    QTest::newRow("peer-profile") << true;
+}
+
+void OperatorGuiTest::connectionReloadsChangedProfile() {
+    QFETCH(bool, peer);
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    QFile file(dir.filePath(QStringLiteral("profile.json")));
+    const QByteArray original = R"({"version":"original","kp":{"yps":1,"channel":8},"actions":[]})";
+    QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(original), original.size()); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost; options.bindIp = QHostAddress::LocalHost;
+    if (peer) {
+        options.comparisonLegacyPort = QStringLiteral("NONEXISTENT_PROFILE_TEST_PORT");
+        options.comparisonWiringProfilePath = file.fileName();
+    } else options.wiringProfilePath = file.fileName();
+    IntegrationWindow window(options);
+    const auto *session = peer ? window.m_peer.get() : &window.m_session;
+    QVERIFY(session); QCOMPARE(session->mapping().version, QStringLiteral("original"));
+    const QByteArray changed = R"({"version":"changed","kp":{"yps":1,"channel":8},"actions":[]})";
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(changed), changed.size()); file.close();
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        if (dialog->isVisible()) dialog->reject();
+    });
+    window.configureTester();
+    session = peer ? window.m_peer.get() : &window.m_session;
+    QVERIFY(session); QCOMPARE(session->mapping().version, QStringLiteral("changed"));
+}
+
+void OperatorGuiTest::connectionRejectsIncompatibleProfile() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    QFile file(dir.filePath(QStringLiteral("profile.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"version":"bad-old-kp","kp":{"yps":2,"channel":8},"actions":[]})"); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool rejected = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        auto *transport = dialog->findChild<QComboBox *>("testerTransportChoice");
+        transport->setCurrentIndex(transport->findData(int(IntegrationSession::BoardTransport::LegacySerial)));
+        dialog->findChild<QComboBox *>("testerSerialPort")->setCurrentText(QStringLiteral("NONEXISTENT_KP_TEST_PORT"));
+        dialog->findChild<QLineEdit *>("primaryWiringProfile")->setText(file.fileName());
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        auto *error = dialog->findChild<QLabel *>("testerConfigurationError");
+        rejected = dialog->isVisible() && error->isVisible() && error->text().contains(QStringLiteral("КП старого тестера"));
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(rejected);
+    QCOMPARE(window.m_session.options(), options);
+}
+
+void OperatorGuiTest::connectionRechecksProfileAfterConfirmation_data() {
+    QTest::addColumn<bool>("removeFile");
+    QTest::newRow("edited-json") << false;
+    QTest::newRow("removed-json") << true;
+}
+
+void OperatorGuiTest::connectionRechecksProfileAfterConfirmation() {
+    QFETCH(bool, removeFile);
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    QFile file(dir.filePath(QStringLiteral("profile.json")));
+    const QByteArray original = R"({"version":"original","kp":{"yps":1,"channel":8},"actions":[]})";
+    QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(original), original.size()); file.close();
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    options.wiringProfilePath = file.fileName();
+    IntegrationWindow window(options);
+    window.m_session.m_acceptedFrames = 1;
+    const auto id = window.m_session.collectionId();
+    bool changed = false, rejected = false;
+    QString diagnostic;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        dialog->findChild<QLineEdit *>("testerBoardIp")->setText(QStringLiteral("127.0.0.2"));
+        QTimer::singleShot(0, dialog, [&] {
+            auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!confirmation) return;
+            if (removeFile) changed = file.remove();
+            else if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                changed = file.write("broken-json") == 11; file.close();
+            }
+            confirmation->button(QMessageBox::Yes)->click();
+        });
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        auto *error = dialog->findChild<QLabel *>("testerConfigurationError");
+        rejected = dialog->isVisible() && error->isVisible() && error->text().contains(QStringLiteral("Профиль изменился"));
+        diagnostic = QStringLiteral("visible=%1 errorVisible=%2 text=%3")
+            .arg(dialog->isVisible()).arg(error->isVisible()).arg(error->text());
+        if (dialog->isVisible()) dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(changed); QVERIFY2(rejected, qPrintable(diagnostic));
+    QCOMPARE(window.m_session.options(), options);
+    QCOMPARE(window.m_session.collectionId(), id);
+    QCOMPARE(window.m_session.acceptedFrames(), quint64(1));
+    QCOMPARE(window.m_session.mapping().version, QStringLiteral("original"));
+}
+
+void OperatorGuiTest::connectionTransportFields_data() {
+    QTest::addColumn<int>("transport");
+    QTest::newRow("ethernet") << int(IntegrationSession::BoardTransport::Udp);
+    QTest::newRow("rs485") << int(IntegrationSession::BoardTransport::Serial);
+    QTest::newRow("old-com") << int(IntegrationSession::BoardTransport::LegacySerial);
+}
+
+void OperatorGuiTest::connectionTransportFields() {
+    QFETCH(int, transport);
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        QVERIFY(dialog);
+        const auto closeDialog = qScopeGuard([dialog] { dialog->reject(); });
+        auto *choice = dialog->findChild<QComboBox *>("testerTransportChoice");
+        auto *extra = dialog->findChild<QCheckBox *>("additionalTesterEnabled");
+        choice->setCurrentIndex(choice->findData(transport));
+        const bool udp = transport == int(IntegrationSession::BoardTransport::Udp);
+        const bool old = transport == int(IntegrationSession::BoardTransport::LegacySerial);
+        QCOMPARE(dialog->findChild<QLineEdit *>("testerBoardIp")->isVisible(), udp);
+        QCOMPARE(dialog->findChild<QComboBox *>("testerSerialPort")->isVisible(), !udp);
+        QCOMPARE(dialog->findChild<QComboBox *>("firstStageYpsChoice")->isVisible(), !old);
+        QVERIFY(!dialog->findChild<QComboBox *>("comparisonLegacyPortChoice")->isVisible());
+        extra->setChecked(true);
+        QCOMPARE(dialog->findChild<QComboBox *>("comparisonLegacyPortChoice")->isVisible(), !old);
+        QCOMPARE(dialog->findChild<QComboBox *>("secondLegacySerialPortChoice")->isVisible(), old);
+        QVERIFY(dialog->findChild<QLabel *>("independentClocksNote")->isVisible());
+        auto *port = dialog->findChild<QComboBox *>("testerSerialPort");
+        port->setCurrentText(QStringLiteral("NONEXISTENT_TEST_PORT"));
+        dialog->findChild<QPushButton *>("refreshSerialPortsBtn")->click();
+        QCOMPARE(port->currentText(), QStringLiteral("NONEXISTENT_TEST_PORT"));
+        auto *advanced = dialog->findChild<QCheckBox *>("advancedConnectionsToggle");
+        advanced->setChecked(true);
+        QTest::qWait(20);
+        QVERIFY(dialog->height() <= 650);
+        auto *scroll = dialog->findChild<QScrollArea *>("testerConfigurationScroll");
+        QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+        auto *buttons = dialog->findChild<QDialogButtonBox *>();
+        QVERIFY(buttons->isVisible());
+        QVERIFY(dialog->rect().contains(buttons->geometry()));
+        dialog->grab().save(QCoreApplication::applicationDirPath() +
+            QStringLiteral("/connection-%1.png").arg(transport));
+        dialog->reject();
+    });
+    window.configureTester();
+}
+
+void OperatorGuiTest::connectionRejectsDuplicatePorts_data() {
+    QTest::addColumn<int>("transport");
+    QTest::newRow("rs485-and-old") << int(IntegrationSession::BoardTransport::Serial);
+    QTest::newRow("two-old") << int(IntegrationSession::BoardTransport::LegacySerial);
+}
+
+void OperatorGuiTest::connectionRejectsDuplicatePorts() {
+    QFETCH(int, transport);
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool rejected = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        auto *choice = dialog->findChild<QComboBox *>("testerTransportChoice");
+        choice->setCurrentIndex(choice->findData(transport));
+        dialog->findChild<QComboBox *>("testerSerialPort")->setCurrentText(QStringLiteral("FAKE_COM"));
+        dialog->findChild<QCheckBox *>("additionalTesterEnabled")->setChecked(true);
+        const auto name = transport == int(IntegrationSession::BoardTransport::LegacySerial)
+            ? "secondLegacySerialPortChoice" : "comparisonLegacyPortChoice";
+        dialog->findChild<QComboBox *>(name)->setCurrentText(QStringLiteral("fake_com"));
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        const auto *error = dialog->findChild<QLabel *>("testerConfigurationError");
+        rejected = dialog->isVisible() && error->isVisible() && error->text().contains(QStringLiteral("один COM-порт"), Qt::CaseInsensitive);
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(rejected);
+    QCOMPARE(window.m_session.options(), options);
+}
+
+void OperatorGuiTest::connectionRequiresAdditionalPort() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    bool rejected = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        dialog->findChild<QCheckBox *>("additionalTesterEnabled")->setChecked(true);
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        const auto *error = dialog->findChild<QLabel *>("testerConfigurationError");
+        rejected = dialog->isVisible() && error->isVisible() && error->text().contains(QStringLiteral("второго прибора"));
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(rejected);
+}
+
+void OperatorGuiTest::connectionChangeCanBeCancelled() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    window.m_session.resetCollectionEvidence(false);
+    window.m_session.m_acceptedFrames = 1;
+    const auto id = window.m_session.collectionId();
+    bool warned = false, stayedOpen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        dialog->findChild<QLineEdit *>("testerBoardIp")->setText(QStringLiteral("127.0.0.2"));
+        QTimer::singleShot(0, dialog, [&] {
+            auto *confirmation = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!confirmation) return;
+            warned = confirmation->defaultButton() == confirmation->button(QMessageBox::Cancel);
+            confirmation->done(QMessageBox::Cancel);
+        });
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        stayedOpen = dialog->isVisible();
+        dialog->reject();
+    });
+    window.configureTester();
+    QVERIFY(warned); QVERIFY(stayedOpen);
+    QCOMPARE(window.m_session.collectionId(), id);
+    QCOMPARE(window.m_session.acceptedFrames(), quint64(1));
+    QCOMPARE(window.m_session.options(), options);
+}
+
+void OperatorGuiTest::connectionAppliesSingleYpsAndKeepsJournal() {
+    IntegrationSession::Options options;
+    options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost; options.bindIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options);
+    window.appendMessage(QStringLiteral("Проверка сохранения журнала"));
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("testerConfigurationDialog");
+        auto *first = dialog->findChild<QComboBox *>("firstStageYpsChoice");
+        auto *kp = dialog->findChild<QComboBox *>("kpYpsChoice");
+        first->setCurrentIndex(first->findData(8)); kp->setCurrentIndex(kp->findData(8));
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+    });
+    window.configureTester();
+    QCOMPARE(window.m_session.options().firstStageYps, 8);
+    QCOMPARE(window.m_session.options().secondStageYps, 0);
+    QCOMPARE(window.m_session.options().kpYps, 8);
+    QVERIFY(window.m_eventLog->toPlainText().contains(QStringLiteral("Проверка сохранения журнала")));
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    QCOMPARE(settings.value(QStringLiteral("tester/firstYps")).toInt(), 8);
+    QCOMPARE(settings.value(QStringLiteral("tester/secondYps")).toInt(), 0);
+}
+
+void OperatorGuiTest::settingsRespectPortableFormat() {
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    QVERIFY2(settings.fileName().startsWith(m_settingsDir.path()), qPrintable(settings.fileName()));
 }
 
 void OperatorGuiTest::localPeerRejectsChangedFile() {

@@ -53,7 +53,8 @@ int main(int argc, char *argv[])
     parser.process(a);
 
     IntegrationSession::Options options;
-    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
     options.wiringProfilePath = parser.isSet("wiring-profile") ? parser.value("wiring-profile")
         : settings.value(QStringLiteral("tester/wiringProfile")).toString();
     options.comparisonWiringProfilePath = parser.isSet("compare-wiring-profile") ? parser.value("compare-wiring-profile")

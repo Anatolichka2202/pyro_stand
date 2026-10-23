@@ -14,10 +14,12 @@
 #include <QLineEdit>
 #include <QSerialPortInfo>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHeaderView>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
@@ -26,12 +28,14 @@
 #include <QSizePolicy>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScreen>
 #include <QSplitter>
 #include <QToolButton>
 #include <QMenu>
 #include <QTextDocument>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QProcess>
 #include <QStyle>
 #include <QStyledItemDelegate>
@@ -648,7 +652,8 @@ void IntegrationWindow::setupUi() {
 void IntegrationWindow::launchCyclogramEditor(const QString &documentPath, bool measurementReport) {
     // Редактор является внешней программой. Эта операция не выбирает локальное
     // ПЗ для исполнения и никак не меняет состояние сбора или обмена с БЦВМ.
-    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
     QString executable = settings.value(QStringLiteral("editor/executable")).toString();
     const auto executableExists = [](const QString &path) {
         const QFileInfo file(path);
@@ -1269,30 +1274,81 @@ void IntegrationWindow::updatePlannedClock() {
 void IntegrationWindow::configureTester() {
     QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("testerConfigurationDialog"));
-    dialog.setWindowTitle(QStringLiteral("Подключение пиротестера и БКД"));
+    dialog.setWindowTitle(QStringLiteral("Подключение и разводка стенда"));
+    const auto available = screen()->availableGeometry().size();
+    dialog.resize((std::min)(680, available.width() - 60), (std::min)(650, available.height() - 80));
+    dialog.setFont(QFont(QStringLiteral("Segoe UI"), 10));
+    dialog.setStyleSheet(QStringLiteral(
+        "QWidget#testerConnectionsPage{background:#10161c;}"
+        "QGroupBox{color:#9fc7df;border:1px solid #34434e;border-radius:4px;"
+            "margin-top:12px;padding:12px 8px 8px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;}"
+        "QLabel,QCheckBox{color:#e6edf3;font-size:10pt;}"
+        "QLineEdit,QComboBox{min-height:24px;}"
+        "QPushButton{min-height:26px;}"
+        "QLineEdit:focus,QComboBox:focus,QPushButton:focus{border:1px solid #58a6ff;}"));
     auto *root = new QVBoxLayout(&dialog);
-    auto *preset = new QPushButton(QStringLiteral("Мой стенд: новая плата · ЯПС 8 — БКХО-А + КП · ЯПС 7 — БКХО-Б"), &dialog);
+    auto *currentStatus = new QLabel(&dialog);
+    currentStatus->setObjectName(QStringLiteral("testerCurrentConnectionStatus"));
+    currentStatus->setTextFormat(Qt::PlainText);
+    currentStatus->setWordWrap(true);
+    root->addWidget(currentStatus);
+    auto *scroll = new QScrollArea(&dialog);
+    scroll->setObjectName(QStringLiteral("testerConfigurationScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *page = new QWidget(scroll);
+    page->setObjectName(QStringLiteral("testerConnectionsPage"));
+    auto *content = new QVBoxLayout(page);
+    content->setContentsMargins(0, 0, 8, 0);
+    scroll->setWidget(page);
+    root->addWidget(scroll, 1);
+    auto *preset = new QPushButton(QStringLiteral("Стенд: ЯПС 8 + 7 · Ethernet"), page);
+    preset->setToolTip(QStringLiteral("Заполнить подключение одной новой платы: 192.168.17.144, ЯПС 8 — БКХО-А и КП, ЯПС 7 — БКХО-Б. Применение — отдельной кнопкой."));
     preset->setObjectName(QStringLiteral("historicalPresetBtn"));
     preset->setMinimumHeight(40);
-    root->addWidget(preset);
+    content->addWidget(preset);
+    auto *primaryGroup = new QGroupBox(QStringLiteral("1. Основной прибор"), page);
+    auto *primaryForm = new QFormLayout(primaryGroup);
+    primaryForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    primaryForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    content->addWidget(primaryGroup);
+    auto *mappingGroup = new QGroupBox(QStringLiteral("2. Разводка и физический КП"), page);
+    auto *mappingForm = new QFormLayout(mappingGroup);
+    mappingForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    mappingForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    content->addWidget(mappingGroup);
+    auto *mappingSource = new QLabel(mappingGroup);
+    mappingSource->setObjectName(QStringLiteral("connectionMappingSource"));
+    mappingSource->setWordWrap(true);
+    mappingSource->setTextFormat(Qt::PlainText);
+    auto *extraEnabled = new QCheckBox(QStringLiteral("Подключить второй прибор"), page);
+    extraEnabled->setObjectName(QStringLiteral("additionalTesterEnabled"));
+    content->addWidget(extraEnabled);
+    auto *extraGroup = new QGroupBox(QStringLiteral("Второй прибор · старый тестер"), page);
+    auto *extraForm = new QFormLayout(extraGroup);
+    extraForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    extraForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    content->addWidget(extraGroup);
     auto *summary = new QLabel(&dialog);
     summary->setObjectName(QStringLiteral("testerConfigurationSummary"));
     summary->setWordWrap(true);
-    summary->setMinimumWidth(530);
-    root->addWidget(summary);
-    auto *details = new QCheckBox(QStringLiteral("Другие подключения и профили"), &dialog);
+    summary->setTextFormat(Qt::PlainText);
+    summary->setStyleSheet(QStringLiteral("padding:8px;background:#18232c;"));
+    content->addWidget(summary);
+    auto *details = new QCheckBox(QStringLiteral("Внешние профили сигналов"), &dialog);
     details->setObjectName(QStringLiteral("advancedConnectionsToggle"));
     details->setStyleSheet(QStringLiteral("color:#a6b3be;font-size:12px;"));
-    root->addWidget(details);
+    content->addWidget(details);
     auto *advanced = new QWidget(&dialog);
     advanced->setObjectName(QStringLiteral("advancedConnections"));
     auto *layout = new QFormLayout(advanced);
+    layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
     layout->setContentsMargins(0, 0, 0, 0);
-    root->addWidget(advanced);
+    content->addWidget(advanced);
     advanced->hide();
     connect(details, &QCheckBox::toggled, &dialog, [&, advanced](bool visible) {
         advanced->setVisible(visible);
-        dialog.adjustSize();
     });
     auto options = m_session.options();
     const auto profileField = [&](const QString &title, const QString &path) {
@@ -1300,7 +1356,7 @@ void IntegrationWindow::configureTester() {
         auto *line = new QHBoxLayout(container);
         line->setContentsMargins(0, 0, 0, 0);
         auto *value = new QLineEdit(path, container);
-        value->setPlaceholderText(QStringLiteral("Пусто — встроенная историческая проводка"));
+        value->setPlaceholderText(QStringLiteral("Не выбран — карта ## из ПЗ или встроенная разводка"));
         auto *choose = new QPushButton(QStringLiteral("Выбрать…"), container);
         line->addWidget(value, 1); line->addWidget(choose);
         connect(choose, &QPushButton::clicked, &dialog, [&, value] {
@@ -1322,10 +1378,12 @@ void IntegrationWindow::configureTester() {
     transport->setCurrentIndex(transport->findData(int(options.boardTransport)));
     auto *port = new QComboBox(&dialog);
     port->setEditable(true);
+    port->setObjectName(QStringLiteral("testerSerialPort"));
     for (const auto &info : QSerialPortInfo::availablePorts()) port->addItem(info.portName());
     port->setCurrentText(options.serialPort);
     auto *secondPort = new QComboBox(&dialog);
     secondPort->setEditable(true);
+    secondPort->setObjectName(QStringLiteral("secondLegacySerialPortChoice"));
     secondPort->addItem(QStringLiteral(""));
     for (const auto &info : QSerialPortInfo::availablePorts()) secondPort->addItem(info.portName());
     secondPort->setCurrentText(options.secondLegacySerialPort);
@@ -1334,18 +1392,23 @@ void IntegrationWindow::configureTester() {
     for(const auto &info:QSerialPortInfo::availablePorts())comparison->addItem(info.portName());
     comparison->setCurrentText(options.comparisonLegacyPort);
     auto *comparisonBlock=new QComboBox(&dialog);comparisonBlock->addItem(QStringLiteral("БКД-А-1"),false);comparisonBlock->addItem(QStringLiteral("БКД-Б"),true);comparisonBlock->setCurrentIndex(options.comparisonLegacySecondStage?1:0);
-    layout->addRow(QStringLiteral("Одновременно старый COM (пусто = выключен)"),comparison);
-    layout->addRow(QStringLiteral("БКД старого COM · одна ЯПС"),comparisonBlock);
-    auto *comparisonKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старой платы"), &dialog);
+    extraForm->addRow(QStringLiteral("COM-порт"),comparison);
+    extraForm->addRow(QStringLiteral("Блок"),comparisonBlock);
+    auto *comparisonKp = new QCheckBox(QStringLiteral("КП на входе 8"), &dialog);
     comparisonKp->setChecked(options.comparisonLegacyHasKp);
-    layout->addRow(comparisonKp);
+    comparisonKp->setObjectName(QStringLiteral("comparisonLegacyKp"));
+    extraForm->addRow(comparisonKp);
     auto *legacyKp = new QCheckBox(QStringLiteral("КП подключён к каналу 8 старого COM"), &dialog);
     legacyKp->setChecked(options.legacyHasKp);
+    legacyKp->setObjectName(QStringLiteral("primaryLegacyKp"));
     auto *address = new QLineEdit(options.boardIp.toString(), &dialog);
     address->setObjectName(QStringLiteral("testerBoardIp"));
     auto *first = new QComboBox(&dialog);
     auto *second = new QComboBox(&dialog);
     auto *kp = new QComboBox(&dialog);
+    first->setObjectName(QStringLiteral("firstStageYpsChoice"));
+    second->setObjectName(QStringLiteral("secondStageYpsChoice"));
+    kp->setObjectName(QStringLiteral("kpYpsChoice"));
     for (auto *box : {first, second, kp}) {
         box->addItem(QStringLiteral("Не назначен"), 0);
         for (int yps = 1; yps <= 12; ++yps)
@@ -1355,18 +1418,44 @@ void IntegrationWindow::configureTester() {
     second->setCurrentIndex(second->findData(options.secondStageYps));
     kp->setCurrentIndex(kp->findData(options.kpYps));
     auto *block = new QComboBox(&dialog);
+    block->setObjectName(QStringLiteral("primaryLegacyBlockChoice"));
     block->addItem(QStringLiteral("БКД-А-1 (первая ступень)"), false);
     block->addItem(QStringLiteral("БКД-Б (вторая ступень)"), true);
     block->setCurrentIndex(options.legacySecondStage ? 1 : 0);
-    layout->addRow(QStringLiteral("Пиротестер"), transport);
-    layout->addRow(QStringLiteral("COM · 115200, 8N1"), port);
-    layout->addRow(QStringLiteral("IP новой платы"), address);
-    layout->addRow(QStringLiteral("БКД-А-1 · историческая проводка"), first);
-    layout->addRow(QStringLiteral("БКД-Б · историческая проводка"), second);
-    layout->addRow(QStringLiteral("КП · вход 8"), kp);
-    layout->addRow(QStringLiteral("БКД на старой плате"), block);
-    layout->addRow(QStringLiteral("Второй COM · БКД-Б (необязательно)"), secondPort);
-    layout->addRow(legacyKp);
+    primaryForm->addRow(QStringLiteral("Тип и интерфейс"), transport);
+    primaryForm->addRow(QStringLiteral("IP прибора"), address);
+    primaryForm->addRow(QStringLiteral("COM · 115200, 8N1"), port);
+    auto *refreshPorts = new QPushButton(QStringLiteral("Обновить список COM-портов"), &dialog);
+    refreshPorts->setObjectName(QStringLiteral("refreshSerialPortsBtn"));
+    primaryForm->addRow(refreshPorts);
+    connect(refreshPorts, &QPushButton::clicked, &dialog, [=] {
+        const auto available = QSerialPortInfo::availablePorts();
+        for (auto *choice : {port, secondPort, comparison}) {
+            const QString selected = choice->currentText();
+            const QSignalBlocker blocker(choice);
+            choice->clear(); choice->addItem(QString());
+            for (const auto &info : available) {
+                choice->addItem(info.portName());
+                choice->setItemData(choice->count() - 1, info.description(), Qt::ToolTipRole);
+            }
+            choice->setCurrentText(selected);
+        }
+    });
+    mappingForm->addRow(QStringLiteral("БКХО-А"), first);
+    mappingForm->addRow(QStringLiteral("БКХО-Б"), second);
+    mappingForm->addRow(QStringLiteral("КП · вход 8"), kp);
+    mappingForm->addRow(QStringLiteral("Контролируемый блок"), block);
+    mappingForm->addRow(legacyKp);
+    mappingForm->addRow(mappingSource);
+    extraForm->addRow(QStringLiteral("COM второго прибора · БКХО-Б"), secondPort);
+    auto *clockNote = new QLabel(extraGroup);
+    clockNote->setObjectName(QStringLiteral("independentClocksNote"));
+    clockNote->setWordWrap(true);
+    clockNote->setText(QStringLiteral("Два прибора имеют независимые счётчики. Общий физический КП нужно "
+        "зарегистрировать на каждом. Автоматическое сведение шкал пока не реализовано."));
+    extraForm->addRow(clockNote);
+    extraEnabled->setChecked(options.boardTransport == IntegrationSession::BoardTransport::LegacySerial
+        ? !options.secondLegacySerialPort.isEmpty() : !options.comparisonLegacyPort.isEmpty());
     connect(preset, &QPushButton::clicked, &dialog, [=] {
         profile->clear(); comparisonProfile->clear();
         address->setText(QStringLiteral("192.168.17.144"));
@@ -1374,45 +1463,79 @@ void IntegrationWindow::configureTester() {
         first->setCurrentIndex(first->findData(8)); second->setCurrentIndex(second->findData(7)); kp->setCurrentIndex(kp->findData(8));
         comparison->setCurrentText(QString()); comparisonBlock->setCurrentIndex(comparisonBlock->findData(true)); comparisonKp->setChecked(false);
         secondPort->setCurrentText(QString());
+        extraEnabled->setChecked(false);
     });
     auto *note = new QLabel(QStringLiteral(
-        "Выберите «Мой стенд» и нажмите «Применить». Настройка сохранится.\n"
-        "Циклограмму загружайте через КАСУПП — пиростенд получит её через Debug.\n"
-        "ЯПС 8 и ЯПС 7 принадлежат одной новой плате. Время обоих блоков\n"
-        "считается по её аппаратным отметкам относительно КП на ЯПС 8, вход 8."), &dialog);
+        "«Применить» сохраняет подключение и запускает приём; команд сброса плате не отправляет.\n"
+        "Для проверки без ПЗ и КАСУПП откройте «Свободная запись» на главном экране."), &dialog);
     note->setWordWrap(true);
-    root->addWidget(note);
-    const auto update = [=] {
+    content->addWidget(note);
+    content->addStretch();
+    // Скрываем и подпись, и поле; не оставляем ряды неактивных настроек.
+    const auto showRow = [](QFormLayout *form, QWidget *field, bool visible) {
+        field->setVisible(visible);
+        if (auto *label = form->labelForField(field)) label->setVisible(visible);
+    };
+    const auto update = [=, this] {
         const auto value = IntegrationSession::BoardTransport(transport->currentData().toInt());
         const bool legacy = value == IntegrationSession::BoardTransport::LegacySerial;
+        const bool udp = value == IntegrationSession::BoardTransport::Udp;
+        const bool annotated = std::any_of(m_session.plan().actions.cbegin(), m_session.plan().actions.cend(),
+            [](const PlannedAction &action) { return !action.wiring.isEmpty(); });
+        mappingSource->setText(!profile->text().trimmed().isEmpty()
+            ? QStringLiteral("Источник назначений: JSON-профиль. Поля ЯПС выше задают только резервную встроенную разводку.")
+            : annotated ? QStringLiteral("Источник назначений: ## из ПЗ. Поля ЯПС выше не переопределяют карту файла.")
+                        : QStringLiteral("Источник назначений: встроенная разводка выбранных блоков. Проверьте её соответствие проводам стенда."));
+        showRow(primaryForm, address, udp);
+        showRow(primaryForm, port, !udp);
+        refreshPorts->setVisible(!udp || extraEnabled->isChecked());
+        showRow(mappingForm, first, !legacy);
+        showRow(mappingForm, second, !legacy);
+        showRow(mappingForm, kp, !legacy);
+        showRow(mappingForm, block, legacy);
+        showRow(mappingForm, legacyKp, legacy);
+        extraGroup->setVisible(extraEnabled->isChecked());
+        showRow(extraForm, comparison, !legacy);
+        showRow(extraForm, comparisonBlock, !legacy);
+        showRow(extraForm, comparisonKp, !legacy);
+        showRow(extraForm, secondPort, legacy);
+        comparisonProfile->setEnabled(!legacy && extraEnabled->isChecked());
         comparison->setEnabled(!legacy);comparisonBlock->setEnabled(!legacy);comparisonKp->setEnabled(!legacy);legacyKp->setEnabled(legacy);
         port->setEnabled(value != IntegrationSession::BoardTransport::Udp);
-        address->setEnabled(!legacy);
+        address->setEnabled(udp);
         first->setEnabled(!legacy); second->setEnabled(!legacy); kp->setEnabled(!legacy);
-        block->setEnabled(legacy);
+        const bool dualLegacy = legacy && extraEnabled->isChecked();
+        if (dualLegacy && block->currentData().toBool()) block->setCurrentIndex(0);
+        block->setEnabled(legacy && !dualLegacy);
+        legacyKp->setText(dualLegacy ? QStringLiteral("КП на входе 8 обоих приборов")
+                                    : QStringLiteral("КП на входе 8"));
         secondPort->setEnabled(legacy);
         QString text;
         if (legacy) {
             text = QStringLiteral("Старый тестер: %1 → %2; %3")
                 .arg(port->currentText(), block->currentText(), legacyKp->isChecked()
                      ? QStringLiteral("КП на входе 8") : QStringLiteral("без КП"));
-            if (!secondPort->currentText().isEmpty())
+            if (extraEnabled->isChecked() && !secondPort->currentText().isEmpty())
                 text += QStringLiteral("\nВторой старый тестер: %1 → БКД-Б").arg(secondPort->currentText());
         } else {
-            text = QStringLiteral("Новая плата: %1 · IP %2 → БКХО-А, %3\nКП: %4, вход 8")
-                .arg(value == IntegrationSession::BoardTransport::Udp ? QStringLiteral("Ethernet") : QStringLiteral("RS-485"),
-                     address->text(), first->currentText(), kp->currentText());
+            text = QStringLiteral("Новая плата: %1 → БКХО-А, %2\n%3")
+                .arg(udp ? QStringLiteral("Ethernet · IP %1").arg(address->text())
+                         : QStringLiteral("RS-485 · %1").arg(port->currentText()),
+                     first->currentText(), kp->currentData().toInt() == 0
+                        ? QStringLiteral("КП не назначен — относительное время недоступно")
+                        : QStringLiteral("КП: %1, вход 8").arg(kp->currentText()));
             if (second->currentData().toInt() != 0)
                 text += QStringLiteral("\nБКХО-Б на новой плате: %1").arg(second->currentText());
-            if (!comparison->currentText().isEmpty())
+            if (extraEnabled->isChecked() && !comparison->currentText().isEmpty())
                 text += QStringLiteral("\nСтарый тестер: %1 → %2 · одна ЯПС · %3")
                     .arg(comparison->currentText(), comparisonBlock->currentText(), comparisonKp->isChecked()
                          ? QStringLiteral("КП на входе 8") : QStringLiteral("без КП"));
         }
-        if (!profile->text().isEmpty() || !comparisonProfile->text().isEmpty())
+        if (!profile->text().isEmpty() || (extraEnabled->isChecked() && !legacy && !comparisonProfile->text().isEmpty()))
             text += QStringLiteral("\nНазначения входов переопределены внешним профилем.");
         summary->setText(text);
     };
+    connect(extraEnabled, &QCheckBox::toggled, &dialog, update);
     for (auto *choice : {transport, port, secondPort, comparison, comparisonBlock, first, second, kp, block})
         connect(choice, &QComboBox::currentTextChanged, &dialog, update);
     for (auto *check : {comparisonKp, legacyKp})
@@ -1421,9 +1544,33 @@ void IntegrationWindow::configureTester() {
         connect(field, &QLineEdit::textChanged, &dialog, update);
     connect(preset, &QPushButton::clicked, &dialog, update);
     update();
+    const auto refreshStatus = [&] {
+        const auto &current = m_session.options();
+        const QString endpoint = current.boardTransport == IntegrationSession::BoardTransport::Udp
+            ? QStringLiteral("Ethernet %1 · UDP %2").arg(current.boardIp.toString()).arg(current.telemetryPort)
+            : QStringLiteral("%1 · 115200, 8N1").arg(current.serialPort);
+        QString text = QStringLiteral("Сейчас: %1 · %2\nПринято: %3 · ошибок кадров: %4%5")
+            .arg(endpoint, m_session.boardReceiving() ? QStringLiteral("данные поступают") : QStringLiteral("нет потока данных"))
+            .arg(m_session.acceptedFrames()).arg(m_session.rejectedFrames())
+            .arg(m_session.lastError().isEmpty() ? QString() : QStringLiteral("\n") + m_session.lastError());
+        if (current.boardTransport == IntegrationSession::BoardTransport::LegacySerial && !current.secondLegacySerialPort.isEmpty()) {
+            for (int stream = 0; stream < 2; ++stream)
+                text += QStringLiteral("\n%1: %2").arg(stream ? current.secondLegacySerialPort : current.serialPort,
+                    m_session.legacyStreamReceiving(stream) ? QStringLiteral("данные поступают") : QStringLiteral("нет потока данных"));
+        }
+        if (m_peer)
+            text += QStringLiteral("\nДополнительный %1: %2 · принято %3%4")
+                .arg(m_peer->options().serialPort, m_peer->boardReceiving() ? QStringLiteral("данные поступают") : QStringLiteral("нет потока данных"))
+                .arg(m_peer->acceptedFrames()).arg(m_peer->lastError().isEmpty() ? QString() : QStringLiteral(" · ") + m_peer->lastError());
+        currentStatus->setText(text);
+    };
+    QTimer statusTimer(&dialog);
+    connect(&statusTimer, &QTimer::timeout, &dialog, refreshStatus);
+    statusTimer.start(500); refreshStatus();
     auto *validationError = new QLabel(&dialog);
     validationError->setObjectName(QStringLiteral("testerConfigurationError"));
     validationError->setWordWrap(true);
+    validationError->setTextFormat(Qt::PlainText);
     validationError->setStyleSheet(QStringLiteral("color:#f85149;"));
     validationError->hide();
     root->addWidget(validationError);
@@ -1431,41 +1578,64 @@ void IntegrationWindow::configureTester() {
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Применить"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Отмена"));
     root->addWidget(buttons);
+    const QList<QWidget *> tabOrder = {preset, transport, address, port, refreshPorts,
+        first, second, kp, block, legacyKp, extraEnabled, comparison, comparisonBlock,
+        comparisonKp, secondPort, details, profile, profile->parentWidget()->findChild<QPushButton *>(),
+        comparisonProfile, comparisonProfile->parentWidget()->findChild<QPushButton *>(),
+        buttons->button(QDialogButtonBox::Ok), buttons->button(QDialogButtonBox::Cancel)};
+    for (int i = 1; i < tabOrder.size(); ++i) QWidget::setTabOrder(tabOrder[i - 1], tabOrder[i]);
+    bool profileContentsChanged = false;
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        options = m_session.options();
+        profileContentsChanged = false;
+        QHash<QLineEdit *, QByteArray> profileHashes;
         validationError->hide();
         const auto showError = [&](const QString &message, QWidget *field) {
             validationError->setText(message);
             validationError->show();
-            details->setChecked(true);
+            if (field == profile || field == comparisonProfile) details->setChecked(true);
+            scroll->ensureWidgetVisible(field);
             field->setFocus();
             if (auto *line = qobject_cast<QLineEdit *>(field)) line->selectAll();
-            dialog.adjustSize();
         };
         for (const auto *field : {profile, comparisonProfile}) {
+            if (field == comparisonProfile && (!extraEnabled->isChecked() ||
+                transport->currentData().toInt() == int(IntegrationSession::BoardTransport::LegacySerial))) continue;
             if (field->text().trimmed().isEmpty()) continue;
             QFile file(field->text().trimmed()); StandMapping parsed; QString error;
-            if (!file.open(QIODevice::ReadOnly) || !StandProtocol::parseMapping(file.readAll(), &parsed, &error)) {
+            QByteArray bytes;
+            if (file.open(QIODevice::ReadOnly)) bytes = file.readAll();
+            const bool legacyProfile = field == comparisonProfile || transport->currentData().toInt() ==
+                int(IntegrationSession::BoardTransport::LegacySerial);
+            if (!file.isOpen() || !StandProtocol::parseMapping(bytes, &parsed, &error) ||
+                !StandProtocol::validateMappingContext(parsed, m_session.plan(), legacyProfile, &error)) {
                 showError(QStringLiteral("Профиль сигналов: %1").arg(error.isEmpty() ? file.errorString() : error),
                           field == profile ? profile : comparisonProfile);
                 return;
             }
+            const auto *session = field == profile ? &m_session : m_peer.get();
+            const auto hash = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+            profileHashes.insert(field == profile ? profile : comparisonProfile, hash);
+            profileContentsChanged |= !session || session->wiringProfileSha256() != hash;
         }
         options.wiringProfilePath = profile->text().trimmed();
         options.comparisonWiringProfilePath = comparisonProfile->text().trimmed();
         options.boardTransport = IntegrationSession::BoardTransport(transport->currentData().toInt());
         options.serialPort = port->currentText().trimmed();
-        options.comparisonLegacyPort = options.boardTransport==IntegrationSession::BoardTransport::LegacySerial?QString():comparison->currentText().trimmed();
+        if (options.boardTransport != IntegrationSession::BoardTransport::LegacySerial)
+            options.comparisonLegacyPort = extraEnabled->isChecked() ? comparison->currentText().trimmed() : QString();
         options.comparisonLegacySecondStage=comparisonBlock->currentData().toBool();
         options.comparisonLegacyHasKp=comparisonKp->isChecked();
         options.legacyHasKp=legacyKp->isChecked();
-        options.secondLegacySerialPort = secondPort->currentText().trimmed();
+        if (options.boardTransport == IntegrationSession::BoardTransport::LegacySerial)
+            options.secondLegacySerialPort = extraEnabled->isChecked() ? secondPort->currentText().trimmed() : QString();
         options.firstStageYps = first->currentData().toInt();
         options.secondStageYps = second->currentData().toInt();
         options.kpYps = kp->currentData().toInt();
         options.legacySecondStage = block->currentData().toBool();
         const bool legacy = options.boardTransport == IntegrationSession::BoardTransport::LegacySerial;
-        if (!legacy && (!options.boardIp.setAddress(address->text().trimmed()) ||
+        if (options.boardTransport == IntegrationSession::BoardTransport::Udp && (!options.boardIp.setAddress(address->text().trimmed()) ||
                         options.boardIp.protocol() != QAbstractSocket::IPv4Protocol ||
                         address->text().trimmed().split(u'.').size() != 4)) {
             showError(QStringLiteral("Некорректный IP новой платы: «%1». Введите полный IPv4 без запятых, например 192.168.17.144.")
@@ -1474,6 +1644,11 @@ void IntegrationWindow::configureTester() {
         }
         if (options.boardTransport != IntegrationSession::BoardTransport::Udp && options.serialPort.isEmpty()) {
             showError(QStringLiteral("Не указан COM-порт основного тестера."), port);
+            return;
+        }
+        if (extraEnabled->isChecked() && (legacy ? options.secondLegacySerialPort : options.comparisonLegacyPort).isEmpty()) {
+            showError(QStringLiteral("Выберите COM-порт второго прибора или выключите «Подключить второй прибор»."),
+                      legacy ? secondPort : comparison);
             return;
         }
         if (!options.comparisonLegacyPort.isEmpty() && options.boardTransport == IntegrationSession::BoardTransport::Serial &&
@@ -1490,10 +1665,39 @@ void IntegrationWindow::configureTester() {
             showError(QStringLiteral("Первый и второй старый тестер используют один COM-порт. Укажите разные порты."), secondPort);
             return;
         }
+        if ((options != m_session.options() || profileContentsChanged) &&
+            (m_session.acceptedFrames() || m_session.rejectedFrames() ||
+             (m_peer && (m_peer->acceptedFrames() || m_peer->rejectedFrames())))) {
+            const auto planSha = m_session.plan().sha256;
+            const auto collectionId = m_session.collectionId();
+            const auto peerCollectionId = m_peer ? m_peer->collectionId() : QString();
+            if (QMessageBox::warning(&dialog, QStringLiteral("Изменить подключение?"),
+                QStringLiteral("Накопленные измерения будут очищены, приём перезапущен. "
+                    "Если нужен текущий результат, нажмите «Отмена» и сохраните «Отчёт» на главном экране. "
+                    "Продолжить без сохранения?"), QMessageBox::Yes | QMessageBox::Cancel,
+                    QMessageBox::Cancel) != QMessageBox::Yes) return;
+            if (planSha != m_session.plan().sha256 || collectionId != m_session.collectionId() ||
+                peerCollectionId != (m_peer ? m_peer->collectionId() : QString())) {
+                showError(QStringLiteral("Пока было открыто предупреждение, изменилось ПЗ или сбор. Проверьте настройки и нажмите «Применить» ещё раз."), transport);
+                return;
+            }
+            // Вложенный цикл модального окна допускает редактирование файла
+            // внешней программой. До очистки измерений сверяем проверенные байты.
+            for (auto it = profileHashes.cbegin(); it != profileHashes.cend(); ++it) {
+                QFile file(it.key()->text().trimmed());
+                if (!file.open(QIODevice::ReadOnly) ||
+                    QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256) != it.value()) {
+                    showError(QStringLiteral("Профиль изменился или недоступен. Измерения сохранены; проверьте файл и нажмите «Применить» ещё раз."), it.key());
+                    return;
+                }
+            }
+        }
         dialog.accept();
     });
     if (dialog.exec() != QDialog::Accepted) return;
-    QSettings settings(QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    if (options == m_session.options() && !profileContentsChanged) return;
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
     settings.setValue("tester/comparisonLegacyPort",options.comparisonLegacyPort);
     settings.setValue("tester/comparisonLegacySecondStage",options.comparisonLegacySecondStage);
     settings.setValue("tester/comparisonLegacyHasKp",options.comparisonLegacyHasKp);
@@ -1510,7 +1714,6 @@ void IntegrationWindow::configureTester() {
     settings.setValue(QStringLiteral("tester/comparisonWiringProfile"), options.comparisonWiringProfilePath);
     m_loggedStates.clear();
     m_timelineSignature.clear();
-    m_eventLog->clear();
     m_peer.reset();
     m_visualAnchor.reset();
     m_session.configureBoard(options);

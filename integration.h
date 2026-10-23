@@ -127,6 +127,8 @@ namespace StandProtocol {
 bool parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan, QString *error);
 bool parseBoardFrame(const QByteArray &bytes, BoardFrame *frame, QString *error);
 bool parseMapping(const QByteArray &bytes, StandMapping *mapping, QString *error);
+bool validateMappingContext(const StandMapping &mapping, const CyclogramPlan &plan,
+                            bool legacy, QString *error);
 StandMapping benchMapping(int firstStageYps, int secondStageYps, int kpYps,
                           const CyclogramPlan &plan = {});
 QByteArray resetCommand();
@@ -158,6 +160,7 @@ public:
         int kpYps = 0;         // Встроенная карта ПЗ использует КП на входе 8.
         bool legacySecondStage = false;
         QString localPlanPath; // Явный режим локального ПЗ без Debug и подтверждения БЦВМ.
+        bool operator==(const Options &) const = default;
     };
 
     explicit IntegrationSession(Options options, QObject *parent = nullptr);
@@ -165,6 +168,7 @@ public:
     void start();
     void configureBoard(const Options &options);
     const Options &options() const { return m_options; }
+    QByteArray wiringProfileSha256() const;
     bool loadMapping(const QString &path);
     bool loadLocalPlan(const QString &path); // Только отдельный сеанс без Debug.
     bool resetBoard();

@@ -1267,23 +1267,31 @@ bool IntegrationSession::loadLocalPlan(const QString &path) {
     return true;
 }
 
-bool IntegrationSession::loadMapping(const QString &path) {
-    if(std::any_of(m_plan.actions.cbegin(),m_plan.actions.cend(),
+bool StandProtocol::validateMappingContext(const StandMapping &mapping, const CyclogramPlan &plan,
+                                          bool legacy, QString *error) {
+    if (std::any_of(plan.actions.cbegin(), plan.actions.cend(),
         [](const PlannedAction &action){return !action.wiring.isEmpty();})) {
-        setError(QStringLiteral("Конфликт: ## в ПЗ и JSON-профиль. Профиль не применён."));
-        return false;
+        return fail(error, QStringLiteral("Конфликт: ## в ПЗ и JSON-профиль. Профиль не применён."));
     }
+    if (legacy && mapping.kp.index >= 0 && (mapping.kp.index != 7 || mapping.kp.falling))
+        return fail(error, QStringLiteral("КП старого тестера: поддерживается только фронт входа 8 основного COM; второй COM использует свою опору 8"));
+    return true;
+}
+
+QByteArray IntegrationSession::wiringProfileSha256() const {
+    return m_mappingBytes.isEmpty() ? QByteArray()
+        : QCryptographicHash::hash(m_mappingBytes, QCryptographicHash::Sha256);
+}
+
+bool IntegrationSession::loadMapping(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) { setError(QStringLiteral("Карта каналов: %1").arg(file.errorString())); return false; }
     const QByteArray bytes = file.readAll();
     StandMapping mapping;
     QString error;
     if (!StandProtocol::parseMapping(bytes, &mapping, &error)) { setError(error); return false; }
-    if (m_options.boardTransport == BoardTransport::LegacySerial && mapping.kp.index >= 0 &&
-        (mapping.kp.index != 7 || mapping.kp.falling)) {
-        setError(QStringLiteral("КП старого тестера: поддерживается только фронт входа 8 основного COM; второй COM использует свою опору 8"));
-        return false;
-    }
+    if (!StandProtocol::validateMappingContext(mapping, m_plan,
+        m_options.boardTransport == BoardTransport::LegacySerial, &error)) { setError(error); return false; }
     // После смены профиля нельзя переоценивать измерения, полученные с прежними назначениями.
     resetCollectionEvidence(false);
     m_boardArmed = false;

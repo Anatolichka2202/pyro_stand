@@ -34,8 +34,9 @@ private:
     void setupUi();
     void refreshCanvas();
     void refreshEventTable();
-    void applyEventFilter();
+    void applyEventVisibility();
     void updateEventSelection(bool scrollToEvent = false);
+    void selectEvent(const QString &key, int inputIndex = -1);
     int selectedGroupRow() const;
     void configurePeer();
     IntegrationSession &clockSession();
@@ -90,9 +91,7 @@ private:
     QPushButton *m_resetButton = nullptr;
     QPushButton *m_finishButton = nullptr;
     QPushButton *m_expandEventButton = nullptr;
-    QLineEdit *m_eventSearch = nullptr;
     QLabel *m_eventCount = nullptr;
-    QLabel *m_eventSearchEmpty = nullptr;
     QWidget *m_workspace = nullptr;
     QWidget *m_emptyWorkspace = nullptr;
     QLabel *m_emptyWorkspaceHint = nullptr;

@@ -17,6 +17,7 @@ struct CanvasEvent {
     qint64 offsetMs = 0;
     QVector<CanvasChannel> channels;
     bool plannedFromKp = true;
+    QString inputGroupLabel() const;
 };
 // Диаграмма отметок и подробный поканальный обзор используют одни результаты измерений.
 class EventCanvas final : public QWidget {
@@ -25,6 +26,7 @@ class EventCanvas final : public QWidget {
     explicit EventCanvas(QWidget *parent = nullptr);
     void setEvents(QVector<CanvasEvent> events);
     void setSelectedEvent(const QString &key);
+    void setSelectedInput(int index);
     void setSelectedOnly(bool selectedOnly);
     void setShowRawTicks(bool show);
     void setDiagramMode(bool enabled);
@@ -39,6 +41,7 @@ class EventCanvas final : public QWidget {
     QString formatAxisTime(double timeMs) const;
     QWidget *createTimeAxis(QWidget *parent);
     QRect selectedEventRect() const;
+    QRect selectedInputRect() const;
     int channelCount() const;
     int columnCount() const;
     bool fits() const;
@@ -47,7 +50,7 @@ class EventCanvas final : public QWidget {
     QSize minimumSizeHint() const override { return {540, 220}; }
 
   signals:
-    void eventSelected(const QString &key);
+    void eventSelected(const QString &key, int inputIndex = -1);
     void presentationChanged();
 
   protected:
@@ -68,6 +71,7 @@ class EventCanvas final : public QWidget {
     QVector<CanvasEvent> m_events;
     QVector<CanvasEvent> m_visibleEvents;
     QString m_selectedKey;
+    int m_selectedInput = -1;
     bool m_selectedOnly = false;
     bool m_showRawTicks = false;
     bool m_diagramMode = false;

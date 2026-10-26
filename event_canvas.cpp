@@ -12,6 +12,18 @@
 #include <cmath>
 #include <limits>
 
+QString CanvasEvent::inputGroupLabel() const {
+    QStringList groups;
+    for (const auto &channel : channels) {
+        if (!channel.input.contains(u':')) continue;
+        const auto group = channel.input.section(u':', 0, 0);
+        if (!groups.contains(group)) groups.append(group);
+    }
+    if (!groups.isEmpty()) return QStringLiteral("ЯПС %1").arg(groups.join(QStringLiteral(", ")));
+    const QString prefix = QStringLiteral("Старый · ");
+    return source.startsWith(prefix) ? source.mid(prefix.size()) : source;
+}
+
 namespace {
 // Ось живёт вне прокрутки, но использует геометрию и диапазон самой диаграммы.
 class DiagramTimeAxis final : public QWidget {
@@ -69,8 +81,14 @@ void EventCanvas::setEvents(QVector<CanvasEvent> e) {
 void EventCanvas::setSelectedEvent(const QString &key) {
     if (m_selectedKey == key) return;
     m_selectedKey = key;
+    m_selectedInput = -1;
     m_autoWindow = true;
     updatePresentation();
+}
+void EventCanvas::setSelectedInput(int index) {
+    if (m_selectedInput == index) return;
+    m_selectedInput = index;
+    update();
 }
 void EventCanvas::setSelectedOnly(bool selectedOnly) {
     if (m_selectedOnly == selectedOnly) return;
@@ -232,6 +250,16 @@ void EventCanvas::setDiagramMode(bool enabled) {
     updatePresentation();
 }
 
+QRect EventCanvas::selectedInputRect() const {
+    if (!m_diagramMode || m_selectedInput < 0) return {};
+    for (const auto &group : m_visibleEvents) {
+        if (group.source + u'/' + group.id != m_selectedKey || m_selectedInput >= group.channels.size()) continue;
+        const auto header = selectedEventRect();
+        return {header.left(), header.top() + 32 + m_selectedInput * 30, header.width(), 30};
+    }
+    return {};
+}
+
 void EventCanvas::setTimeWindow(double centerMs, double spanMs) {
     if (!std::isfinite(centerMs) || !std::isfinite(spanMs) || spanMs < 0.01 || spanMs > 1e12 ||
         !std::isfinite(centerMs - spanMs / 2) || !std::isfinite(centerMs + spanMs / 2) ||
@@ -339,8 +367,10 @@ void EventCanvas::mousePressEvent(QMouseEvent *event) {
         const int h = diagramGroupHeight(group);
         if (event->position().y() >= y && event->position().y() < y + h) {
             const auto key = group.source + u'/' + group.id;
+            const int inputIndex = key == m_selectedKey && event->position().y() >= y + 32
+                ? int((event->position().y() - y - 32) / 30) : -1;
             setSelectedEvent(key);
-            emit eventSelected(key);
+            emit eventSelected(key, inputIndex);
             setFocus();
             return;
         }
@@ -422,21 +452,38 @@ bool EventCanvas::event(QEvent *event) {
 void EventCanvas::paintDiagram(QPainter &p) {
     p.fillRect(rect(), QColor("#0e1820"));
     p.setRenderHint(QPainter::Antialiasing);
-    QFont font(QStringLiteral("Segoe UI")); font.setPixelSize(13); p.setFont(font);
+    QFont font(QStringLiteral("Segoe UI")); font.setPixelSize(14); p.setFont(font);
     const int left = std::clamp(width() / 3, 170, 260);
     const int right = width() - 24;
     const auto range = timeWindow();
     const bool planFromT0 = usesPlanT0();
     p.setPen(QColor("#a6b3be"));
-    p.drawText(QRect(8, 0, left - 12, 34), Qt::AlignVCenter, QStringLiteral("ДЕЙСТВИЕ / ВХОД"));
-    p.drawText(QRect(left, 0, right-left, 34), Qt::AlignVCenter | Qt::AlignRight,
-        QStringLiteral("○ План    ● Измерено    < > Вне интервала"));
+    p.drawText(QRect(8, 0, left - 12, 34), Qt::AlignVCenter, QStringLiteral("Действие / вход"));
+    const auto selected = std::find_if(m_visibleEvents.cbegin(), m_visibleEvents.cend(), [this](const CanvasEvent &group) {
+        return group.source + u'/' + group.id == m_selectedKey;
+    });
+    if (selected != m_visibleEvents.cend()) {
+        const QString label = QStringLiteral("План %1").arg(QString::number(double(selected->offsetMs), 'f', 3));
+        const int labelWidth = (std::min)(right - left, p.fontMetrics().horizontalAdvance(label) + 16);
+        const double planX = diagramPoint(selected->offsetMs, 0).x();
+        const int x = qRound(std::clamp(planX - labelWidth / 2.0, double(left), double(right - labelWidth)));
+        p.setPen(QColor("#7fcee5"));
+        p.drawText(QRect(x, 0, labelWidth, 34), Qt::AlignVCenter | Qt::AlignHCenter, label);
+    }
     int contentBottom = 40;
     for (const auto &group : m_visibleEvents) contentBottom += diagramGroupHeight(group);
     for (double time : timeTicks()) {
         const int x = qRound(diagramPoint(time, 0).x());
         p.setPen(QPen(QColor("#293d49"), 1, Qt::DashLine));
         p.drawLine(x, 40, x, contentBottom);
+    }
+    for (const auto &group : m_visibleEvents) {
+        if (group.source + u'/' + group.id != m_selectedKey || group.plannedFromKp == planFromT0) continue;
+        const double x = diagramPoint(group.offsetMs, 0).x();
+        if (x < left || x > right) break;
+        p.setPen(QPen(QColor("#4192ad"), 1, Qt::DashLine));
+        p.drawLine(QPointF(x, 40), QPointF(x, contentBottom));
+        break;
     }
     const auto mark = [&](double time, int y, const QColor &color, bool expected) {
         const double point = diagramPoint(time, 0).x();
@@ -460,7 +507,7 @@ void EventCanvas::paintDiagram(QPainter &p) {
         p.drawText(QRect(8, y, left - 14, 18), Qt::AlignVCenter, p.fontMetrics().elidedText(title, Qt::ElideRight, left - 14));
         QFont sourceFont = font; sourceFont.setPixelSize(11); p.setFont(sourceFont); p.setPen(group.color);
         p.drawText(QRect(22, y + 18, left - 28, 14), Qt::AlignVCenter,
-            p.fontMetrics().elidedText(group.status + QStringLiteral(" · ") + group.source, Qt::ElideRight, left - 28));
+            p.fontMetrics().elidedText(group.status + QStringLiteral(" · ") + group.inputGroupLabel(), Qt::ElideRight, left - 28));
         p.setFont(font);
         const bool compatible = group.plannedFromKp != planFromT0;
         if (compatible) {
@@ -470,12 +517,15 @@ void EventCanvas::paintDiagram(QPainter &p) {
         } else {
             p.setPen(QColor("#8fa7b5"));
             p.drawText(QRect(left + 12, y, right-left-20, 32), Qt::AlignVCenter | Qt::AlignRight,
-                QStringLiteral("Другая временная опора"));
+                QStringLiteral("Нет привязки к этой шкале"));
         }
         p.setPen(QColor("#273b47")); p.drawLine(0, y + 32, width(), y + 32);
         y += 32;
         if (!selected) continue;
+        int inputIndex = 0;
         for (const auto &channel : group.channels) {
+            const bool selectedInput = inputIndex++ == m_selectedInput;
+            if (selectedInput) p.fillRect(QRect(3, y, width() - 3, 30), QColor("#163344"));
             p.setPen(QColor("#c2d2dc"));
             const auto label = channel.input + QStringLiteral("  ") + channel.role;
             p.drawText(QRect(16, y, left - 22, 30), Qt::AlignVCenter, p.fontMetrics().elidedText(label, Qt::ElideRight, left - 22));
@@ -496,7 +546,7 @@ void EventCanvas::paintDiagram(QPainter &p) {
                     if (fitsRight || fitsLeft) {
                         const int labelX = fitsRight ? qRound(intervalRight) + 9 : qRound(intervalLeft) - labelWidth - 9;
                         p.save(); p.setClipRect(QRect(left, y, right - left + 1, 30));
-                        p.fillRect(QRect(labelX, y + 4, labelWidth, 22), QColor("#0e1820"));
+                        p.fillRect(QRect(labelX, y + 4, labelWidth, 22), QColor(selectedInput ? "#163344" : "#0e1820"));
                         p.setPen(channel.color);
                         p.drawText(QRect(labelX + 4, y, labelWidth - 8, 30), Qt::AlignVCenter, channel.actual);
                         p.restore();

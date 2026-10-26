@@ -79,7 +79,7 @@ private slots:
     void compactLayout_data();
     void compactLayout();
     void tableKeepsWorstChannelDeviation();
-    void eventSearchKeepsUnderlyingResults();
+    void eventSelectionKeepsUnderlyingResults();
     void emptyWorkspaceExplainsNextStep();
     void recentJournalFollowsLastMessage();
     void channelLabelsUseSourceComments();
@@ -157,6 +157,8 @@ void OperatorGuiTest::finishReasonIsVisible() {
     options.debugSocket.clear(); options.telemetryPort = 0;
     options.boardIp = QHostAddress::LocalHost;
     IntegrationWindow window(options);
+    auto *finishAction = window.findChild<QAction *>(QStringLiteral("finishCollectionAction"));
+    QVERIFY(finishAction); QVERIFY(!finishAction->isEnabled());
     window.m_session.m_hasPlan = true;
     const QString reason = QStringLiteral("Сбор неполный: потеря связи с новой платой");
     window.m_session.finishCollection(reason, false);
@@ -165,6 +167,7 @@ void OperatorGuiTest::finishReasonIsVisible() {
     QVERIFY(label);
     QVERIFY(!label->isHidden());
     QCOMPARE(label->text(), reason);
+    QVERIFY(!finishAction->isEnabled());
     QVERIFY(window.m_phaseLabel->text().contains(QStringLiteral("НЕПОЛНЫЙ")));
 }
 
@@ -402,6 +405,11 @@ void OperatorGuiTest::diagramInspectorUsesOneResultSet() {
     QCOMPARE(window.m_eventTable->item(64, 3)->text(), QStringLiteral("4294967295"));
     QVERIFY(window.m_eventTable->verticalScrollBar()->maximum() > 0);
     QVERIFY(!inspector->text().contains(QStringLiteral("4294967295")));
+    window.m_eventTable->setCurrentCell(64, 1);
+    auto *scroll = window.findChild<QScrollArea *>(QStringLiteral("channelDetailsScroll")); QVERIFY(scroll);
+    const int inputY = window.m_canvas->selectedEventRect().top() + 32 + 63 * 30 + 15;
+    QVERIFY(inputY >= scroll->verticalScrollBar()->value());
+    QVERIFY(inputY <= scroll->verticalScrollBar()->value() + scroll->viewport()->height());
 }
 
 void OperatorGuiTest::operatorDesign_data() {
@@ -409,6 +417,7 @@ void OperatorGuiTest::operatorDesign_data() {
     QTest::newRow("1100") << QSize(1100, 700);
     QTest::newRow("1280") << QSize(1280, 800);
     QTest::newRow("1920") << QSize(1920, 1080);
+    QTest::newRow("reference") << QSize(1586, 992);
 }
 
 void OperatorGuiTest::operatorDesign() {
@@ -657,8 +666,12 @@ void OperatorGuiTest::startupAndLiveKpCalculation() {
     QVERIFY(!session.collectionFinished());
     QCOMPARE(window.m_eventTable->item(rowB,4)->text(),QString("20.500"));
     QCOMPARE(window.m_eventTable->item(rowB,5)->text(),QString("+0.500"));
-    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("ФИЗИЧЕСКОГО КП")));
+    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("ФИЗИЧЕСКОГО КП"), Qt::CaseInsensitive));
     window.grab().save(QCoreApplication::applicationDirPath()+"/operator-live-kp.png");
+    session.m_boardArmed = false;
+    window.updatePlannedClock();
+    QCOMPARE(window.m_timerLabel->toolTip(), window.m_clockSource->text());
+    QVERIFY(window.m_timerLabel->toolTip().contains(QStringLiteral("Новый сбор")));
 }
 
 void OperatorGuiTest::recentJournalFollowsLastMessage() {
@@ -685,6 +698,7 @@ void OperatorGuiTest::tableKeepsWorstChannelDeviation() {
     session.m_boardFrame.channels[7]={true,false,1000000,0};
     session.m_boardFrame.channels[0]={true,false,1018000,0};
     session.m_boardFrame.channels[1]={true,false,1020000,0};window.refresh();
+    window.findChild<QCheckBox *>(QStringLiteral("showAllResults"))->setChecked(true);
     auto *table=window.m_eventTable;int group=-1;
     for(int row=0;row<table->rowCount();++row) if(table->item(row,0)->text()=="2") group=row;
     QVERIFY(group>=0);QCOMPARE(table->item(group,4)->text(),QString("20.000"));
@@ -798,8 +812,8 @@ void OperatorGuiTest::historicalPresetClearsExternalProfiles() {
             correctScheme=summary && transport && port &&
                 ip && ip->text()=="192.168.17.144" && summary->text().contains("192.168.17.144") &&
                 transport->currentData().toInt()==int(IntegrationSession::BoardTransport::Udp) &&
-                port->currentText().isEmpty() && summary->text().contains(QStringLiteral("БКХО-А, ЯПС 8")) &&
-                summary->text().contains(QStringLiteral("БКХО-Б на новой плате: ЯПС 7")) &&
+                port->currentText().isEmpty() && summary->text().contains(QStringLiteral("БКХО-А: ЯПС 8")) &&
+                summary->text().contains(QStringLiteral("БКХО-Б: ЯПС 7")) &&
                 summary->text().contains(QStringLiteral("КП: ЯПС 8, вход 8"));
             dialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-connection-bench.png");
         }
@@ -900,10 +914,10 @@ void OperatorGuiTest::showsMappedEventsNotRawTesterChannels() {
     QCOMPARE(window.findChildren<QTableWidget *>().size(), 3);
     QCOMPARE(window.findChildren<QTextEdit *>().size(), 2);
     QCOMPARE(table->columnCount(), 7);
-    QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("КАНАЛЫ"));
-    QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("СОБЫТИЕ"));
-    QCOMPARE(table->horizontalHeaderItem(4)->text(), QStringLiteral("ОТ КП, МС"));
-    QCOMPARE(table->horizontalHeaderItem(5)->text(), QStringLiteral("Δ, МС"));
+    QCOMPARE(table->horizontalHeaderItem(2)->text(), QStringLiteral("Каналы"));
+    QCOMPARE(table->horizontalHeaderItem(1)->text(), QStringLiteral("Событие"));
+    QCOMPARE(table->horizontalHeaderItem(4)->text(), QStringLiteral("Факт, мс"));
+    QCOMPARE(table->horizontalHeaderItem(5)->text(), QStringLiteral("Δ, мс"));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("eventTimeline")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("operatorSurface")));
     QVERIFY(window.findChild<QWidget *>(QStringLiteral("journalCaption")));
@@ -1015,14 +1029,14 @@ void OperatorGuiTest::fullPlanKeepsTableUsableAndHardwareClockStable() {
     window.m_session.processLegacyBytes(QByteArray(61001, char(0x80)), 0);
     window.refresh();
     QCOMPARE(window.m_timerLabel->text(), QStringLiteral("≈ +01:01.0"));
-    QVERIFY(window.m_timerLabel->styleSheet().contains("28px"));
+    QVERIFY(window.m_timerLabel->styleSheet().contains("23px"));
     const auto hardwarePosition=window.m_session.measuredPositionMs();
     QTest::qWait(30);
     window.updatePlannedClock();
     QCOMPARE(window.m_session.measuredPositionMs(), hardwarePosition);
     window.m_session.finishCollection();
     window.updatePlannedClock();
-    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("КОНЕЦ СБОРА ОТ КП")));
+    QVERIFY(window.m_clockCaption->text().contains(QStringLiteral("КОНЕЦ СБОРА ОТ КП"), Qt::CaseInsensitive));
 }
 
 void OperatorGuiTest::kpClusterDoesNotHideFailure() {
@@ -1315,7 +1329,7 @@ void OperatorGuiTest::emptyWorkspaceExplainsNextStep() {
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() + QStringLiteral("/workspace-empty.png")));
 }
 
-void OperatorGuiTest::eventSearchKeepsUnderlyingResults() {
+void OperatorGuiTest::eventSelectionKeepsUnderlyingResults() {
     IntegrationSession::Options options;
     options.debugSocket.clear(); options.telemetryPort = 0; options.boardIp = QHostAddress::LocalHost;
     IntegrationWindow window(options); window.show();
@@ -1325,24 +1339,22 @@ void OperatorGuiTest::eventSearchKeepsUnderlyingResults() {
     ignition.channels.append({"8:1", ignition.title, "1000", ignition.actual, ignition.delta, QStringLiteral("измерено"), QColor(Qt::green)});
     CanvasEvent closing = ignition; closing.id = "16"; closing.title = QStringLiteral("Закрытие клапанов");
     window.m_canvas->setEvents({ignition, closing}); window.refreshEventTable();
-    auto *search = window.findChild<QLineEdit *>(QStringLiteral("eventSearch"));
-    QVERIFY(search);
-    window.m_eventTable->setCurrentCell(1, 1);
+    QVERIFY(!window.findChild<QLineEdit *>(QStringLiteral("eventSearch")));
+    window.selectEvent(QStringLiteral("NEW/16"));
     QVERIFY(window.m_canvas->selectedEventRect().isValid());
     QVERIFY(window.m_canvas->accessibleDescription().contains(QStringLiteral("Выбрано: NEW/16")));
-    window.activateWindow(); window.m_eventTable->setFocus(); QTest::qWait(20);
-    QTest::keyClick(&window, Qt::Key_F, Qt::ControlModifier);
-    QTRY_VERIFY(search->hasFocus());
-    search->setText(QStringLiteral("зАжИгАнИе"));
-    QVERIFY(!window.m_eventTable->isRowHidden(0)); QVERIFY(window.m_eventTable->isRowHidden(1));
     QCOMPARE(window.m_eventTable->rowCount(), 2); QCOMPARE(window.m_canvas->events().size(), 2);
     QCOMPARE(window.m_eventTable->item(0, 4)->text(), QStringLiteral("-7999.500"));
-    search->setText(QStringLiteral("нет совпадений"));
-    QVERIFY(window.findChild<QLabel *>(QStringLiteral("eventSearchEmpty"))->isVisible());
-    QTest::keyClick(search, Qt::Key_Escape);
-    QVERIFY(search->text().isEmpty());
-    QVERIFY(!window.m_eventTable->isRowHidden(1));
-    QVERIFY(!window.findChild<QLabel *>(QStringLiteral("eventSearchEmpty"))->isVisible());
+    auto *previous = window.findChild<QToolButton *>(QStringLiteral("previousActionBtn")); QVERIFY(previous);
+    previous->click();
+    QVERIFY(window.m_canvas->accessibleDescription().contains(QStringLiteral("Выбрано: NEW/3")));
+    QCOMPARE(window.m_eventTable->item(0, 4)->text(), QStringLiteral("-7999.500"));
+    auto *details = window.findChild<QLabel *>(QStringLiteral("selectedInputDetails")); QVERIFY(details);
+    QVERIFY(details->isVisible());
+    QVERIFY(details->text().contains(QStringLiteral("1000")));
+    QVERIFY(!window.findChild<QLabel *>(QStringLiteral("additionalReferenceStatus")));
+    QVERIFY(window.m_mappingStatus->isHidden());
+
 }
 
 void OperatorGuiTest::connectionEssentialsAreVisible() {

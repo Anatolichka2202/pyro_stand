@@ -200,7 +200,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
 
     // Шрифт меток
     QFont font = p.font();
-    font.setPixelSize(9);
+    font.setPixelSize(11);
     p.setFont(font);
     QFontMetrics fm(font);
 
@@ -281,7 +281,7 @@ void TimelineWidget::paintEvent(QPaintEvent */*event*/)
         // Метка над кружком: для кластера — "N×", иначе — порядковый номер
         const QString topLabel = (cn.count > 1)
             ? QString("%1×").arg(cn.count)
-            : (cn.hasT0 ? "T0" : QString::number(cn.displayIdx));
+            : (cn.hasT0 ? QStringLiteral("КП") : QStringLiteral("#%1").arg(cn.displayIdx));
 
         const int tw = fm.horizontalAdvance(topLabel);
         p.setPen(cn.hasT0 && cn.status != "fail" && cn.status != "late" ? T0_COLOR : dotColor);

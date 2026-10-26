@@ -31,6 +31,7 @@
 #include <QSettings>
 #include <QScopeGuard>
 #include <QtEndian>
+#include <limits>
 
 namespace {
 void acceptSaveDialog(const QString &path, QObject *context) {
@@ -53,6 +54,9 @@ class OperatorGuiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_settingsDir;
 private slots:
+    void diagramUsesConfirmedMeasurements();
+    void diagramSelectionAndZoom();
+    void diagramInspectorUsesOneResultSet();
     void freeRegistrationRetainsRejectedFrames();
     void freeRegistrationWithoutPlan();
     void startupAndLiveKpCalculation();
@@ -234,6 +238,82 @@ void OperatorGuiTest::rawTicksAreOptionalPresentation() {
     QCOMPARE(window.m_canvas->events()[0].channels[0].actual, QStringLiteral("-8.000"));
 }
 
+void OperatorGuiTest::diagramUsesConfirmedMeasurements() {
+    EventCanvas canvas;
+    canvas.setDiagramMode(true);
+    canvas.resize(700, 400);
+    CanvasEvent group; group.id = "1"; group.source = "NEW"; group.title = QStringLiteral("Зажигание");
+    group.offsetMs = -8000;
+    CanvasChannel measured; measured.input = "8:1"; measured.actual = "-7999.500";
+    measured.rawTick = "30000000"; measured.color = QColor("#ff3333"); measured.measuredMs = -7999.5;
+    CanvasChannel estimated; estimated.input = "8:2"; estimated.actual = QStringLiteral("≈999999");
+    estimated.rawTick = "4000000000"; estimated.status = QStringLiteral("нет КП"); estimated.color = Qt::yellow;
+    group.channels = {measured, estimated};
+    canvas.setEvents({group}); canvas.setSelectedEvent("NEW/1"); canvas.show();
+    const auto range = canvas.timeWindow();
+    QVERIFY(range.first < -8000); QVERIFY(range.second > -7999.5); QVERIFY(range.second < 0);
+    QVERIFY(canvas.diagramPoint(-7999.5, 1).x() > canvas.diagramPoint(-8000, 1).x());
+    const auto image = canvas.grab().toImage();
+    const auto marker = canvas.diagramPoint(-7999.5, 1).toPoint();
+    QCOMPARE(image.pixelColor((QPointF(marker) * image.devicePixelRatio()).toPoint()), measured.color);
+    // Текст приблизительного результата и исходный счётчик не меняют диапазон аппаратной диаграммы.
+    canvas.setTimeWindow(0, 100);
+    QCOMPARE(canvas.timeWindow(), qMakePair(-50.0, 50.0));
+    canvas.setTimeWindow(0, std::numeric_limits<double>::quiet_NaN());
+    QCOMPARE(canvas.timeWindow(), qMakePair(-50.0, 50.0));
+    canvas.setTimeWindow(1e308, 20);
+    QCOMPARE(canvas.timeWindow(), qMakePair(-50.0, 50.0));
+    canvas.fitTimeWindow(); QCOMPARE(canvas.timeWindow(), range);
+}
+
+void OperatorGuiTest::diagramSelectionAndZoom() {
+    EventCanvas canvas; canvas.setDiagramMode(true); canvas.resize(700, 400);
+    CanvasEvent first; first.id = "1"; first.source = "NEW"; first.offsetMs = -8000;
+    CanvasEvent second; second.id = "2"; second.source = "OLD/COM9"; second.offsetMs = 20000;
+    canvas.setEvents({first, second}); canvas.show();
+    QSignalSpy selected(&canvas, &EventCanvas::eventSelected);
+    QTest::mouseClick(&canvas, Qt::LeftButton, Qt::NoModifier, QPoint(30, 55));
+    QCOMPARE(selected.count(), 1); QCOMPARE(selected.last().first().toString(), QStringLiteral("NEW/1"));
+    QVERIFY(canvas.timeWindow().second < 0);
+    QTest::keyClick(&canvas, Qt::Key_Down);
+    QCOMPARE(selected.last().first().toString(), QStringLiteral("OLD/COM9/2"));
+    QVERIFY(canvas.timeWindow().first > 0);
+    canvas.setTimeWindow(20000, 10); canvas.setEvents({first, second});
+    QCOMPARE(canvas.timeWindow(), qMakePair(19995.0, 20005.0));
+    QCOMPARE(canvas.events().size(), 2);
+    // План от T0 не получает общую ось с физическим КП без подтверждённой связи опор.
+    first.offsetMs = 25; first.plannedFromKp = false;
+    second.offsetMs = 0;
+    canvas.setSelectedEvent({}); canvas.setEvents({first, second}); canvas.fitTimeWindow();
+    QVERIFY(canvas.timeWindow().first > 20);
+    canvas.setSelectedEvent("OLD/COM9/2");
+    QVERIFY(canvas.timeWindow().first < 0); QVERIFY(canvas.timeWindow().second > 0);
+}
+
+void OperatorGuiTest::diagramInspectorUsesOneResultSet() {
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.show(); window.m_session.m_hasPlan = true;
+    CanvasEvent first; first.id = "1"; first.source = "NEW"; first.title = QStringLiteral("Зажигание");
+    first.offsetMs = -8000; first.actual = "-7999.5"; first.delta = "+0.5"; first.plan = "-8000";
+    CanvasChannel channel; channel.input = "8:1"; channel.rawTick = "30000500"; channel.actual = "-7999.5";
+    channel.delta = "+0.5"; channel.measuredMs = -7999.5; first.channels = {channel, channel};
+    CanvasEvent second = first; second.id = "2"; second.title = QStringLiteral("Клапаны"); second.offsetMs = 20;
+    window.m_canvas->setEvents({first, second}); window.refreshEventTable();
+    QTest::mouseClick(window.m_canvas, Qt::LeftButton, Qt::NoModifier, QPoint(20, 55));
+    QCOMPARE(window.m_canvas->events().size(), 2); QCOMPARE(window.m_eventTable->rowCount(), 6);
+    QVERIFY(!window.m_eventTable->isRowHidden(1)); QVERIFY(window.m_eventTable->isRowHidden(3));
+    QCOMPARE(window.m_eventTable->item(1, 4)->text(), channel.actual);
+    auto *inspector = window.findChild<QLabel *>(QStringLiteral("selectedActionInspector")); QVERIFY(inspector);
+    QVERIFY(inspector->text().contains(first.title));
+    auto *ticks = window.findChild<QCheckBox *>(QStringLiteral("showRawTicks")); QVERIFY(ticks);
+    ticks->setChecked(true); QVERIFY(inspector->text().contains(channel.rawTick));
+    auto *all = window.findChild<QCheckBox *>(QStringLiteral("showAllResults")); QVERIFY(all);
+    all->setChecked(true); QVERIFY(!window.m_eventTable->isRowHidden(3));
+    window.refreshEventTable(); QCOMPARE(window.m_eventTable->item(1, 4)->text(), channel.actual);
+    QCOMPARE(window.m_canvas->channelCount(), 4);
+}
+
 void OperatorGuiTest::operatorDesign_data() {
     QTest::addColumn<QSize>("size");
     QTest::newRow("1100") << QSize(1100, 700);
@@ -284,7 +364,10 @@ void OperatorGuiTest::operatorDesign() {
         if (window.m_eventTable->item(row, 6)->text() != QStringLiteral("Не все входы")) continue;
         window.m_eventTable->setCurrentCell(row, 1); break;
     }
-    scope->setCurrentIndex(1);
+    // Выбор на диаграмме раскрывает входы в инспекторе, сохраняя остальные действия слева.
+    const auto selectedRect = window.m_canvas->selectedEventRect();
+    QVERIFY(selectedRect.isValid());
+    QTest::mouseClick(window.m_canvas, Qt::LeftButton, Qt::NoModifier, selectedRect.topLeft() + QPoint(30, 15));
     QTest::qWait(10);
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
         QStringLiteral("/operator-design-focus-%1.png").arg(size.width())));

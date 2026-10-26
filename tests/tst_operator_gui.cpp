@@ -32,6 +32,10 @@
 #include <QScopeGuard>
 #include <QtEndian>
 #include <limits>
+#include <QWheelEvent>
+#if __has_include(<QtTest/qtestwheel.h>)
+#include <QtTest/qtestwheel.h>
+#endif
 
 namespace {
 void acceptSaveDialog(const QString &path, QObject *context) {
@@ -54,6 +58,8 @@ class OperatorGuiTest : public QObject {
     Q_OBJECT
     QTemporaryDir m_settingsDir;
 private slots:
+    void diagramAxisStaysVisible();
+    void diagramWheelKeepsCursorTime();
     void diagramUsesConfirmedMeasurements();
     void diagramSelectionAndZoom();
     void diagramInspectorUsesOneResultSet();
@@ -238,6 +244,74 @@ void OperatorGuiTest::rawTicksAreOptionalPresentation() {
     QCOMPARE(window.m_canvas->events()[0].channels[0].actual, QStringLiteral("-8.000"));
 }
 
+void OperatorGuiTest::diagramAxisStaysVisible() {
+    IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort = 0;
+    options.boardIp = QHostAddress::LocalHost;
+    IntegrationWindow window(options); window.resize(1100, 700); window.show();
+    window.m_refreshTimer.stop();
+    auto *axis = window.findChild<QWidget *>(QStringLiteral("diagramTimeAxis"));
+    QVERIFY2(axis, "Числовая ось должна быть отдельной от прокручиваемых действий");
+    QVector<CanvasEvent> groups;
+    for (int i = 0; i < 10; ++i) {
+        CanvasEvent group; group.id = QString::number(i); group.source = "NEW";
+        group.offsetMs = i * 1000; groups.append(group);
+    }
+    window.m_session.m_hasPlan = true; window.m_canvas->setEvents(groups); window.refreshEventTable();
+    auto *scroll = window.findChild<QScrollArea *>(QStringLiteral("channelDetailsScroll")); QVERIFY(scroll);
+    scroll->setMaximumHeight(150); QTest::qWait(10);
+    QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+    QVERIFY(axis->isVisible());
+    const auto before = axis->grab().toImage();
+    const QPoint position = axis->mapTo(&window, QPoint());
+#if __has_include(<QtTest/qtestwheel.h>)
+    // На границе QPA нужны физические пиксели; QWidget задаёт положение в логических.
+    const QPoint local = window.m_canvas->mapTo(&window, QPoint(300, 70));
+    const qreal scale = window.devicePixelRatioF();
+    qt_handleWheelEvent(window.windowHandle(), QPointF(local) * scale, QPointF(window.mapToGlobal(local)) * scale,
+        QPoint(), QPoint(0, -120), Qt::NoModifier, Qt::NoScrollPhase);
+    qApp->processEvents();
+    QTRY_VERIFY(scroll->verticalScrollBar()->value() > 0);
+#endif
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    QCOMPARE(axis->mapTo(&window, QPoint()), position);
+    QCOMPARE(axis->grab().toImage(), before);
+    window.m_canvas->setTimeWindow(0, 0.01);
+    QVERIFY2(axis->accessibleDescription().contains(QStringLiteral("0.0000")), qPrintable(axis->accessibleDescription()));
+    QCOMPARE(window.m_canvas->formatAxisTime(0.005), QStringLiteral("0.0050"));
+    QCOMPARE(window.m_canvas->events().size(), 10);
+}
+
+void OperatorGuiTest::diagramWheelKeepsCursorTime() {
+    EventCanvas canvas; canvas.setDiagramMode(true); canvas.resize(700, 400); canvas.show();
+    canvas.setTimeWindow(0, 100);
+    const QPointF position(canvas.diagramPoint(25, 0).x(), 80);
+    const auto sendWheel = [&](Qt::KeyboardModifiers modifiers) {
+        QWheelEvent wheel(position, canvas.mapToGlobal(position.toPoint()), QPoint(), QPoint(0, 120),
+            Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&canvas, &wheel);
+    };
+    sendWheel(Qt::ControlModifier);
+    auto range = canvas.timeWindow();
+    QVERIFY(std::abs((range.second - range.first) - 50.0) < 1e-8);
+    QVERIFY(std::abs(canvas.diagramPoint(25, 0).x() - position.x()) < 1e-8);
+    sendWheel(Qt::NoModifier); QCOMPARE(canvas.timeWindow(), range);
+    sendWheel(Qt::ShiftModifier); QVERIFY(canvas.timeWindow().first < range.first);
+    range = canvas.timeWindow();
+    QTest::keyClick(&canvas, Qt::Key_Right);
+    QVERIFY(canvas.timeWindow().first > range.first);
+    QTest::keyClick(&canvas, Qt::Key_Plus, Qt::ShiftModifier);
+    QVERIFY(std::abs(canvas.timeWindow().second - canvas.timeWindow().first - 25) < 1e-8);
+    QTest::keyClick(&canvas, Qt::Key_Minus);
+    QTest::keyClick(&canvas, Qt::Key_Minus);
+    QVERIFY(std::abs(canvas.timeWindow().second - canvas.timeWindow().first - 100) < 1e-8);
+    QTest::keyClick(&canvas, Qt::Key_Home); QCOMPARE(canvas.timeWindow(), qMakePair(-10.0, 10.0));
+    canvas.setTimeWindow(0, 0.01); canvas.zoomTimeWindow(0.001);
+    QCOMPARE(canvas.timeWindow(), qMakePair(-0.005, 0.005));
+    const auto ticks = canvas.timeTicks();
+    QVERIFY(!ticks.isEmpty()); QVERIFY(ticks.size() <= 7);
+    for (double tick : ticks) QVERIFY(std::isfinite(tick));
+}
+
 void OperatorGuiTest::diagramUsesConfirmedMeasurements() {
     EventCanvas canvas;
     canvas.setDiagramMode(true);
@@ -293,7 +367,7 @@ void OperatorGuiTest::diagramSelectionAndZoom() {
 void OperatorGuiTest::diagramInspectorUsesOneResultSet() {
     IntegrationSession::Options options; options.debugSocket.clear(); options.telemetryPort = 0;
     options.boardIp = QHostAddress::LocalHost;
-    IntegrationWindow window(options); window.show(); window.m_session.m_hasPlan = true;
+    IntegrationWindow window(options); window.show(); window.m_refreshTimer.stop(); window.m_session.m_hasPlan = true;
     CanvasEvent first; first.id = "1"; first.source = "NEW"; first.title = QStringLiteral("Зажигание");
     first.offsetMs = -8000; first.actual = "-7999.5"; first.delta = "+0.5"; first.plan = "-8000";
     CanvasChannel channel; channel.input = "8:1"; channel.rawTick = "30000500"; channel.actual = "-7999.5";
@@ -307,11 +381,27 @@ void OperatorGuiTest::diagramInspectorUsesOneResultSet() {
     auto *inspector = window.findChild<QLabel *>(QStringLiteral("selectedActionInspector")); QVERIFY(inspector);
     QVERIFY(inspector->text().contains(first.title));
     auto *ticks = window.findChild<QCheckBox *>(QStringLiteral("showRawTicks")); QVERIFY(ticks);
-    ticks->setChecked(true); QVERIFY(inspector->text().contains(channel.rawTick));
+    ticks->setChecked(true);
+    QVERIFY(!window.m_eventTable->isColumnHidden(3));
+    QCOMPARE(window.m_eventTable->item(1, 3)->text(), channel.rawTick);
+    ticks->setChecked(false); QVERIFY(window.m_eventTable->isColumnHidden(3));
     auto *all = window.findChild<QCheckBox *>(QStringLiteral("showAllResults")); QVERIFY(all);
     all->setChecked(true); QVERIFY(!window.m_eventTable->isRowHidden(3));
     window.refreshEventTable(); QCOMPARE(window.m_eventTable->item(1, 4)->text(), channel.actual);
     QCOMPARE(window.m_canvas->channelCount(), 4);
+    // Большое назначение прокручивается в таблице, а не раздувает заголовок и окно.
+    const auto originalSize = window.size();
+    first.channels.clear();
+    for (int i = 0; i < 64; ++i) {
+        auto input = channel; input.input = QStringLiteral("%1:%2").arg(i / 8 + 1).arg(i % 8 + 1);
+        input.rawTick = QStringLiteral("4294967295"); first.channels.append(input);
+    }
+    window.m_canvas->setEvents({first}); window.refreshEventTable();
+    window.m_eventTable->setCurrentCell(0, 1); ticks->setChecked(true); QTest::qWait(10);
+    QCOMPARE(window.size(), originalSize);
+    QCOMPARE(window.m_eventTable->item(64, 3)->text(), QStringLiteral("4294967295"));
+    QVERIFY(window.m_eventTable->verticalScrollBar()->maximum() > 0);
+    QVERIFY(!inspector->text().contains(QStringLiteral("4294967295")));
 }
 
 void OperatorGuiTest::operatorDesign_data() {
@@ -371,6 +461,13 @@ void OperatorGuiTest::operatorDesign() {
     QTest::qWait(10);
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
         QStringLiteral("/operator-design-focus-%1.png").arg(size.width())));
+    auto *rawTicks = window.findChild<QCheckBox *>(QStringLiteral("showRawTicks")); QVERIFY(rawTicks);
+    rawTicks->setChecked(true); QTest::qWait(10);
+    QCOMPARE(window.size(), size);
+    QVERIFY(!window.m_eventTable->isColumnHidden(3));
+    QVERIFY(window.m_eventTable->columnViewportPosition(6) + window.m_eventTable->columnWidth(6) <= window.m_eventTable->viewport()->width() + 1);
+    QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
+        QStringLiteral("/operator-design-ticks-%1.png").arg(size.width())));
 }
 
 void OperatorGuiTest::focusedChannelsKeepFullResults() {

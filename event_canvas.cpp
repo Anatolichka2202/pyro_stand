@@ -5,9 +5,57 @@
 #include <QKeyEvent>
 #include <QHelpEvent>
 #include <QToolTip>
+#include <QPointer>
+#include <QWheelEvent>
+#include <QResizeEvent>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
+namespace {
+// Ось живёт вне прокрутки, но использует геометрию и диапазон самой диаграммы.
+class DiagramTimeAxis final : public QWidget {
+  public:
+    DiagramTimeAxis(EventCanvas *canvas, QWidget *parent) : QWidget(parent), m_canvas(canvas) {
+        setObjectName(QStringLiteral("diagramTimeAxis"));
+        setAccessibleName(QStringLiteral("Временная шкала диаграммы"));
+        setFixedHeight(32);
+        connect(canvas, &EventCanvas::presentationChanged, this, [this] { refresh(); });
+        refresh();
+    }
+
+  protected:
+    void paintEvent(QPaintEvent *) override {
+        if (!m_canvas) return;
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor("#0e1820"));
+        QFont font(QStringLiteral("Segoe UI")); font.setPixelSize(12); painter.setFont(font);
+        painter.setPen(QColor("#a6b3be"));
+        const auto range = m_canvas->timeWindow();
+        const int left = qRound(m_canvas->diagramPoint(range.first, 0).x());
+        const int right = qRound(m_canvas->diagramPoint(range.second, 0).x());
+        painter.drawLine(left, 0, right, 0);
+        for (double tick : m_canvas->timeTicks()) {
+            const int x = qRound(m_canvas->diagramPoint(tick, 0).x());
+            const QString label = m_canvas->formatAxisTime(tick);
+            const int labelWidth = painter.fontMetrics().horizontalAdvance(label) + 8;
+            const int labelX = std::clamp(x - labelWidth / 2, 0, (std::max)(0, width() - labelWidth));
+            painter.drawLine(x, 0, x, 5);
+            painter.drawText(QRect(labelX, 6, labelWidth, 22), Qt::AlignCenter, label);
+        }
+    }
+
+  private:
+    void refresh() {
+        if (!m_canvas) return;
+        QStringList labels;
+        for (double tick : m_canvas->timeTicks()) labels << m_canvas->formatAxisTime(tick);
+        setAccessibleDescription(m_canvas->timeAxisLabel() + QStringLiteral(": ") + labels.join(QStringLiteral("; ")));
+        update();
+    }
+    QPointer<EventCanvas> m_canvas;
+};
+}
 EventCanvas::EventCanvas(QWidget *p) : QWidget(p) {
     setObjectName("channelCanvas");
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -53,7 +101,7 @@ void EventCanvas::updatePresentation() {
     }
     setAccessibleDescription((m_selectedKey.isEmpty() ? QString()
         : QStringLiteral("Выбрано: %1; ").arg(m_selectedKey)) + text.join("; "));
-    int contentHeight=m_diagramMode ? 76 : 24;
+    int contentHeight=m_diagramMode ? 48 : 24;
     for(const auto &group:m_visibleEvents)
         contentHeight += m_diagramMode ? diagramGroupHeight(group) : groupHeight(group)+8;
     setMinimumHeight(std::max(220,contentHeight));
@@ -201,6 +249,55 @@ void EventCanvas::fitTimeWindow() {
     emit presentationChanged();
 }
 
+void EventCanvas::zoomTimeWindow(double factor, double anchorFraction) {
+    if (!std::isfinite(factor) || factor <= 0 || !std::isfinite(anchorFraction)) return;
+    anchorFraction = std::clamp(anchorFraction, 0.0, 1.0);
+    const auto range = timeWindow();
+    const double span = range.second - range.first;
+    const double nextSpan = std::clamp(span * factor, 0.01, 1e12);
+    const double anchor = range.first + anchorFraction * span;
+    setTimeWindow(anchor + (0.5 - anchorFraction) * nextSpan, nextSpan);
+}
+
+void EventCanvas::panTimeWindow(double fraction) {
+    if (!std::isfinite(fraction)) return;
+    const auto range = timeWindow();
+    const double span = range.second - range.first;
+    setTimeWindow(range.first + span / 2 + fraction * span, span);
+}
+
+QVector<double> EventCanvas::timeTicks() const {
+    const auto range = timeWindow();
+    QFont font(QStringLiteral("Segoe UI")); font.setPixelSize(12);
+    const QFontMetrics metrics(font);
+    const int labelWidth = (std::max)(metrics.horizontalAdvance(formatAxisTime(range.first)),
+        metrics.horizontalAdvance(formatAxisTime(range.second))) + 24;
+    const double plotWidth = diagramPoint(range.second, 0).x() - diagramPoint(range.first, 0).x();
+    const int intervals = std::clamp(int(plotWidth / labelWidth), 1, 6);
+    const double rawStep = (range.second - range.first) / intervals;
+    const double unit = std::pow(10.0, std::floor(std::log10(rawStep)));
+    const double normalized = rawStep / unit;
+    const double step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * unit;
+    const double start = std::ceil(range.first / step) * step;
+    QVector<double> ticks;
+    for (int i = 0; i < 16; ++i) {
+        const double tick = start + i * step;
+        if (tick > range.second + step * 1e-9) break;
+        ticks.append(std::abs(tick) < step * 1e-9 ? 0 : tick);
+    }
+    return ticks;
+}
+
+QString EventCanvas::formatAxisTime(double timeMs) const {
+    const auto range = timeWindow();
+    const double span = range.second - range.first;
+    return QString::number(timeMs, 'f', span < 0.1 ? 4 : span < 20 ? 3 : span < 2000 ? 1 : 0);
+}
+
+QWidget *EventCanvas::createTimeAxis(QWidget *parent) {
+    return new DiagramTimeAxis(this, parent);
+}
+
 std::pair<double, double> EventCanvas::timeWindow() const {
     if (!m_autoWindow) return {m_centerMs - m_spanMs / 2, m_centerMs + m_spanMs / 2};
     double first = std::numeric_limits<double>::infinity();
@@ -252,6 +349,18 @@ void EventCanvas::mousePressEvent(QMouseEvent *event) {
 }
 
 void EventCanvas::keyPressEvent(QKeyEvent *event) {
+    const bool plainKey = event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::KeypadModifier;
+    const bool shiftedPlus = event->key() == Qt::Key_Plus && event->modifiers() == Qt::ShiftModifier;
+    if (m_diagramMode && (plainKey || shiftedPlus)) {
+        switch (event->key()) {
+        case Qt::Key_Left: panTimeWindow(-0.5); return;
+        case Qt::Key_Right: panTimeWindow(0.5); return;
+        case Qt::Key_Plus: case Qt::Key_Equal: zoomTimeWindow(0.5); return;
+        case Qt::Key_Minus: zoomTimeWindow(2); return;
+        case Qt::Key_Home: fitTimeWindow(); return;
+        default: break;
+        }
+    }
     if (m_diagramMode && (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)) {
         if (m_visibleEvents.isEmpty()) return;
         int index = -1;
@@ -265,6 +374,27 @@ void EventCanvas::keyPressEvent(QKeyEvent *event) {
         return;
     }
     QWidget::keyPressEvent(event);
+}
+
+void EventCanvas::wheelEvent(QWheelEvent *event) {
+    const bool zoom = event->modifiers().testFlag(Qt::ControlModifier);
+    const bool pan = event->modifiers().testFlag(Qt::ShiftModifier);
+    if (!m_diagramMode || (!zoom && !pan)) { QWidget::wheelEvent(event); return; }
+    const auto range = timeWindow();
+    const double left = diagramPoint(range.first, 0).x(), right = diagramPoint(range.second, 0).x();
+    const int delta = pan && event->angleDelta().x() ? event->angleDelta().x() : event->angleDelta().y();
+    if (!delta || event->position().x() < left || event->position().x() > right) {
+        QWidget::wheelEvent(event); return;
+    }
+    const double steps = std::clamp(delta / 120.0, -8.0, 8.0);
+    if (zoom) zoomTimeWindow(std::pow(2.0, -steps), (event->position().x() - left) / (right - left));
+    else panTimeWindow(-steps * 0.25);
+    event->accept();
+}
+
+void EventCanvas::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    if (m_diagramMode) emit presentationChanged();
 }
 
 bool EventCanvas::event(QEvent *event) {
@@ -303,14 +433,10 @@ void EventCanvas::paintDiagram(QPainter &p) {
         QStringLiteral("○ План    ● Измерено    < > Вне интервала"));
     int contentBottom = 40;
     for (const auto &group : m_visibleEvents) contentBottom += diagramGroupHeight(group);
-    for (int i = 0; i <= 4; ++i) {
-        const double time = range.first + (range.second - range.first) * i / 4;
+    for (double time : timeTicks()) {
         const int x = qRound(diagramPoint(time, 0).x());
         p.setPen(QPen(QColor("#293d49"), 1, Qt::DashLine));
         p.drawLine(x, 40, x, contentBottom);
-        p.setPen(QColor("#a6b3be"));
-        p.drawText(QRect(std::clamp(x - 42, 0, width() - 84), contentBottom + 4, 84, 24),
-            Qt::AlignCenter, QString::number(time, 'f', 2));
     }
     const auto mark = [&](double time, int y, const QColor &color, bool expected) {
         const double point = diagramPoint(time, 0).x();
@@ -359,6 +485,23 @@ void EventCanvas::paintDiagram(QPainter &p) {
                 const int x2 = qRound(std::clamp(diagramPoint(*channel.measuredMs, 0).x(), double(left), double(right)));
                 p.setPen(QPen(channel.color, 1)); p.drawLine(x1, y + 15, x2, y + 15);
                 mark(*channel.measuredMs, y + 15, channel.color, false);
+                // Подпись факта остаётся в пределах графика и не перекрывает метку.
+                const double actualX = diagramPoint(*channel.measuredMs, 0).x();
+                if (actualX >= left && actualX <= right) {
+                    const int labelWidth = p.fontMetrics().horizontalAdvance(channel.actual) + 8;
+                    const double intervalLeft = (std::min)(double(x1), actualX);
+                    const double intervalRight = (std::max)(double(x1), actualX);
+                    const bool fitsRight = intervalRight + labelWidth + 12 <= right;
+                    const bool fitsLeft = intervalLeft - labelWidth - 12 >= left;
+                    if (fitsRight || fitsLeft) {
+                        const int labelX = fitsRight ? qRound(intervalRight) + 9 : qRound(intervalLeft) - labelWidth - 9;
+                        p.save(); p.setClipRect(QRect(left, y, right - left + 1, 30));
+                        p.fillRect(QRect(labelX, y + 4, labelWidth, 22), QColor("#0e1820"));
+                        p.setPen(channel.color);
+                        p.drawText(QRect(labelX + 4, y, labelWidth - 8, 30), Qt::AlignVCenter, channel.actual);
+                        p.restore();
+                    }
+                }
             } else {
                 p.setPen(channel.color);
                 p.drawText(QRect(left + 12, y, right-left-20, 30), Qt::AlignVCenter | Qt::AlignRight, channel.status);

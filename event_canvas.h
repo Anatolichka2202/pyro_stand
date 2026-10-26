@@ -29,10 +29,15 @@ class EventCanvas final : public QWidget {
     void setShowRawTicks(bool show);
     void setDiagramMode(bool enabled);
     void setTimeWindow(double centerMs, double spanMs);
+    void zoomTimeWindow(double factor, double anchorFraction = 0.5);
+    void panTimeWindow(double fraction);
     void fitTimeWindow();
     std::pair<double, double> timeWindow() const;
     QString timeAxisLabel() const;
     QPointF diagramPoint(double timeMs, int row) const;
+    QVector<double> timeTicks() const;
+    QString formatAxisTime(double timeMs) const;
+    QWidget *createTimeAxis(QWidget *parent);
     QRect selectedEventRect() const;
     int channelCount() const;
     int columnCount() const;
@@ -49,6 +54,8 @@ class EventCanvas final : public QWidget {
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
+    void wheelEvent(QWheelEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
     bool event(QEvent *) override;
 
   private:

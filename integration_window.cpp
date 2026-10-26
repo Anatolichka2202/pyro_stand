@@ -453,15 +453,15 @@ void IntegrationWindow::setupUi() {
     detailTools->addWidget(detailScope);
     auto *fitDiagram = new QPushButton(QStringLiteral("Автомасштаб"), detailsPanel);
     fitDiagram->setObjectName(QStringLiteral("fitDiagramBtn"));
+    fitDiagram->setToolTip(QStringLiteral("Подобрать интервал под выбранное действие · Home"));
     connect(fitDiagram, &QPushButton::clicked, m_canvas, &EventCanvas::fitTimeWindow);
     detailTools->addWidget(fitDiagram);
     for (const int direction : {-1, 1}) {
         auto *pan = new QPushButton(direction < 0 ? QStringLiteral("←") : QStringLiteral("→"), detailsPanel);
         pan->setAccessibleName(direction < 0 ? QStringLiteral("Раньше по времени") : QStringLiteral("Позже по времени"));
+        pan->setToolTip(QStringLiteral("Сдвиг на половину интервала · ← / → или Shift+колесо"));
         connect(pan, &QPushButton::clicked, this, [this, direction] {
-            const auto range = m_canvas->timeWindow();
-            const double span = range.second - range.first;
-            m_canvas->setTimeWindow((range.first + range.second) / 2 + direction * span / 2, span);
+            m_canvas->panTimeWindow(direction * 0.5);
         });
         detailTools->addWidget(pan);
     }
@@ -470,8 +470,7 @@ void IntegrationWindow::setupUi() {
         zoom->setAccessibleName(entry.second < 1 ? QStringLiteral("Увеличить интервал") : QStringLiteral("Уменьшить масштаб"));
         zoom->setToolTip(entry.second < 1 ? QStringLiteral("Увеличить масштаб времени вдвое") : QStringLiteral("Показать вдвое больший интервал"));
         connect(zoom, &QPushButton::clicked, this, [this, factor = entry.second] {
-            const auto range = m_canvas->timeWindow();
-            m_canvas->setTimeWindow((range.first + range.second) / 2, (range.second - range.first) * factor);
+            m_canvas->zoomTimeWindow(factor);
         });
         detailTools->addWidget(zoom);
     }
@@ -480,7 +479,12 @@ void IntegrationWindow::setupUi() {
     rawTicks->setObjectName(QStringLiteral("showRawTicks"));
     rawTicks->setToolTip(QStringLiteral("Показывать исходные аппаратные отметки, мкс"));
     connect(rawTicks, &QCheckBox::toggled, m_canvas, &EventCanvas::setShowRawTicks);
-    connect(rawTicks, &QCheckBox::toggled, this, [this] { updateEventSelection(); });
+    connect(rawTicks, &QCheckBox::toggled, this, [this](bool show) {
+        const int row = selectedGroupRow();
+        if (show && row >= 0)
+            m_expandedEvents.insert(m_eventTable->item(row, 0)->data(Qt::UserRole).toString());
+        refreshEventTable();
+    });
     detailTools->addWidget(rawTicks);
     detailsLayout->addLayout(detailTools);
     auto *timeRange = new QLabel(detailsPanel);
@@ -489,12 +493,12 @@ void IntegrationWindow::setupUi() {
     timeRange->setWordWrap(true);
     const auto updateTimeRange = [this, timeRange] {
         const auto range = m_canvas->timeWindow();
-        timeRange->setText(QStringLiteral("%1 · %2 … %3")
-            .arg(m_canvas->timeAxisLabel()).arg(range.first, 0, 'f', 3).arg(range.second, 0, 'f', 3));
+        timeRange->setText(m_canvas->timeAxisLabel());
+        timeRange->setToolTip(QStringLiteral("Интервал %1 … %2 мс\nCtrl+колесо — масштаб под курсором; Shift+колесо — сдвиг; Home — автомасштаб.")
+            .arg(range.first, 0, 'f', 4).arg(range.second, 0, 'f', 4));
     };
     connect(m_canvas, &EventCanvas::presentationChanged, this, updateTimeRange);
     updateTimeRange();
-    detailsLayout->addWidget(timeRange);
     auto *detailsCaption = new QLabel(QStringLiteral("ДИАГРАММА ОТМЕТОК · выберите действие для увеличения"), detailsPanel);
     detailsCaption->setStyleSheet(QStringLiteral("color:#8b949e;font-size:11px;"));
     detailsLayout->insertWidget(0, detailsCaption);
@@ -506,6 +510,8 @@ void IntegrationWindow::setupUi() {
     diagram->setMinimumWidth(540 + diagram->style()->pixelMetric(QStyle::PM_ScrollBarExtent));
     // В узкой панели крайние значения остаются доступны, даже если их ширина выросла.
     diagram->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    detailsLayout->addWidget(m_canvas->createTimeAxis(detailsPanel));
+    detailsLayout->addWidget(timeRange);
     m_eventTable = new QTableWidget(0, 7, surface);
     m_eventTable->setObjectName("eventTable");
     connect(m_canvas, &EventCanvas::eventSelected, this, [this](const QString &key) {
@@ -2089,6 +2095,11 @@ void IntegrationWindow::refresh() {
 
 void IntegrationWindow::refreshEventTable() {
     const QSignalBlocker selectionGuard(m_eventTable);
+    const auto *rawToggle = findChild<QCheckBox *>(QStringLiteral("showRawTicks"));
+    const bool showRaw = rawToggle && rawToggle->isChecked();
+    m_eventTable->setColumnHidden(3, !showRaw);
+    m_eventTable->horizontalHeaderItem(3)->setText(showRaw ? QStringLiteral("ТИК, МКС") : QStringLiteral("ПЛАН МС"));
+    m_eventTable->horizontalHeaderItem(3)->setToolTip(QStringLiteral("Исходная аппаратная отметка входа; независима от времени получения на ПК"));
     const auto &groups=m_canvas->events();
     int count=0;
     for(const auto &group:groups) count+=1+(group.channels.size()>1?group.channels.size():0);
@@ -2105,7 +2116,8 @@ void IntegrationWindow::refreshEventTable() {
         cell(m_eventTable,row,1,(group.channels.size()>1?(expanded?QStringLiteral("▾ "):QStringLiteral("▸ ")):QString())+
             group.title+u'\n'+group.plan+QStringLiteral(" · ")+compactSource,kNeutral,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,2,group.source);
-        cell(m_eventTable,row,3,QString::number(group.offsetMs));
+        cell(m_eventTable,row,3,showRaw ? (group.channels.size() == 1 ? group.channels.first().rawTick : QStringLiteral("—"))
+            : QString::number(group.offsetMs));
         cell(m_eventTable,row,4,group.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,5,group.delta,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
         cell(m_eventTable,row,6,group.status,group.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
@@ -2113,7 +2125,7 @@ void IntegrationWindow::refreshEventTable() {
         if(group.channels.size()>1) for(const auto &channel:group.channels) {
             cell(m_eventTable,row,0,QString());m_eventTable->item(row,0)->setData(Qt::UserRole,QString());
             cell(m_eventTable,row,1,QStringLiteral("Вход ")+channel.input,kDim);
-            cell(m_eventTable,row,2,channel.input);cell(m_eventTable,row,3,QString::number(group.offsetMs));
+            cell(m_eventTable,row,2,channel.input);cell(m_eventTable,row,3,showRaw ? channel.rawTick : QString::number(group.offsetMs));
             cell(m_eventTable,row,4,channel.actual,kNeutral,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,5,channel.delta,channel.color,{},Qt::AlignRight|Qt::AlignVCenter,detail);
             cell(m_eventTable,row,6,channel.status,channel.color,{},Qt::AlignLeft|Qt::AlignVCenter,detail);
@@ -2191,12 +2203,6 @@ void IntegrationWindow::updateEventSelection(bool scrollToEvent) {
         inspector->setVisible(group != groups.cend());
         if (group != groups.cend()) {
             inspector->setText(group->title + u'\n' + group->plan + QStringLiteral(" мс · ") + group->source + u'\n' + group->status);
-            if (auto *rawTicks = findChild<QCheckBox *>(QStringLiteral("showRawTicks")); rawTicks && rawTicks->isChecked()) {
-                QStringList ticks;
-                for (const auto &channel : group->channels)
-                    ticks << channel.input + QStringLiteral(": ") + channel.rawTick + QStringLiteral(" мкс");
-                inspector->setText(inspector->text() + QStringLiteral("\nИсходные тики: ") + ticks.join(QStringLiteral("; ")));
-            }
             inspector->setToolTip(group->detail);
         }
     }

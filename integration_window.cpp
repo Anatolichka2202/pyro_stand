@@ -1819,7 +1819,8 @@ void IntegrationWindow::configureTester() {
             const bool legacyProfile = field == comparisonProfile || transport->currentData().toInt() ==
                 int(IntegrationSession::BoardTransport::LegacySerial);
             if (!file.isOpen() || !StandProtocol::parseMapping(bytes, &parsed, &error) ||
-                !StandProtocol::validateMappingContext(parsed, m_session.plan(), legacyProfile, &error)) {
+                (!(parsed.operatorOverlay && m_session.plan().sha256.isEmpty()) &&
+                 !StandProtocol::validateMappingContext(parsed, m_session.plan(), legacyProfile, &error))) {
                 showError(QStringLiteral("Профиль сигналов: %1").arg(error.isEmpty() ? file.errorString() : error),
                           field == profile ? profile : comparisonProfile);
                 return;

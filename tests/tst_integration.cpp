@@ -129,6 +129,7 @@ private slots:
     void localPlanKeepsRecordingBeyondPlannedWindow();
     void localArchiveBudget_data();
     void localArchiveBudget();
+    void boardFrameAa58();
 };
 
 void IntegrationTest::localPlanRejectsDebugAfterReconfigure() {
@@ -1167,6 +1168,37 @@ void IntegrationTest::boardFrameValidation() {
     QCOMPARE(StandProtocol::resetCommand().size(), 4);
 }
 
+void IntegrationTest::boardFrameAa58()
+{
+    constexpr int frameSize = 988;
+    QByteArray valid(frameSize, char(0));
+
+    valid[0] = char(0xAA);
+    valid[1] = char(0x58);
+
+    // CRC8 по первым 987 байтам
+    quint8 crc = 0;
+    for (int i = 0; i < valid.size() - 1; ++i) {
+        crc ^= quint8(valid[i]);
+
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc & 0x80)
+            ? quint8((crc << 1) ^ 0x31)
+            : quint8(crc << 1);
+        }
+    }
+
+    valid[frameSize - 1] = char(crc);
+
+    // Разбор готового кадра
+    BoardFrame parsed;
+    QString error;
+
+    QVERIFY2(
+        StandProtocol::parseBoardFrame(valid, &parsed, &error),
+        qPrintable(error)
+        );
+}
 void IntegrationTest::cyclogramAndMapping() {
     CyclogramPlan plan;
     QString error;

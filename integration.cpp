@@ -1692,7 +1692,10 @@ bool IntegrationSession::loadMapping(const QString &path) {
     StandMapping mapping;
     QString error;
     if (!StandProtocol::parseMapping(bytes, &mapping, &error)) { setError(error); return false; }
-    if (!StandProtocol::validateMappingContext(mapping, m_plan,
+    // В начале приложения циклограмма ещё не пришла. Отложенный операторский
+    // профиль не активируется до проверки SHA-256 полученного ПЗ.
+    const bool pendingPlan = mapping.operatorOverlay && m_plan.sha256.isEmpty();
+    if (!pendingPlan && !StandProtocol::validateMappingContext(mapping, m_plan,
         m_options.boardTransport == BoardTransport::LegacySerial, &error)) { setError(error); return false; }
     // После смены профиля нельзя переоценивать измерения, полученные с прежними назначениями.
     resetCollectionEvidence(false);
@@ -1703,7 +1706,9 @@ bool IntegrationSession::loadMapping(const QString &path) {
     m_hasBoardFrame = false;
     m_legacyArmed = {};
     for (auto &decoder : m_legacy) decoder.reset();
-    m_mapping = mapping;
+    m_mapping = pendingPlan ? StandMapping{} : mapping;
+    if (pendingPlan)
+        m_mapping.warnings << QStringLiteral("Операторский профиль ожидает ПЗ с соответствующим SHA-256");
     m_mappingBytes = bytes;
     m_options.wiringProfilePath = QFileInfo(file).absoluteFilePath();
     m_localEvidence.append(QJsonObject{{"type", "STAND_PROFILE_CHANGED"},

@@ -19,6 +19,7 @@
 
 namespace {
 constexpr int kFrameSize = 2 + 96 * 10 + 1;
+constexpr int kFrameSizeAa58 = 2 + 96 * 10 + 25 + 1; // 988
 constexpr int kMaxDebugLine = 4 * 1024 * 1024;
 constexpr qsizetype kMaxDebugEvidence = 16 * 1024 * 1024;
 // Мягкий предел локального JSONL: последняя порция сохраняется целиком.
@@ -293,13 +294,35 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
     return true;
 }
 
-bool StandProtocol::parseBoardFrame(const QByteArray &bytes, BoardFrame *frame, QString *error) {
-    if (!frame || bytes.size() != kFrameSize)
+bool StandProtocol::parseBoardFrame(
+    const QByteArray &bytes,
+    BoardFrame *frame,
+    QString *error)
+{
+    if (!frame)
+        return fail(error, QStringLiteral("Нет приёмника кадра"));
+
+    const int size = bytes.size();
+
+    if (size != kFrameSize && size != kFrameSizeAa58)
         return fail(error, QStringLiteral("Неверная длина кадра платы"));
-    if (quint8(bytes[0]) != 0xAA || quint8(bytes[1]) != 0x55)
+
+    const quint8 header0 = quint8(bytes[0]);
+    const quint8 header1 = quint8(bytes[1]);
+
+    const bool isAa55 = size == kFrameSize &&
+                        header0 == 0xAA && header1 == 0x55;
+
+    const bool isAa58 = size == kFrameSizeAa58 &&
+                        header0 == 0xAA && header1 == 0x58;
+
+    if (!isAa55 && !isAa58)
         return fail(error, QStringLiteral("Неверный заголовок кадра платы"));
-    if (crc8(bytes.first(kFrameSize - 1)) != quint8(bytes[kFrameSize - 1]))
+
+    if (crc8(bytes.first(size - 1)) != quint8(bytes[size - 1]))
         return fail(error, QStringLiteral("Ошибка CRC8 кадра платы"));
+
+    // Существующий разбор 96 каналов пока оставь без изменений.
     BoardFrame parsed;
     const auto *raw = reinterpret_cast<const uchar *>(bytes.constData());
     for (int i = 0; i < 96; ++i) {

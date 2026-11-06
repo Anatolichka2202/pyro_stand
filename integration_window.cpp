@@ -1932,9 +1932,125 @@ void IntegrationWindow::configureTester() {
 }
 
 void IntegrationWindow::assignInputFromMonitor(int index) {
-    Q_UNUSED(index);
-    QMessageBox::information(this, QStringLiteral("Назначение"),
-        QStringLiteral("Назначение будет доступно после загрузки операторского редактора."));
+    if (index < 0 || index >= 96) return;
+    if (!m_session.hasPlan()) {
+        QMessageBox::information(this, QStringLiteral("Назначение входа"),
+            QStringLiteral("Наблюдать можно без ПЗ. Чтобы назначить физический вход, "
+                           "загрузите циклограмму от КАСУ или откройте локальную."));
+        return;
+    }
+    const BoardChannel &physical = m_session.liveFrame().channels[size_t(index)];
+    if (!m_session.boardReceiving() ||
+        (!physical.ready && !physical.triggered && !physical.fallSeen)) {
+        QMessageBox::warning(this, QStringLiteral("Нет наблюдения"),
+            QStringLiteral("Нужен свежий кадр с активным уровнем либо "
+                           "аппаратно зарегистрированным фронтом этого входа."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Проверить и назначить вход"));
+    dialog.resize(760, 370);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *caption = new QLabel(QStringLiteral(
+        "ЯПС %1 / вход %2 · сигнал физически наблюдался.\n"
+        "Выберите действие ПЗ и конкретный сигнал БЦВМ. Исходный файл ПЗ не изменяется.")
+        .arg(index / 8 + 1).arg(index % 8 + 1), &dialog);
+    caption->setWordWrap(true);
+    layout->addWidget(caption);
+
+    auto *form = new QFormLayout;
+    auto *actions = new QComboBox(&dialog);
+    actions->setObjectName(QStringLiteral("operatorAction"));
+    for (const auto &action : m_session.plan().actions) {
+        if (m_session.mapping().forAction(action).inputs.isEmpty()) continue;
+        actions->addItem(QStringLiteral("%1 · %2 мс · №%3")
+            .arg(action.key).arg(action.offsetMs).arg(action.ordinal), action.actionId);
+    }
+
+    auto *signals = new QComboBox(&dialog);
+    signals->setObjectName(QStringLiteral("operatorSignal"));
+    auto populate = [&] {
+        signals->clear();
+        const QString actionId = actions->currentData().toString();
+        for (const auto &action : m_session.plan().actions) {
+            if (action.actionId != actionId) continue;
+            const ActionMapping mapped = m_session.mapping().forAction(action);
+            for (const auto &input : mapped.inputs) {
+                signals->addItem(QStringLiteral("%1 · сейчас ЯПС %2 / вход %3")
+                    .arg(input.signalId).arg(input.index / 8 + 1)
+                    .arg(input.index % 8 + 1), input.signalId);
+            }
+            break;
+        }
+    };
+    connect(actions, &QComboBox::currentIndexChanged, &dialog,
+            [&](int) { populate(); });
+    populate();
+
+    auto *edge = new QComboBox(&dialog);
+    edge->addItem(QStringLiteral("Подъём (фронт)"), false);
+    edge->addItem(QStringLiteral("Спад"), true);
+    form->addRow(QStringLiteral("Действие ПЗ"), actions);
+    form->addRow(QStringLiteral("Сигнал БЦВМ"), signals);
+    form->addRow(QStringLiteral("Тип события"), edge);
+    layout->addLayout(form);
+
+    auto *note = new QLabel(QStringLiteral(
+        "Создаётся отдельный операторский профиль по SHA-256 этой циклограммы. "
+        "Каждый сигнал нужно подтвердить отдельно; неподтверждённое назначение "
+        "не становится измерением. После применения требуется новый чистый сбор. "
+        "Команды БЦВМ здесь не отправляются."), &dialog);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Подтвердить назначение"));
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(!signals->currentData().toString().isEmpty());
+    connect(signals, &QComboBox::currentIndexChanged, &dialog, [=](int) {
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!signals->currentData().toString().isEmpty());
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QString error;
+    const auto profile = StandProtocol::operatorOverrideProfile(
+        m_session.plan(), m_session.mapping(), actions->currentData().toString(),
+        signals->currentData().toString(), index, edge->currentData().toBool(), &error);
+    if (!profile) {
+        QMessageBox::warning(this, QStringLiteral("Назначение отклонено"), error);
+        return;
+    }
+
+    QString directory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (directory.isEmpty())
+        directory = QDir::homePath() + QStringLiteral("/.pyro_stand");
+    if (!QDir().mkpath(directory)) {
+        QMessageBox::warning(this, QStringLiteral("Ошибка сохранения"),
+            QStringLiteral("Невозможно создать каталог: %1").arg(directory));
+        return;
+    }
+    const QString path = QDir(directory).filePath(QStringLiteral("operator-profile-%1.json")
+        .arg(m_session.plan().sha256.left(16)));
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) ||
+        file.write(*profile) != profile->size() || !file.commit()) {
+        QMessageBox::warning(this, QStringLiteral("Ошибка сохранения"), file.errorString());
+        return;
+    }
+    if (!m_session.loadMapping(path)) {
+        QMessageBox::warning(this, QStringLiteral("Профиль сохранён, но не применён"),
+            m_session.lastError() + QStringLiteral("\nФайл: ") + path);
+        return;
+    }
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("PyroStand"), QStringLiteral("Operator"));
+    settings.setValue(QStringLiteral("tester/wiringProfile"), path);
+    appendMessage(QStringLiteral("Разводка ЯПС %1/%2 подтверждена. Профиль: %3. "
+                                 "Для оценки ПЗ нужен новый чистый сбор.")
+        .arg(index / 8 + 1).arg(index % 8 + 1).arg(path));
+    refresh();
 }
 
 void IntegrationWindow::refresh() {

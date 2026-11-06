@@ -103,6 +103,23 @@ std::optional<quint32> timestamp(const BoardChannel &channel, const InputRef &in
                                                      : std::nullopt;
 }
 
+std::optional<quint64> timestampAa58(
+    const BoardChannel &channel,
+    const InputRef &input)
+{
+    if (input.falling) {
+        if (!channel.fallSeen || channel.fallLocalUs == 0)
+            return std::nullopt;
+
+        return channel.fallLocalUs;
+    }
+
+    if (!channel.triggered || channel.riseLocalUs == 0)
+        return std::nullopt;
+
+    return channel.riseLocalUs;
+}
+
 bool blankFrame(const BoardFrame &frame) {
     return std::all_of(frame.channels.cbegin(), frame.channels.cend(), [](const BoardChannel &ch) {
         return !ch.triggered && !ch.ready && ch.riseUs == 0 && ch.fallUs == 0;
@@ -1187,6 +1204,18 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     // До пустого кадра отметки могут принадлежать прежнему сбору:
     // показываем их только в live, не переносим в результат нового прогона.
     if (!m_collectionFinished && !m_awaitReset) {
+
+        m_boardFrame.isAa58 = parsed.isAa58;
+
+        if (parsed.isAa58) {
+            m_boardFrame.localNowUs = parsed.localNowUs;
+            m_boardFrame.utcAnchorUs = parsed.utcAnchorUs;
+            m_boardFrame.anchorLocalUs = parsed.anchorLocalUs;
+            m_boardFrame.timeFlags = parsed.timeFlags;
+            m_boardFrame.latE7 = parsed.latE7;
+            m_boardFrame.lonE7 = parsed.lonE7;
+        }
+
         for (size_t i = 0; i < parsed.channels.size(); ++i) {
             const BoardChannel &incoming = parsed.channels[i];
             BoardChannel &stored = m_boardFrame.channels[i];
@@ -1195,6 +1224,14 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
                 stored.riseUs = incoming.riseUs;
             if (incoming.fallUs != 0 && stored.fallUs == 0)
                 stored.fallUs = incoming.fallUs;
+            if (incoming.riseLocalUs != 0 && stored.riseLocalUs == 0)
+                stored.riseLocalUs = incoming.riseLocalUs;
+
+            if (incoming.fallLocalUs != 0 && stored.fallLocalUs == 0)
+                stored.fallLocalUs = incoming.fallLocalUs;
+
+            stored.initialActive |= incoming.initialActive;
+            stored.fallSeen |= incoming.fallSeen;
             stored.ready = incoming.ready;
         }
     }
@@ -1532,6 +1569,21 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
     if (!m_boardArmed)
         return blocked(State::BoardNotArmed, QStringLiteral("Нет чистого начала сбора; нажмите «Новый сбор»"));
     const auto kp = kpTimeUs();
+    std::optional<quint64> kp58;
+
+    if (m_boardFrame.isAa58 &&
+        m_mapping.kp.index >= 0 &&
+        m_mapping.kp.index < 96)
+    {
+        kp58 = timestampAa58(
+            m_boardFrame.channels[size_t(m_mapping.kp.index)],
+            m_mapping.kp);
+    }
+
+    if (m_boardFrame.isAa58 && (m_boardFrame.timeFlags & 0x80))
+        return blocked(
+            State::AmbiguousInterval,
+            QStringLiteral("Переполнение локального счётчика AA58"));
     const bool dualLegacy = m_options.boardTransport == BoardTransport::LegacySerial &&
         !m_options.secondLegacySerialPort.isEmpty();
     const auto secondKp = dualLegacy ? (legacyStreamKpObserved(1)
@@ -1583,7 +1635,11 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
                 if (used.index == input.index && used.falling == input.falling)
                     return blocked(State::InvalidAssignment, QStringLiteral("Одно наблюдение назначено нескольким вхождениям"));
         }
-        if (!(dualLegacy && input.index >= 8 ? secondKp : kp))
+        const bool hasKp = m_boardFrame.isAa58
+                               ? kp58.has_value()
+                               : (dualLegacy && input.index >= 8 ? secondKp : kp).has_value();
+
+        if (!hasKp)
             return blocked(State::WaitingForKp, QStringLiteral("Ожидание КП8 в потоке этого БКД"));
     }
     result.toleranceMs = mapped.toleranceMs;
@@ -1592,14 +1648,35 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
         ChannelMeasurement sample;
         sample.input = input;
         const auto stamp = timestamp(m_boardFrame.channels[size_t(input.index)], input);
-        if (stamp) {
-            // Событие и КП относятся к одному 32-битному счётчику микросекунд прибора.
-            // Вычитание со знаком учитывает переполнение только в пределах полуоборота счётчика.
-            const auto inputKp = dualLegacy && input.index >= 8 ? secondKp : kp;
-            if (quint32(*stamp - *inputKp) == (quint32(1) << 31))
-                return blocked(State::AmbiguousInterval, QStringLiteral("Интервал ровно в половину оборота счётчика"));
-            const qint64 deltaUs = qint32(*stamp - *inputKp);
-            sample.actualMs = double(deltaUs) / 1000.0;
+        std::optional<qint64> deltaUs;
+
+        if (m_boardFrame.isAa58) {
+            const auto stamp = timestampAa58(
+                m_boardFrame.channels[size_t(input.index)],
+                input);
+
+            if (stamp && kp58)
+                deltaUs = qint64(*stamp) - qint64(*kp58);
+        } else {
+            const auto stamp = timestamp(
+                m_boardFrame.channels[size_t(input.index)],
+                input);
+
+            const auto inputKp =
+                dualLegacy && input.index >= 8 ? secondKp : kp;
+
+            if (stamp && inputKp) {
+                if (quint32(*stamp - *inputKp) == (quint32(1) << 31))
+                    return blocked(
+                        State::AmbiguousInterval,
+                        QStringLiteral("Интервал ровно в половину оборота счётчика"));
+
+                deltaUs = qint32(*stamp - *inputKp);
+            }
+        }
+
+        if (deltaUs) {
+            sample.actualMs = double(*deltaUs) / 1000.0;
             sample.deviationMs = *sample.actualMs - *result.plannedMs;
             ++observed;
         }

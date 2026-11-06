@@ -1176,6 +1176,35 @@ void IntegrationTest::boardFrameAa58()
     valid[0] = char(0xAA);
     valid[1] = char(0x58);
 
+    auto put32 = [&](int offset, quint32 value) {
+        qToLittleEndian<quint32>(
+            value,
+            reinterpret_cast<uchar *>(valid.data() + offset));
+    };
+
+    auto put64 = [&](int offset, quint64 value) {
+        qToLittleEndian<quint64>(
+            value,
+            reinterpret_cast<uchar *>(valid.data() + offset));
+    };
+
+    // Первый канал
+    valid[2] = char(0x05); // Сработал + зарегистрировано размыкание
+    valid[3] = char(1);    // Текущий уровень
+
+    put32(4,  50'000'000); // Фронт, тики по 100 мкс
+    put32(8,  50'001'500); // Спад
+
+    // Хвост AA58
+    put32(962, 50'002'000);                 // Текущее локальное время
+    put64(966, 1'780'000'000'000'000ULL);   // Unix UTC опоры, мкс
+    put32(974, 49'999'000);                 // Локальное время опоры
+
+    put32(978, 557'500'000);                // Широта
+    put32(982, quint32(qint32(-376'200'000))); // Долгота
+
+    valid[986] = char(0x03); // GNSS fix + valid time
+
     // CRC8 по первым 987 байтам
     quint8 crc = 0;
     for (int i = 0; i < valid.size() - 1; ++i) {
@@ -1200,9 +1229,33 @@ void IntegrationTest::boardFrameAa58()
         );
 
     QVERIFY(parsed.isAa58);
-    QCOMPARE(parsed.localNowUs, quint64(0));
-    QCOMPARE(parsed.utcAnchorUs, quint64(0));
-    QCOMPARE(parsed.timeFlags, quint8(0));
+
+    QCOMPARE(parsed.channels[0].riseLocalUs,
+             quint64(5'000'000'000));
+
+    QCOMPARE(parsed.channels[0].fallLocalUs,
+             quint64(5'000'150'000));
+
+    QCOMPARE(parsed.localNowUs,
+             quint64(5'000'200'000));
+
+    QCOMPARE(parsed.anchorLocalUs,
+             quint64(4'999'900'000));
+
+    QCOMPARE(parsed.utcAnchorUs,
+             quint64(1'780'000'000'000'000ULL));
+
+    QCOMPARE(parsed.timeFlags, quint8(0x03));
+    QCOMPARE(parsed.latE7, qint32(557'500'000));
+    QCOMPARE(parsed.lonE7, qint32(-376'200'000));
+
+    // Проверяем пересчёт фронта в UTC
+    const quint64 eventUtc =
+        parsed.utcAnchorUs +
+        parsed.channels[0].riseLocalUs -
+        parsed.anchorLocalUs;
+
+    QCOMPARE(eventUtc, quint64(1'780'000'000'100'000ULL));
 
 }
 void IntegrationTest::cyclogramAndMapping() {

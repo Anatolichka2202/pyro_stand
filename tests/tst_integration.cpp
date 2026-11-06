@@ -131,6 +131,8 @@ private slots:
     void localArchiveBudget();
     void boardFrameAa58();
     void aa58MeasurementPath();
+    void aa58SerialFraming();
+    void aa58EpochAndHardwareCompletion();
     void aa58UtcQuality();
 };
 
@@ -1261,6 +1263,72 @@ void IntegrationTest::boardFrameAa58()
 
 }
 
+void IntegrationTest::aa58EpochAndHardwareCompletion() {
+    for (int fault : {0, 1, 2, 3}) {
+        IntegrationSession::Options options; options.firstStageYps = options.kpYps = 1;
+        IntegrationSession session(options); QString error;
+        QVERIFY(StandProtocol::parseCyclogram(cyclogram(), &session.m_plan, &error));
+        session.updateBenchMapping(); session.m_hasPlan = true;
+        session.m_uploadState = "CONFIRMED"; session.m_executionObserved = true; session.m_boardArmed = true;
+        BoardFrame f; f.isAa58 = true; f.localNowUs = 5'000'100'000ULL;
+        f.channels[7].triggered = true; f.channels[7].riseLocalUs = 5'000'000'000ULL;
+        for (int index : {0, 1}) {
+            f.channels[index].triggered = true; f.channels[index].riseLocalUs = 5'000'020'000ULL;
+        }
+        session.applyFrame(f);
+        QCOMPARE(session.measureAction(session.plan().actions.last()).channels[0].actualMs.value(), 20.0);
+        if (fault == 0) {
+            auto &action = session.m_plan.actions.last();
+            const auto originalOffset = action.offsetMs;
+            action.offsetMs = 3'000'000;
+            QCOMPARE(session.measureAction(action).state, ActionMeasurement::State::Measured);
+            action.offsetMs = originalOffset;
+            f.localNowUs = 5'005'019'900ULL;
+            session.applyFrame(f); session.checkCompletion(); QVERIFY(!session.collectionFinished());
+            f.localNowUs += 100;
+            session.applyFrame(f); session.checkCompletion();
+            QVERIFY(session.collectionFinished()); QVERIFY(session.plannedWindowComplete());
+        } else {
+            if (fault == 1) f.localNowUs = 100;
+            if (fault == 2) f.channels = {};
+            if (fault == 3) f.isAa58 = false;
+            if (fault == 3) {
+                const auto faultPacket = frame();
+                session.processFrame(faultPacket);
+                session.m_frameEvidence.flush();
+                QVERIFY(session.m_frameEvidence.seek(0));
+                QVERIFY(session.m_frameEvidence.readAll().contains(faultPacket.toBase64()));
+                QCOMPARE(session.m_acceptedAtFinish, quint64(1));
+            } else session.applyFrame(f);
+            QVERIFY(session.collectionFinished()); QVERIFY(!session.plannedWindowComplete());
+            QCOMPARE(*session.kpTimeUs(), 5'000'000'000ULL);
+        }
+    }
+    BoardFrame invalid; invalid.isAa58 = true; invalid.localNowUs = 1000;
+    invalid.channels[0].triggered = true; invalid.channels[0].riseLocalUs = 2000;
+    QVERIFY(!invalid.validTiming());
+    invalid.channels[0].riseLocalUs = 500;
+    invalid.channels[0].fallSeen = true; invalid.channels[0].fallLocalUs = 400;
+    QVERIFY(!invalid.validTiming());
+}
+
+void IntegrationTest::aa58SerialFraming() {
+    IntegrationSession session({});
+    QByteArray raw(988, '\0'); raw[0] = char(0xaa); raw[1] = char(0x58);
+    quint8 checksum = 0;
+    for (char byte : raw.first(987)) {
+        checksum ^= quint8(byte);
+        for (int bit = 0; bit < 8; ++bit)
+            checksum = checksum & 0x80 ? quint8((checksum << 1) ^ 0x31) : quint8(checksum << 1);
+    }
+    raw[987] = char(checksum);
+    session.m_serialBuffer = QByteArray("noise") + raw.first(400);
+    session.receiveSerial(); QCOMPARE(session.acceptedFrames(), quint64(0));
+    session.m_serialBuffer += raw.sliced(400) + frame();
+    session.receiveSerial(); QCOMPARE(session.acceptedFrames(), quint64(2));
+    QVERIFY(session.m_serialBuffer.isEmpty());
+}
+
 void IntegrationTest::aa58UtcQuality()
 {
     auto makeFrame = [](quint8 flags) {
@@ -1295,6 +1363,14 @@ void IntegrationTest::aa58UtcQuality()
 
     QCOMPARE(session.boardFrame().channels[0].riseUtcUs.value(),
              expectedUtc);
+
+    auto beforeAnchor = makeFrame(0x02);
+    beforeAnchor.channels[0].riseLocalUs = beforeAnchor.anchorLocalUs - 1000;
+    IntegrationSession retrospective({}); retrospective.applyFrame(beforeAnchor);
+    QCOMPARE(*retrospective.boardFrame().channels[0].riseUtcUs, beforeAnchor.utcAnchorUs - 1000);
+    beforeAnchor.utcAnchorUs = 999;
+    IntegrationSession underflow({}); underflow.applyFrame(beforeAnchor);
+    QVERIFY(!underflow.boardFrame().channels[0].riseUtcUs);
 
     // Новое событие при недостоверном времени.
     for (quint8 flags : {
@@ -1366,6 +1442,8 @@ void IntegrationTest::aa58MeasurementPath()
     QCOMPARE(result.channels[0].actualMs.value(), 20.0);
     QCOMPARE(result.channels[1].actualMs.value(), 20.0);
 
+    QVERIFY(session.kpTimeUs());
+    QCOMPARE(quint64(*session.kpTimeUs()), 4'999'980'000ULL);
     QVERIFY(session.m_kpSeenOnPc.isValid());
     QVERIFY(session.measuredPositionMs().has_value());
     QCOMPARE(session.measuredPositionMs().value(), 20.0);

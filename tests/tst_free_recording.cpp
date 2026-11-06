@@ -4,6 +4,34 @@
 class FreeRecordingTest : public QObject {
     Q_OBJECT
 private slots:
+    void aa58ArchiveWithoutBaseline() {
+        FreeRecording r; QVERIFY(r.start({}));
+        BoardFrame f; f.isAa58 = true; f.localNowUs = 1000;
+        f.channels[0].triggered = true; f.channels[0].riseLocalUs = 500;
+        r.acceptFrame(f, "stale-aa58"); QVERIFY(!r.armed()); r.stop("manual");
+        QCOMPARE(r.report().value("protocol").toString(), QString("aa58-96channels-gnss"));
+    }
+    void aa58LongTicksAndRetrospectiveKp() {
+        FreeRecording r; FreeRecording::Config config; config.kp = 7;
+        QVERIFY(r.start(config));
+        BoardFrame f; f.isAa58 = true; f.localNowUs = 5'000'000'000ULL;
+        r.acceptFrame(f, "baseline"); QVERIFY(r.armed());
+        f.channels[0].triggered = true;
+        f.channels[0].riseLocalUs = 5'000'000'000ULL;
+        f.channels[0].fallSeen = true;
+        f.channels[0].fallLocalUs = 5'000'002'500ULL;
+        f.localNowUs += 5000;
+        r.acceptFrame(f, "pulse");
+        QVERIFY(r.active()); QCOMPARE(r.edgeCount(), 2);
+        f.channels[7].triggered = true;
+        f.channels[7].riseLocalUs = 5'000'004'000ULL;
+        r.acceptFrame(f, "kp");
+        QVERIFY(r.kp()); QCOMPARE(quint64(*r.kp()), 5'000'004'000ULL);
+        QCOMPARE(*r.relativeMs(5'000'000'000ULL), -4.0);
+        QCOMPARE(r.report().value("edges").toArray()[0].toObject().value("tick_us").toString(), QString("5000000000"));
+        f.timeFlags = 0x80;
+        r.acceptFrame(f, "overflow"); QVERIFY(!r.active());
+    }
     void rejectedFramesAreBoundedEvidence() {
         FreeRecording r; QVERIFY(r.start({}));
         r.acceptRejected("bad-before-baseline", "CRC"); QVERIFY(!r.armed());

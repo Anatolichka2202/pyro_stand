@@ -114,7 +114,7 @@ std::optional<quint64> timestampAa58(
         return channel.fallLocalUs;
     }
 
-    if (!channel.triggered || channel.riseLocalUs == 0)
+    if (!channel.triggered || channel.initialActive || channel.riseLocalUs == 0)
         return std::nullopt;
 
     return channel.riseLocalUs;
@@ -142,17 +142,18 @@ std::optional<quint64> eventUtcAa58(
         return std::nullopt;
 
     if (frame.anchorLocalUs > frame.localNowUs ||
-        eventLocalUs < frame.anchorLocalUs ||
         eventLocalUs > frame.localNowUs)
         return std::nullopt;
 
-    const quint64 deltaUs =
-        eventLocalUs - frame.anchorLocalUs;
-
-    if (frame.utcAnchorUs >
-        std::numeric_limits<quint64>::max() - deltaUs)
+    // RMC может быть новее события, впервые пришедшего в этом снимке.
+    if (eventLocalUs < frame.anchorLocalUs) {
+        const quint64 deltaUs = frame.anchorLocalUs - eventLocalUs;
+        if (frame.utcAnchorUs < deltaUs) return std::nullopt;
+        return frame.utcAnchorUs - deltaUs;
+    }
+    const quint64 deltaUs = eventLocalUs - frame.anchorLocalUs;
+    if (frame.utcAnchorUs > std::numeric_limits<quint64>::max() - deltaUs)
         return std::nullopt;
-
     return frame.utcAnchorUs + deltaUs;
 }
 
@@ -172,7 +173,8 @@ std::optional<quint64> kpAa58(
 
 bool blankFrame(const BoardFrame &frame) {
     return std::all_of(frame.channels.cbegin(), frame.channels.cend(), [](const BoardChannel &ch) {
-        return !ch.triggered && !ch.ready && ch.riseUs == 0 && ch.fallUs == 0;
+        return !ch.triggered && !ch.ready && ch.riseUs == 0 && ch.fallUs == 0 &&
+            !ch.initialActive && !ch.fallSeen && ch.riseLocalUs == 0 && ch.fallLocalUs == 0;
     });
 }
 
@@ -361,6 +363,49 @@ bool StandProtocol::parseCyclogram(const QByteArray &bytes, CyclogramPlan *plan,
     return true;
 }
 
+std::optional<quint64> BoardFrame::timestampUs(int index, bool falling) const {
+    if (index < 0 || index >= int(channels.size())) return std::nullopt;
+    if (isAa58) {
+        if (timeFlags & 0x80) return std::nullopt;
+        const auto &c = channels[size_t(index)];
+        if (!falling && c.initialActive) return std::nullopt;
+        return timestampAa58(c, InputRef{index, falling});
+    }
+    const auto tick = timestamp(channels[size_t(index)], InputRef{index, falling});
+    return tick ? std::optional<quint64>(*tick) : std::nullopt;
+}
+
+std::optional<double> BoardFrame::durationMs(int index) const {
+    const auto rise = timestampUs(index), fall = timestampUs(index, true);
+    if (!rise || !fall) return std::nullopt;
+    if (isAa58) {
+        if (*fall < *rise) return std::nullopt;
+        return double(*fall - *rise) / 1000.0;
+    }
+    const quint32 delta = quint32(*fall - *rise);
+    return delta < 0x80000000u ? std::optional<double>(double(delta) / 1000.0) : std::nullopt;
+}
+
+bool BoardFrame::validTiming(QString *error) const {
+    if (!isAa58 || (timeFlags & 0x80)) return true;
+    if (anchorLocalUs > localNowUs)
+        return fail(error, QStringLiteral("Опора AA58 находится после текущего тика"));
+    for (const auto &c : channels) {
+        if ((c.initialActive && (!c.triggered || c.riseLocalUs)) ||
+            (!c.initialActive && c.triggered != (c.riseLocalUs != 0)) ||
+            (c.ready && !c.triggered) || (c.fallSeen && !c.triggered) ||
+            (c.fallSeen != (c.fallLocalUs != 0)) ||
+            c.riseLocalUs > localNowUs || c.fallLocalUs > localNowUs ||
+            (!c.initialActive && c.fallSeen && c.fallLocalUs < c.riseLocalUs))
+            return fail(error, QStringLiteral("Противоречивые флаги или отметки AA58"));
+    }
+    return true;
+}
+
+QString BoardFrame::protocol() const {
+    return isAa58 ? QStringLiteral("aa58-96channels-gnss") : QStringLiteral("aa55-96channels");
+}
+
 bool StandProtocol::parseBoardFrame(
     const QByteArray &bytes,
     BoardFrame *frame,
@@ -445,6 +490,7 @@ bool StandProtocol::parseBoardFrame(
         parsed.timeFlags = raw[986];
     }
 
+    if (!parsed.validTiming(error)) return false;
     *frame = parsed;
     return true;
 }
@@ -1146,17 +1192,20 @@ void IntegrationSession::receiveSerial() {
     }
     m_serialBuffer.append(m_serial.readAll());
     while (true) {
-        const int header = m_serialBuffer.indexOf(QByteArray::fromHex("aa55"));
+        const int oldHeader = m_serialBuffer.indexOf(QByteArray::fromHex("aa55"));
+        const int newHeader = m_serialBuffer.indexOf(QByteArray::fromHex("aa58"));
+        const int header = oldHeader < 0 ? newHeader : newHeader < 0 ? oldHeader : std::min(oldHeader, newHeader);
         if (header < 0) {
             m_serialBuffer = m_serialBuffer.endsWith(char(0xAA)) ? QByteArray(1, char(0xAA)) : QByteArray();
             return;
         }
         if (header > 0) m_serialBuffer.remove(0, header);
-        if (m_serialBuffer.size() < kFrameSize) return;
-        const QByteArray candidate = m_serialBuffer.first(kFrameSize);
+        const int frameSize = quint8(m_serialBuffer[1]) == 0x58 ? kFrameSizeAa58 : kFrameSize;
+        if (m_serialBuffer.size() < frameSize) return;
+        const QByteArray candidate = m_serialBuffer.first(frameSize);
         BoardFrame parsed;
         if (StandProtocol::parseBoardFrame(candidate, &parsed, nullptr)) {
-            m_serialBuffer.remove(0, kFrameSize);
+            m_serialBuffer.remove(0, frameSize);
             processFrame(candidate);
         } else {
             ++m_rejectedFrames;
@@ -1179,9 +1228,11 @@ void IntegrationSession::processFrame(const QByteArray &raw) {
         setError(error);
         return;
     }
-    applyFrame(parsed);
+    // Пограничный кадр должен остаться в доказательствах, даже если его
+    // применение завершит сбор из-за смены эпохи или протокола.
     ++m_acceptedFrames;
     if (!m_collectionFinished) recordFrame(raw);
+    applyFrame(parsed);
     emit frameObserved(parsed, raw);
     emit changed();
 }
@@ -1247,6 +1298,24 @@ void IntegrationSession::processLegacyBytes(const QByteArray &raw, int stream) {
 
 void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     m_liveFrame = parsed;
+    if (!m_collectionFinished && !m_awaitReset && m_boardArmed && m_hasBoardFrame) {
+        bool changedEpoch = parsed.isAa58 != m_boardFrame.isAa58;
+        if (parsed.isAa58 && m_boardFrame.isAa58) {
+            changedEpoch |= (parsed.timeFlags & 0x80) || parsed.localNowUs < m_boardFrame.localNowUs;
+            for (size_t i = 0; i < parsed.channels.size(); ++i) {
+                const auto &old = m_boardFrame.channels[i];
+                const auto &now = parsed.channels[i];
+                changedEpoch |= (old.triggered && !now.triggered) ||
+                    (old.riseLocalUs && old.riseLocalUs != now.riseLocalUs) ||
+                    (old.fallSeen && (!now.fallSeen || old.fallLocalUs != now.fallLocalUs)) ||
+                    (old.initialActive != now.initialActive);
+            }
+        }
+        if (changedEpoch) {
+            m_observationInterrupted = true;
+            finishCollection(QStringLiteral("Сбор неполный: смена протокола, эпохи или порядка аппаратных отметок"), false);
+        }
+    }
     // UDP-кадр описывает наблюдаемое состояние; уже зарегистрированный фронт
     // внутри одного сбора не должен исчезать из-за следующего кадра.
     // Live показывает текущий пакет, снимок испытания удерживает ПЕРВУЮ
@@ -1359,7 +1428,8 @@ void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error
     if (!error.isEmpty()) object.insert(QStringLiteral("error"), error);
     object.insert(QStringLiteral("frame_base64"), QString::fromLatin1(raw.toBase64()));
     object.insert(QStringLiteral("protocol"), m_options.boardTransport == BoardTransport::LegacySerial
-        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
+        ? QStringLiteral("legacy-mask-1ms") : (raw.size() > 1 && quint8(raw[1]) == 0x58
+            ? QStringLiteral("aa58-96channels-gnss") : QStringLiteral("aa55-96channels")));
     if (m_options.boardTransport == BoardTransport::LegacySerial)
         object.insert(QStringLiteral("first_sample_index"), QString::number(m_legacy[0].sampleCount()));
     const QByteArray evidenceLine = QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
@@ -1584,13 +1654,13 @@ bool IntegrationSession::legacyStreamKpObserved(int stream) const {
     return timestamp(m_boardFrame.channels[size_t(kpIndex)], InputRef{kpIndex, false}).has_value();
 }
 
-std::optional<quint32> IntegrationSession::kpTimeUs() const {
+std::optional<quint64> IntegrationSession::kpTimeUs() const {
     if (!m_boardArmed || !m_hasBoardFrame || m_mapping.kp.index < 0) return std::nullopt;
     if (m_options.boardTransport == BoardTransport::LegacySerial &&
         (!m_options.legacyHasKp || m_mapping.kp.index != 7 || m_mapping.kp.falling)) return std::nullopt;
     if(m_options.boardTransport==BoardTransport::LegacySerial &&
         m_boardFrame.channels[size_t(m_mapping.kp.index)].observedRises>1) return std::nullopt;
-    return timestamp(m_boardFrame.channels[size_t(m_mapping.kp.index)], m_mapping.kp);
+    return m_boardFrame.timestampUs(m_mapping.kp.index, m_mapping.kp.falling);
 }
 
 std::optional<double> IntegrationSession::measuredPositionMs() const {
@@ -1689,20 +1759,20 @@ ActionMeasurement IntegrationSession::measureAction(const PlannedAction &action)
             QStringLiteral("Переполнение локального счётчика AA58"));
     const bool dualLegacy = m_options.boardTransport == BoardTransport::LegacySerial &&
         !m_options.secondLegacySerialPort.isEmpty();
-    const auto secondKp = dualLegacy ? (legacyStreamKpObserved(1)
-        ? timestamp(m_boardFrame.channels[15],InputRef{15,false}) : std::nullopt) : kp;
+    const std::optional<quint64> secondKp = dualLegacy ? (legacyStreamKpObserved(1)
+        ? m_boardFrame.timestampUs(15) : std::nullopt) : kp;
     const int repetitions = std::count_if(m_plan.actions.cbegin(), m_plan.actions.cend(),
         [&action](const PlannedAction &other) { return other.key == action.key; });
     if (repetitions > 1)
         return blocked(State::RepeatedAction, QStringLiteral("Повтор действия: плата хранит только первый фронт"));
-    if (m_collectionElapsed.isValid() &&
+    if (!m_boardFrame.isAa58 && m_collectionElapsed.isValid() &&
         (m_collectionFinished?m_durationAtFinishMs:m_collectionElapsed.elapsed()) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Окно сбора превысило половину оборота счётчика"));
     const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
     if (!kpOffset)
         return blocked(State::PlanReferenceUnknown, QStringLiteral("Нет единственного планового КП; связь опор не подтверждена"));
     result.plannedMs = double(qint64(action.offsetMs) - *kpOffset);
-    if (qAbs(qint64(action.offsetMs) - *kpOffset) * 1000 >= (qint64(1) << 31))
+    if (!m_boardFrame.isAa58 && qAbs(qint64(action.offsetMs) - *kpOffset) * 1000 >= (qint64(1) << 31))
         return blocked(State::AmbiguousInterval, QStringLiteral("Интервал счётчика неоднозначен после переполнения"));
     if (m_options.boardTransport == BoardTransport::LegacySerial &&
         ((m_collectionFinished ? m_samplesAtFinish[0] : m_legacy[0].sampleCount()) * 1000 >= (quint64(1) << 31) ||
@@ -1966,10 +2036,17 @@ void IntegrationSession::checkCompletion() {
         finishCollection(QStringLiteral("Окно 5 с после отслеживаемых событий закончилось по тикам старой платы"), true);
         return;
     }
-    // Новая плата не передаёт текущий тик, только запомненные фронты.
+    const auto lastEvent = allObserved ? lastObserved : std::max(lastOffset,lastObserved);
+    if (m_boardFrame.isAa58) {
+        // AA58 передаёт текущий аппаратный тик: задержка Windows не удлиняет окно.
+        if (m_boardFrame.localNowUs >= *kp58 &&
+            qint64(m_boardFrame.localNowUs - *kp58) / 1000 >= lastEvent + kAfterLastActionMs)
+            finishCollection(QStringLiteral("Окно 5 с после отслеживаемых событий закончилось по тикам платы"), true);
+        return;
+    }
+    // AA55 передаёт только запомненные фронты.
     // Таймер ПК ограничивает окно ожидания, но никогда не оценивает точность импульса.
     if (!m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
-    const auto lastEvent = allObserved ? lastObserved : std::max(lastOffset,lastObserved);
     if (m_kpSeenOnPc.elapsed() >= lastEvent + kAfterLastActionMs)
         finishCollection(allObserved
             ? QStringLiteral("Прошло 5 с после последнего зарегистрированного события (окно ожидания по ПК)")
@@ -2046,7 +2123,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         ? QJsonValue(*StandProtocol::plannedKpOffset(m_plan, m_mapping)) : QJsonValue());
     report.insert(QStringLiteral("hardware_acceptance"), QStringLiteral("not established by software tests"));
     report.insert(QStringLiteral("tester_protocol"), m_options.boardTransport == BoardTransport::LegacySerial
-        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa58-96channels-gnss"));
+        ? QStringLiteral("legacy-mask-1ms") : m_boardFrame.protocol());
     report.insert(QStringLiteral("measurement_clock"), m_options.boardTransport == BoardTransport::LegacySerial
         ? QStringLiteral("received byte index, 1 byte = 1 ms; separate KP8 for each COM")
         : QStringLiteral("board microsecond counter minus physical KP timestamp"));
@@ -2071,6 +2148,12 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
     report.insert(QStringLiteral("second_stage_yps_index"), m_options.secondStageYps > 0 ? QJsonValue(m_options.secondStageYps - 1) : QJsonValue());
     report.insert(QStringLiteral("kp_yps_index"), m_options.kpYps > 0 ? QJsonValue(m_options.kpYps - 1) : QJsonValue());
     report.insert(QStringLiteral("legacy_block"), m_options.legacySecondStage ? QStringLiteral("БКД-Б") : QStringLiteral("БКД-А-1"));
+    if (m_boardFrame.isAa58) report.insert(QStringLiteral("board_clock"), QJsonObject{
+        {"packet_tick_us", 100}, {"local_now_us", QString::number(m_boardFrame.localNowUs)},
+        {"anchor_local_us", QString::number(m_boardFrame.anchorLocalUs)},
+        {"anchor_utc_us", QString::number(m_boardFrame.utcAnchorUs)},
+        {"time_flags", int(m_boardFrame.timeFlags)},
+        {"utc_source", "gnss_rmc_uart_estimate"}, {"pps_synchronized", false}});
     report.insert(QStringLiteral("kp_time_us"), kpTimeUs() ? QJsonValue(double(*kpTimeUs())) : QJsonValue());
     report.insert(QStringLiteral("accepted_frames"),
                   QString::number(m_collectionFinished ? m_acceptedAtFinish : m_acceptedFrames));
@@ -2149,7 +2232,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
                                ? raw.fallUs : raw.riseUs));
             }
             channel.insert(QStringLiteral("clock_domain"), m_options.boardTransport == BoardTransport::LegacySerial
-                ? QStringLiteral("legacy-stream-%1").arg(sample.input.index / 8) : QStringLiteral("tester-u32-us"));
+                ? QStringLiteral("legacy-stream-%1").arg(sample.input.index / 8) : m_boardFrame.isAa58 ? QStringLiteral("tester-u32-100us") : QStringLiteral("tester-u32-us"));
             channel.insert(QStringLiteral("actual_ms"), sample.actualMs ? QJsonValue(*sample.actualMs) : QJsonValue());
             channel.insert(QStringLiteral("deviation_ms"), sample.deviationMs ? QJsonValue(*sample.deviationMs) : QJsonValue());
             channels.append(channel);

@@ -1145,6 +1145,19 @@ void OperatorGuiTest::rawChannelsAreVisibleWithoutFlightPermission() {
     window.refreshLive();
     QCOMPARE(table->item(0, 2)->text(), QStringLiteral("ДА"));
     QCOMPARE(table->item(0, 3)->text(), QStringLiteral("1234.000"));
+    auto &f = window.m_session.m_liveFrame;
+    f = {}; f.isAa58 = true; f.localNowUs = 5'000'003'000ULL;
+    f.channels[0].triggered = true; f.channels[0].fallSeen = true;
+    f.channels[0].riseLocalUs = 5'000'000'000ULL;
+    f.channels[0].fallLocalUs = 5'000'002'500ULL;
+    window.refreshLive();
+    QCOMPARE(table->item(0, 3)->text(), QStringLiteral("5000000.000"));
+    QCOMPARE(table->item(0, 5)->text(), QStringLiteral("2.500"));
+    window.m_liveDialog->grab().save(QCoreApplication::applicationDirPath()+"/operator-aa58-live.png");
+    f.channels[0].initialActive = true; f.channels[0].riseLocalUs = 0;
+    window.refreshLive();
+    QCOMPARE(table->item(0, 3)->text(), QStringLiteral("—"));
+    QCOMPARE(table->item(0, 5)->text(), QStringLiteral("—"));
     QVERIFY(!window.m_session.measurementEligible());
     window.m_liveDialog->close();
 }

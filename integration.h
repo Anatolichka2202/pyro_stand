@@ -71,6 +71,12 @@ struct BoardFrame {
     quint8 timeFlags = 0;
     qint32 latE7 = 0;
     qint32 lonE7 = 0;
+
+    // Нормализованные микросекунды; AA58 не сужается до старого счётчика.
+    std::optional<quint64> timestampUs(int index, bool falling = false) const;
+    std::optional<double> durationMs(int index) const;
+    QString protocol() const;
+    bool validTiming(QString *error = nullptr) const;
 };
 
 struct InputRef {
@@ -234,7 +240,7 @@ public:
     QString lastError() const { return m_lastError; }
     quint64 acceptedFrames() const { return m_acceptedFrames; }
     quint64 rejectedFrames() const { return m_rejectedFrames; }
-    std::optional<quint32> kpTimeUs() const;
+    std::optional<quint64> kpTimeUs() const;
     std::optional<double> measuredPositionMs() const;
     ActionMeasurement measureAction(const PlannedAction &action) const;
     QString actionResult(const PlannedAction &action) const;

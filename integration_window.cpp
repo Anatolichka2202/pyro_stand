@@ -980,7 +980,7 @@ void IntegrationWindow::refreshLive() {
     const auto &session = peer && m_peer ? *m_peer : m_session;
     const int start = id.section(u':', 1, 1).toInt();
     const BoardFrame &frame = session.liveFrame();
-    const auto formatTick = [](quint32 tick) {
+    const auto formatTick = [](quint64 tick) {
         return tick == 0 ? QStringLiteral("—") : QString::number(double(tick) / 1000.0, 'f', 3);
     };
     for (int channel = 0; channel < 8; ++channel) {
@@ -992,11 +992,11 @@ void IntegrationWindow::refreshLive() {
         cell(m_liveTable, channel, 2,
              raw.triggered ? QStringLiteral("ДА") : QStringLiteral("нет"),
              raw.triggered ? kGreen : kDim);
-        cell(m_liveTable, channel, 3, formatTick(raw.riseUs));
-        cell(m_liveTable, channel, 4, formatTick(raw.fallUs));
-        const bool hasDuration = raw.triggered && raw.fallUs != 0;
+        cell(m_liveTable, channel, 3, formatTick(frame.timestampUs(start + channel).value_or(0)));
+        cell(m_liveTable, channel, 4, formatTick(frame.timestampUs(start + channel, true).value_or(0)));
+        const auto duration = frame.durationMs(start + channel);
         cell(m_liveTable, channel, 5,
-             hasDuration ? QString::number(double(quint32(raw.fallUs - raw.riseUs)) / 1000.0, 'f', 3)
+             duration ? QString::number(*duration, 'f', 3)
                          : QStringLiteral("—"));
     }
     m_liveStatus->setText(
@@ -1039,11 +1039,12 @@ void IntegrationWindow::refreshCanvas() {
                     break;
                 }
                 stream = st;
-                if (in.falling ? r.fallUs == 0 : (!r.triggered || r.riseUs == 0)) {
+                const auto tick = session.boardFrame().timestampUs(in.index, in.falling);
+                if (!tick) {
                     candidates.clear();
                     break;
                 }
-                candidates.append(double(in.falling ? r.fallUs : r.riseUs) -
+                candidates.append(double(session.boardFrame().timestampUs(in.index, in.falling).value_or(0)) -
                                   double(presentationOffset(session, action)) * 1000);
             }
             if (!candidates.isEmpty() && stream < points.size() &&
@@ -1067,8 +1068,8 @@ void IntegrationWindow::refreshCanvas() {
                     if (legacy && in.index >= 8)
                         continue;
                     const auto &r = session.boardFrame().channels[size_t(in.index)];
-                    if (r.triggered)
-                        last = std::max(last, double(in.falling ? r.fallUs : r.riseUs));
+                    if (const auto tick = session.boardFrame().timestampUs(in.index, in.falling))
+                        last = std::max(last, double(*tick));
                 }
             }
             if (std::isfinite(last))
@@ -1109,8 +1110,8 @@ void IntegrationWindow::refreshCanvas() {
                 row.actual = row.delta = row.rawTick = QStringLiteral("—");
                 row.status = QStringLiteral("ожидание");
                 const auto &raw = session.boardFrame().channels[size_t(in.index)];
-                if (raw.triggered)
-                    row.rawTick = QString::number(in.falling ? raw.fallUs : raw.riseUs);
+                const auto selectedTick = session.boardFrame().timestampUs(in.index, in.falling);
+                if (selectedTick) row.rawTick = QString::number(*selectedTick);
                 for (const auto &sample : eval.channels)
                     if (sample.input.index == in.index && sample.input.falling == in.falling &&
                         sample.actualMs) {
@@ -1130,11 +1131,11 @@ void IntegrationWindow::refreshCanvas() {
                         }
                     }
                 int stream = legacy ? in.index / 8 : 0;
-                if (row.actual == QStringLiteral("—") && raw.triggered &&
+                if (row.actual == QStringLiteral("—") && selectedTick &&
                     (eval.state == ActionMeasurement::State::WaitingForKp || eval.state == ActionMeasurement::State::WaitingForClockAlignment) &&
                     stream < points.size() && !points[stream].isEmpty()) {
                     double actual =
-                        (double(in.falling ? raw.fallUs : raw.riseUs) - median(points[stream])) /
+                        (double(*selectedTick) - median(points[stream])) /
                         1000;
                     row.actual = QStringLiteral("≈") + QString::number(actual, 'f', 3);
                     row.delta = QStringLiteral("≈") + signedMs(actual - double(presentationOffset(session, action)));
@@ -1212,7 +1213,7 @@ void IntegrationWindow::refreshCanvas() {
             g.status=confirmed?QStringLiteral("КП"):QStringLiteral("Ожидание КП");g.color=confirmed?kGreen:kAmber;
             g.detail=QStringLiteral("Физический КП · ")+session.mapping().version;
             const auto reference=session.mapping().kp;
-            const auto rawKp=reference.falling?raw.fallUs:raw.riseUs;
+            const auto rawKp=session.boardFrame().timestampUs(kp, reference.falling).value_or(0);
             g.channels.append({legacy ? QString::number(reference.index%8+1)
                                     : QStringLiteral("%1:%2").arg(reference.index/8+1).arg(reference.index%8+1),
                                QStringLiteral("Контакт подъёма"),
@@ -1302,7 +1303,8 @@ void IntegrationWindow::refreshCanvas() {
         m_session.hasBoardFrame() && m_session.mapping().kp.index >= 0) {
         const int expectedIndex = m_session.mapping().kp.index;
         const auto &expected = m_session.boardFrame().channels[size_t(expectedIndex)];
-        const bool physicallySeen = expected.triggered && expected.riseUs != 0;
+        const auto expectedTick = m_session.boardFrame().timestampUs(expectedIndex);
+        const bool physicallySeen = expectedTick.has_value();
         if (!m_session.measurementEligible() && physicallySeen) {
             QStringList restrictions;
             if (!m_session.boardArmed()) restrictions << QStringLiteral("не подтверждён новый сбор/сброс");
@@ -1316,7 +1318,7 @@ void IntegrationWindow::refreshCanvas() {
             m_kpStatus->setText(QStringLiteral(
                 "Сырой фронт КП на ЯПС %1/8: %2 мкс. Опора не принята: %3")
                 .arg(expectedIndex / 8 + 1)
-                .arg(expected.riseUs)
+                .arg(expectedTick.value_or(0))
                 .arg(restrictions.join(QStringLiteral("; "))));
         } else if (!physicallySeen) {
             QStringList possible;
@@ -1324,9 +1326,9 @@ void IntegrationWindow::refreshCanvas() {
                 const int index = yps * 8 + 7;
                 if (index == expectedIndex) continue;
                 const auto &candidate = m_session.boardFrame().channels[size_t(index)];
-                if (candidate.triggered && candidate.riseUs != 0)
+                if (m_session.boardFrame().timestampUs(index))
                     possible << QStringLiteral("ЯПС %1/8 (%2 мкс)")
-                                    .arg(yps + 1).arg(candidate.riseUs);
+                                    .arg(yps + 1).arg(*m_session.boardFrame().timestampUs(index));
             }
             if (!possible.isEmpty())
                 m_kpStatus->setText(QStringLiteral(

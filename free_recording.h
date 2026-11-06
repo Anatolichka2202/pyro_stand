@@ -30,8 +30,8 @@ public:
     QString status() const;
     const BoardFrame &frame() const { return m_frame; }
     const Config &config() const { return m_config; }
-    std::optional<quint32> kp() const { return m_kp; }
-    std::optional<double> relativeMs(quint32 tick) const;
+    std::optional<quint64> kp() const { return m_kp; }
+    std::optional<double> relativeMs(quint64 tick) const;
     QJsonObject report() const;
 private:
     bool retain(const QByteArray &raw, const QString &error = {});
@@ -42,8 +42,8 @@ private:
     LegacyTesterDecoder m_decoder;
     QElapsedTimer m_elapsed;
     bool m_active = false, m_armed = false;
-    QString m_status, m_id, m_started, m_stopped;
-    std::optional<quint32> m_kp;
+    QString m_status, m_id, m_started, m_stopped, m_protocol;
+    std::optional<quint64> m_kp;
     QJsonArray m_raw, m_edges;
     QJsonObject m_baseline;
     qsizetype m_bytes = 0;

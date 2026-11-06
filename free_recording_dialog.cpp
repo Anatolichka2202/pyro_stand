@@ -118,15 +118,17 @@ void IntegrationWindow::openFreeRecording() {
             const auto &c = recording.frame().channels[size_t(recording.config().group * 8 + row)];
             const bool selected = !hasRecord || (recording.config().selected & (1 << row))
                 || recording.config().kp == recording.config().group * 8 + row;
-            const auto relative = c.riseUs ? recording.relativeMs(c.riseUs) : std::nullopt;
-            const quint32 duration = c.fallUs - c.riseUs;
+            const int index = recording.config().group * 8 + row;
+            const auto rise = recording.frame().timestampUs(index);
+            const auto fall = recording.frame().timestampUs(index, true);
+            const auto relative = rise ? recording.relativeMs(*rise) : std::nullopt;
+            const auto duration = recording.frame().durationMs(index);
             table->item(row, 1)->setText(!selected ? QStringLiteral("Не регистрируется")
                 : c.ready ? QStringLiteral("Активен") : QStringLiteral("Не активен"));
-            table->item(row, 2)->setText(c.riseUs ? QString::number(c.riseUs) : QStringLiteral("—"));
-            table->item(row, 3)->setText(c.fallUs ? QString::number(c.fallUs) : QStringLiteral("—"));
+            table->item(row, 2)->setText(rise ? QString::number(*rise) : QStringLiteral("—"));
+            table->item(row, 3)->setText(fall ? QString::number(*fall) : QStringLiteral("—"));
             table->item(row, 4)->setText(relative ? QString::number(*relative, 'f', 3) : QStringLiteral("—"));
-            table->item(row, 5)->setText(c.riseUs && c.fallUs && duration < 0x80000000u
-                ? QString::number(double(duration) / 1000.0, 'f', 3) : QStringLiteral("—"));
+            table->item(row, 5)->setText(duration ? QString::number(*duration, 'f', 3) : QStringLiteral("—"));
             table->item(row, 6)->setText(recording.config().legacy ? QString::number(c.observedRises) : QStringLiteral("нет истории"));
         }
     };

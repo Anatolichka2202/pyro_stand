@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
+#include <QSet>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QLocalSocket>
@@ -100,6 +101,9 @@ struct StandMapping {
     QHash<QString, InputRef> signalBindings;
     QString kpActionKey = QStringLiteral("LIFT_OFF_CONTACT");
     bool occurrenceBased = false;
+    bool operatorOverlay = false;
+    QString operatorPlanSha256;
+    QSet<QString> operatorVerifiedBindings; // key|signal_id, подтверждены оператором
     ActionMapping forAction(const PlannedAction &action) const {
         return actions.value(occurrenceBased ? action.actionId : action.key);
     }
@@ -155,6 +159,12 @@ StandMapping benchMapping(int firstStageYps, int secondStageYps, int kpYps,
 QByteArray resetCommand();
 std::optional<qint32> plannedKpOffset(const CyclogramPlan &plan, const StandMapping &mapping);
 QJsonObject mappingSnapshot(const StandMapping &mapping);
+// Формирует отдельный профиль назначения, не изменяя исходную циклограмму.
+// Оператор должен подтвердить физическое наблюдение перед применением.
+std::optional<QByteArray> operatorOverrideProfile(
+    const CyclogramPlan &plan, const StandMapping &base,
+    const QString &actionId, const QString &signalId,
+    int index, bool falling, QString *error = nullptr);
 }
 
 class IntegrationSession : public QObject {

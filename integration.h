@@ -52,10 +52,23 @@ struct BoardChannel {
     quint32 riseUs = 0;
     quint32 fallUs = 0;
     quint64 observedRises = 0; // Только COM: число фронтов в принятых масках; новая плата истории не передаёт.
+    quint64 riseLocalUs = 0;
+    quint64 fallLocalUs = 0;
+    bool initialActive = false;
+    bool fallSeen = false;
 };
 
 struct BoardFrame {
     std::array<BoardChannel, 96> channels;
+    bool isAa58 = false;
+
+    quint64 localNowUs = 0;
+    quint64 utcAnchorUs = 0;
+    quint64 anchorLocalUs = 0;
+
+    quint8 timeFlags = 0;
+    qint32 latE7 = 0;
+    qint32 lonE7 = 0;
 };
 
 struct InputRef {

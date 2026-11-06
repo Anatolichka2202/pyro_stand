@@ -1198,6 +1198,12 @@ void IntegrationTest::boardFrameAa58()
         StandProtocol::parseBoardFrame(valid, &parsed, &error),
         qPrintable(error)
         );
+
+    QVERIFY(parsed.isAa58);
+    QCOMPARE(parsed.localNowUs, quint64(0));
+    QCOMPARE(parsed.utcAnchorUs, quint64(0));
+    QCOMPARE(parsed.timeFlags, quint8(0));
+
 }
 void IntegrationTest::cyclogramAndMapping() {
     CyclogramPlan plan;

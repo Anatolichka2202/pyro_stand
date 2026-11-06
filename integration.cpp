@@ -322,16 +322,62 @@ bool StandProtocol::parseBoardFrame(
     if (crc8(bytes.first(size - 1)) != quint8(bytes[size - 1]))
         return fail(error, QStringLiteral("Ошибка CRC8 кадра платы"));
 
-    // Существующий разбор 96 каналов пока оставь без изменений.
     BoardFrame parsed;
-    const auto *raw = reinterpret_cast<const uchar *>(bytes.constData());
+    parsed.isAa58 = isAa58;
+
+    const auto *raw =
+        reinterpret_cast<const uchar *>(bytes.constData());
+
     for (int i = 0; i < 96; ++i) {
         const int offset = 2 + i * 10;
-        parsed.channels[i].triggered = raw[offset] != 0;
-        parsed.channels[i].ready = raw[offset + 1] != 0;
-        parsed.channels[i].riseUs = qFromLittleEndian<quint32>(raw + offset + 2);
-        parsed.channels[i].fallUs = qFromLittleEndian<quint32>(raw + offset + 6);
+
+        auto &channel = parsed.channels[i];
+
+        const quint8 flags = raw[offset];
+
+        const quint32 rise =
+            qFromLittleEndian<quint32>(raw + offset + 2);
+
+        const quint32 fall =
+            qFromLittleEndian<quint32>(raw + offset + 6);
+
+        channel.triggered = isAa58
+                                ? (flags & 0x01) != 0
+                                : flags != 0;
+
+        channel.ready = raw[offset + 1] != 0;
+
+        if (isAa58) {
+            channel.initialActive = (flags & 0x02) != 0;
+            channel.fallSeen = (flags & 0x04) != 0;
+
+            channel.riseLocalUs = quint64(rise) * 100;
+            channel.fallLocalUs = quint64(fall) * 100;
+        } else {
+            channel.riseUs = rise;
+            channel.fallUs = fall;
+        }
     }
+
+    if (isAa58) {
+        parsed.localNowUs =
+            quint64(qFromLittleEndian<quint32>(raw + 962)) * 100;
+
+        parsed.utcAnchorUs =
+            qFromLittleEndian<quint64>(raw + 966);
+
+        parsed.anchorLocalUs =
+            quint64(qFromLittleEndian<quint32>(raw + 974)) * 100;
+
+        parsed.latE7 =
+            qFromLittleEndian<qint32>(raw + 978);
+
+        parsed.lonE7 =
+            qFromLittleEndian<qint32>(raw + 982);
+
+        parsed.timeFlags = raw[986];
+    }
+
     *frame = parsed;
     return true;
 }

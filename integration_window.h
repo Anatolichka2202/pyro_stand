@@ -14,6 +14,7 @@
 #include "event_canvas.h"
 
 class TimelineWidget;
+class PyroChannelMonitor;
 class QPushButton;
 class QDialog;
 class QComboBox;
@@ -44,6 +45,7 @@ private:
     void updatePlannedClock();
     void appendMessage(const QString &text);
     void configureTester();
+    void assignInputFromMonitor(int index);
     void refreshLive();
     void openFreeRecording();
     void launchCyclogramEditor(const QString &documentPath, bool measurementReport = false);
@@ -68,6 +70,7 @@ private:
     QComboBox *m_liveSource = nullptr;
     QTableWidget *m_liveTable = nullptr;
     QLabel *m_liveStatus = nullptr;
+    PyroChannelMonitor *m_monitor = nullptr;
     QLabel *m_clockCaption = nullptr;
     QLabel *m_timerLabel = nullptr;
     QLabel *m_phaseLabel = nullptr;

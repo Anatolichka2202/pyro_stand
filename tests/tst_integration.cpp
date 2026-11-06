@@ -130,6 +130,8 @@ private slots:
     void localArchiveBudget_data();
     void localArchiveBudget();
     void boardFrameAa58();
+    void aa58MeasurementPath();
+    void aa58UtcQuality();
 };
 
 void IntegrationTest::localPlanRejectsDebugAfterReconfigure() {
@@ -1258,6 +1260,149 @@ void IntegrationTest::boardFrameAa58()
     QCOMPARE(eventUtc, quint64(1'780'000'000'100'000ULL));
 
 }
+
+void IntegrationTest::aa58UtcQuality()
+{
+    auto makeFrame = [](quint8 flags) {
+        BoardFrame frame;
+        frame.isAa58 = true;
+        frame.timeFlags = flags;
+
+        frame.utcAnchorUs = 1'780'000'000'000'000ULL;
+        frame.anchorLocalUs = 4'999'900'000ULL;
+        frame.localNowUs = 5'000'200'000ULL;
+
+        frame.channels[0].triggered = true;
+        frame.channels[0].riseLocalUs = 5'000'000'000ULL;
+
+        return frame;
+    };
+
+    // Действительная GNSS-опора
+    IntegrationSession session({});
+    session.applyFrame(makeFrame(0x02));
+
+    const quint64 expectedUtc =
+        1'780'000'000'100'000ULL;
+
+    QVERIFY(session.boardFrame().channels[0].riseUtcUs.has_value());
+    QCOMPARE(session.boardFrame().channels[0].riseUtcUs.value(),
+             expectedUtc);
+
+    // Новый пакет с недействительной опорой
+    // не должен изменять уже сохранённый UTC.
+    session.applyFrame(makeFrame(0x10));
+
+    QCOMPARE(session.boardFrame().channels[0].riseUtcUs.value(),
+             expectedUtc);
+
+    // Новое событие при недостоверном времени.
+    for (quint8 flags : {
+             quint8(0x00), // Нет действительной опоры
+             quint8(0x10), // Условная дата
+             quint8(0x12), // TIME_VALID + TIME_DEFAULT
+             quint8(0x82)  // TIME_VALID + переполнение
+         })
+    {
+        IntegrationSession invalidSession({});
+        invalidSession.applyFrame(makeFrame(flags));
+
+        QVERIFY(!invalidSession.boardFrame()
+                     .channels[0].riseUtcUs.has_value());
+    }
+}
+
+void IntegrationTest::aa58MeasurementPath()
+{
+    IntegrationSession::Options options;
+    options.firstStageYps = 1;
+    options.kpYps = 1;
+
+    IntegrationSession session(options);
+    QString error;
+
+    QVERIFY(StandProtocol::parseCyclogram(
+        cyclogram(), &session.m_plan, &error));
+
+    session.updateBenchMapping();
+    session.m_hasPlan = true;
+    session.m_uploadState = "CONFIRMED";
+    session.m_executionObserved = true;
+    session.m_boardArmed = true;
+
+    BoardFrame frame;
+    frame.isAa58 = true;
+    frame.timeFlags = 0x03;
+
+    // КП на входе 8
+    frame.channels[7].triggered = true;
+    frame.channels[7].riseLocalUs = 4'999'980'000ULL;
+
+    // Два входа срабатывают через 20 мс после КП
+    for (int index : {0, 1}) {
+        frame.channels[index].triggered = true;
+        frame.channels[index].riseLocalUs = 5'000'000'000ULL;
+    }
+
+    frame.timeFlags = 0x02;
+    frame.utcAnchorUs = 1'780'000'000'000'000ULL;
+    frame.anchorLocalUs = 4'999'900'000ULL;
+    frame.localNowUs = 5'000'200'000ULL;
+
+    session.applyFrame(frame);
+
+    QVERIFY(session.boardFrame()
+                .channels[0].riseUtcUs.has_value());
+
+    QCOMPARE(
+        session.boardFrame().channels[0].riseUtcUs.value(),
+        quint64(1'780'000'000'100'000ULL));
+
+    const auto result =
+        session.measureAction(session.m_plan.actions.last());
+
+    QCOMPARE(result.state, ActionMeasurement::State::Measured);
+    QCOMPARE(result.channels.size(), 2);
+    QCOMPARE(result.channels[0].actualMs.value(), 20.0);
+    QCOMPARE(result.channels[1].actualMs.value(), 20.0);
+
+    QVERIFY(session.m_kpSeenOnPc.isValid());
+    QVERIFY(session.measuredPositionMs().has_value());
+    QCOMPARE(session.measuredPositionMs().value(), 20.0);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath("aa58-report.json");
+
+    QVERIFY2(session.saveReport(path, &error),
+             qPrintable(error));
+
+    QFile report(path);
+    QVERIFY(report.open(QIODevice::ReadOnly));
+
+    const QJsonObject root =
+        QJsonDocument::fromJson(report.readAll()).object();
+
+    QCOMPARE(root.value("tester_protocol").toString(),
+             QString("aa58-96channels-gnss"));
+
+    const QJsonArray actions = root.value("actions").toArray();
+    QVERIFY(!actions.isEmpty());
+
+    const QJsonArray channels =
+        actions.last().toObject().value("channels").toArray();
+
+    QVERIFY(!channels.isEmpty());
+
+    const QJsonObject channel = channels.first().toObject();
+
+    QCOMPARE(channel.value("event_utc_us").toString(),
+             QString("1780000000100000"));
+
+    QCOMPARE(channel.value("actual_ms").toDouble(), 20.0);
+}
+
 void IntegrationTest::cyclogramAndMapping() {
     CyclogramPlan plan;
     QString error;

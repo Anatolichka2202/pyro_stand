@@ -120,6 +120,56 @@ std::optional<quint64> timestampAa58(
     return channel.riseLocalUs;
 }
 
+std::optional<quint64> eventUtcAa58(
+    const BoardFrame &frame,
+    quint64 eventLocalUs)
+{
+    constexpr quint8 TIME_VALID = 0x02;
+    constexpr quint8 TIME_DEFAULT = 0x10;
+    constexpr quint8 TIME_OVERFLOW = 0x80;
+
+    if (!frame.isAa58)
+        return std::nullopt;
+
+    if (!(frame.timeFlags & TIME_VALID))
+        return std::nullopt;
+
+    if (frame.timeFlags & (TIME_DEFAULT | TIME_OVERFLOW))
+        return std::nullopt;
+
+    if (!eventLocalUs || !frame.utcAnchorUs ||
+        !frame.anchorLocalUs)
+        return std::nullopt;
+
+    if (frame.anchorLocalUs > frame.localNowUs ||
+        eventLocalUs < frame.anchorLocalUs ||
+        eventLocalUs > frame.localNowUs)
+        return std::nullopt;
+
+    const quint64 deltaUs =
+        eventLocalUs - frame.anchorLocalUs;
+
+    if (frame.utcAnchorUs >
+        std::numeric_limits<quint64>::max() - deltaUs)
+        return std::nullopt;
+
+    return frame.utcAnchorUs + deltaUs;
+}
+
+std::optional<quint64> kpAa58(
+    const BoardFrame &frame,
+    const StandMapping &mapping)
+{
+    const int index = mapping.kp.index;
+
+    if (!frame.isAa58 || index < 0 || index >= 96)
+        return std::nullopt;
+
+    return timestampAa58(
+        frame.channels[size_t(index)],
+        mapping.kp);
+}
+
 bool blankFrame(const BoardFrame &frame) {
     return std::all_of(frame.channels.cbegin(), frame.channels.cend(), [](const BoardChannel &ch) {
         return !ch.triggered && !ch.ready && ch.riseUs == 0 && ch.fallUs == 0;
@@ -1224,11 +1274,25 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
                 stored.riseUs = incoming.riseUs;
             if (incoming.fallUs != 0 && stored.fallUs == 0)
                 stored.fallUs = incoming.fallUs;
-            if (incoming.riseLocalUs != 0 && stored.riseLocalUs == 0)
+            if (incoming.riseLocalUs != 0 &&
+                stored.riseLocalUs == 0)
+            {
                 stored.riseLocalUs = incoming.riseLocalUs;
 
-            if (incoming.fallLocalUs != 0 && stored.fallLocalUs == 0)
+                if (incoming.triggered && !incoming.initialActive)
+                    stored.riseUtcUs =
+                        eventUtcAa58(parsed, incoming.riseLocalUs);
+            }
+
+            if (incoming.fallLocalUs != 0 &&
+                stored.fallLocalUs == 0)
+            {
                 stored.fallLocalUs = incoming.fallLocalUs;
+
+                if (incoming.fallSeen)
+                    stored.fallUtcUs =
+                        eventUtcAa58(parsed, incoming.fallLocalUs);
+            }
 
             stored.initialActive |= incoming.initialActive;
             stored.fallSeen |= incoming.fallSeen;
@@ -1268,7 +1332,12 @@ void IntegrationSession::applyFrame(const BoardFrame &parsed) {
     }
     if (m_boardArmed && !m_executionObserved && !blankFrame(parsed))
         m_prePermissionActivity = true;
-    if (kpTimeUs() && !m_kpSeenOnPc.isValid()) m_kpSeenOnPc.start();
+    const bool kpReceived = m_boardFrame.isAa58
+                                ? kpAa58(m_boardFrame, m_mapping).has_value()
+                                : kpTimeUs().has_value();
+
+    if (kpReceived && !m_kpSeenOnPc.isValid())
+        m_kpSeenOnPc.start();
 }
 
 void IntegrationSession::recordFrame(const QByteArray &raw, const QString &error) {
@@ -1526,6 +1595,40 @@ std::optional<quint32> IntegrationSession::kpTimeUs() const {
 
 std::optional<double> IntegrationSession::measuredPositionMs() const {
     if (!measurementEligible()) return std::nullopt;
+
+    if (m_boardFrame.isAa58) {
+        if (m_boardFrame.timeFlags & 0x80)
+            return std::nullopt;
+
+        const auto kp = kpAa58(m_boardFrame, m_mapping);
+        if (!kp)
+            return std::nullopt;
+
+        double latestMs = 0.0;
+
+        for (const auto &mapped : m_mapping.actions) {
+            for (const auto &input : mapped.inputs) {
+                if (input.index < 0 || input.index >= 96)
+                    continue;
+
+                const auto stamp = timestampAa58(
+                    m_boardFrame.channels[size_t(input.index)],
+                    input);
+
+                if (stamp) {
+                    const qint64 deltaUs =
+                        qint64(*stamp) - qint64(*kp);
+
+                    latestMs = std::max(
+                        latestMs,
+                        double(deltaUs) / 1000.0);
+                }
+            }
+        }
+
+        return latestMs;
+    }
+
     const auto kp = kpTimeUs();
     if (!kp) return std::nullopt;
     if (m_options.boardTransport == BoardTransport::LegacySerial) {
@@ -1781,7 +1884,17 @@ void IntegrationSession::checkCompletion() {
         return;
     const auto kpOffset = StandProtocol::plannedKpOffset(m_plan, m_mapping);
     const auto kp = kpTimeUs();
-    if (!kpOffset || !kp) return;
+    const auto kp58 = kpAa58(m_boardFrame, m_mapping);
+
+    if (!kpOffset)
+        return;
+
+    if (m_boardFrame.isAa58) {
+        if (!kp58 || (m_boardFrame.timeFlags & 0x80))
+            return;
+    } else if (!kp) {
+        return;
+    }
     qint64 lastOffset = std::numeric_limits<qint64>::min();
     bool allObserved = true;
     qint64 lastObserved = 0;
@@ -1794,9 +1907,28 @@ void IntegrationSession::checkCompletion() {
             if (input.index<0 || input.index>=int(m_boardFrame.channels.size())) {
                 allObserved=false; continue;
             }
-            const auto tick = timestamp(m_boardFrame.channels[size_t(input.index)],input);
-            if (!tick) { allObserved=false; continue; }
-            const qint64 us=qint32(*tick-*kp);
+            std::optional<qint64> deltaUs;
+
+            if (m_boardFrame.isAa58) {
+                const auto tick = timestampAa58(
+                    m_boardFrame.channels[size_t(input.index)], input);
+
+                if (tick)
+                    deltaUs = qint64(*tick) - qint64(*kp58);
+            } else {
+                const auto tick = timestamp(
+                    m_boardFrame.channels[size_t(input.index)], input);
+
+                if (tick)
+                    deltaUs = qint32(*tick - *kp);
+            }
+
+            if (!deltaUs) {
+                allObserved = false;
+                continue;
+            }
+
+            const qint64 us = *deltaUs;
             lastObserved=std::max(lastObserved,us>=0?(us+999)/1000:us/1000);
         }
     }
@@ -1914,7 +2046,7 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
         ? QJsonValue(*StandProtocol::plannedKpOffset(m_plan, m_mapping)) : QJsonValue());
     report.insert(QStringLiteral("hardware_acceptance"), QStringLiteral("not established by software tests"));
     report.insert(QStringLiteral("tester_protocol"), m_options.boardTransport == BoardTransport::LegacySerial
-        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa55-96channels"));
+        ? QStringLiteral("legacy-mask-1ms") : QStringLiteral("aa58-96channels-gnss"));
     report.insert(QStringLiteral("measurement_clock"), m_options.boardTransport == BoardTransport::LegacySerial
         ? QStringLiteral("received byte index, 1 byte = 1 ms; separate KP8 for each COM")
         : QStringLiteral("board microsecond counter minus physical KP timestamp"));
@@ -1985,7 +2117,37 @@ bool IntegrationSession::saveReport(const QString &path, QString *error) {
             channel.insert(QStringLiteral("edge"), sample.input.falling ? QStringLiteral("fall") : QStringLiteral("rise"));
             channel.insert(QStringLiteral("signal_id"), sample.input.signalId);
             const auto &raw = m_boardFrame.channels[size_t(sample.input.index)];
-            channel.insert(QStringLiteral("raw_tick_us"), double(sample.input.falling ? raw.fallUs : raw.riseUs));
+
+            const auto &eventUtc = sample.input.falling
+                                       ? raw.fallUtcUs
+                                       : raw.riseUtcUs;
+
+            channel.insert(
+                QStringLiteral("event_utc_us"),
+                eventUtc
+                    ? QJsonValue(QString::number(*eventUtc))
+                    : QJsonValue());
+
+            channel.insert(
+                QStringLiteral("utc_source"),
+                eventUtc
+                    ? QStringLiteral("gnss_rmc_uart_estimate")
+                    : QStringLiteral("unavailable"));
+
+            if (m_boardFrame.isAa58) {
+                const quint64 localUs = sample.input.falling
+                                            ? raw.fallLocalUs
+                                            : raw.riseLocalUs;
+
+                channel.insert(
+                    QStringLiteral("event_local_us"),
+                    QString::number(localUs));
+            } else {
+                channel.insert(
+                    QStringLiteral("raw_tick_us"),
+                    double(sample.input.falling
+                               ? raw.fallUs : raw.riseUs));
+            }
             channel.insert(QStringLiteral("clock_domain"), m_options.boardTransport == BoardTransport::LegacySerial
                 ? QStringLiteral("legacy-stream-%1").arg(sample.input.index / 8) : QStringLiteral("tester-u32-us"));
             channel.insert(QStringLiteral("actual_ms"), sample.actualMs ? QJsonValue(*sample.actualMs) : QJsonValue());

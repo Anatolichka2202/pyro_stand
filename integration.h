@@ -56,6 +56,8 @@ struct BoardChannel {
     quint64 fallLocalUs = 0;
     bool initialActive = false;
     bool fallSeen = false;
+    std::optional<quint64> riseUtcUs;
+    std::optional<quint64> fallUtcUs;
 };
 
 struct BoardFrame {

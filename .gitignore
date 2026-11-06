@@ -35,3 +35,5 @@ __pycache__/
 Thumbs.db
 .DS_Store
 .claude/worktrees/
+integration.cpp~RF5db5b839.TMP
+.tmp

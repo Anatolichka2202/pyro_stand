@@ -1,6 +1,7 @@
 #include "integration_window.h"
 #include "command_catalog.h"
 #include "timeline_widget.h"
+#include "pyro_channel_monitor.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -36,6 +37,9 @@
 #include <QTextDocument>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QDir>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QCryptographicHash>
 #include <QProcess>
 #include <QStyle>
@@ -413,6 +417,12 @@ void IntegrationWindow::setupUi() {
     m_phaseLabel = new QLabel(surface);
     status->addWidget(m_phaseLabel, 1);
     main->insertWidget(1, statusPanel);
+    // Пассивный монитор всегда виден; не требует Debug, ПЗ или разрешения БЦВМ.
+    m_monitor = new PyroChannelMonitor(surface);
+    m_monitor->onAssignmentRequested = [this](int index) {
+        assignInputFromMonitor(index);
+    };
+    main->insertWidget(2, m_monitor);
     m_finishReason = new QLabel(surface);
     m_finishReason->setObjectName(QStringLiteral("finishReason"));
     m_finishReason->setTextFormat(Qt::PlainText);
@@ -1921,7 +1931,16 @@ void IntegrationWindow::configureTester() {
     refresh();
 }
 
+void IntegrationWindow::assignInputFromMonitor(int index) {
+    Q_UNUSED(index);
+    QMessageBox::information(this, QStringLiteral("Назначение"),
+        QStringLiteral("Назначение будет доступно после загрузки операторского редактора."));
+}
+
 void IntegrationWindow::refresh() {
+    if (m_monitor)
+        m_monitor->updateTelemetry(m_session.liveFrame(), m_session.boardFrame(),
+                                   m_session.boardReceiving());
     if (m_peer && m_session.collectionFinished() && !m_peer->collectionFinished())
         m_peer->finishCollection(QStringLiteral(
             "Основной измеритель завершил окно наблюдения; точность связи часов не подтверждена"));
@@ -1959,11 +1978,28 @@ void IntegrationWindow::refresh() {
                 : legacy && !validCollection ? QStringLiteral("сбор не готов")
                                               : legacy ? QStringLiteral("COM-потоки идут")
                                                        : QStringLiteral("кадры идут"));
-    setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(),
-            m_session.localPlanMode()
-                ? QStringLiteral("БЦВМ не подтверждала")
-                : m_session.executionEnabled() ? QStringLiteral("разрешено")
-                                               : QStringLiteral("не разрешено"));
+    QString permissionReason;
+    if (m_session.localPlanMode())
+        permissionReason = QStringLiteral("локальный план · БЦВМ не подтверждала");
+    else if (!m_session.debugConnected())
+        permissionReason = QStringLiteral("нет связи с Debug КАСУ");
+    else if (m_session.executionEnabled())
+        permissionReason = QStringLiteral("исполнение ПЗ подтверждено");
+    else if (m_session.lockState() == QStringLiteral("UNLOCKED"))
+        permissionReason = m_session.uploadState() == QStringLiteral("CONFIRMED")
+            ? QStringLiteral("LOCK снят · подтверждение исполнения ПЗ отсутствует")
+            : QStringLiteral("LOCK снят · загрузка ПЗ не подтверждена");
+    else if (m_session.lockState() == QStringLiteral("LOCKED"))
+        permissionReason = QStringLiteral("LOCK установлен · исполнение не подтверждено");
+    else
+        permissionReason = QStringLiteral("режим БЦВМ не подтверждён");
+    setChip(m_bcvmDot, m_bcvmStatus, m_session.executionEnabled(), permissionReason);
+    m_bcvmStatus->setToolTip(QStringLiteral(
+        "LOCK: %1\nЗагрузка ПЗ: %2\nПодтверждение исполнения: %3\n"
+        "Надпись КАСУ «РАЗРЕШЕНО» относится к чтению при снятом LOCK.")
+        .arg(m_session.lockState(), m_session.uploadState(),
+             m_session.executionPermissionObserved() ? QStringLiteral("получено")
+                                                      : QStringLiteral("нет")));
 
     QString phaseText;
     QString phaseColor = QStringLiteral("#8b949e");
@@ -2037,7 +2073,7 @@ void IntegrationWindow::refresh() {
                      : QStringLiteral("ЯПС %1 / вход %2").arg(input / 8 + 1).arg(input % 8 + 1);
         m_kpStatus->setText(QStringLiteral("КП · %1 · %2").arg(location, kpKnown ? QStringLiteral("зарегистрирован")
             : firstKp ? QStringLiteral("не подтверждён") : QStringLiteral("нет отметки")));
-        m_kpStatus->setToolTip(kpKnown ? QStringLiteral("Аппаратная отметка: %1 мкс\nНоль относительной шкалы: 0 мс").arg(*m_session.kpTimeUs())
+        m_kpStatus->setToolTip(kpKnown ? QStringLiteral("Аппаратная отметка: %1 мкс\nНоль относительной шкалы: 0 мс").arg(kpStamp ? QString::number(*kpStamp) : QStringLiteral("нет"))
             : QStringLiteral("Расчёт относительно КП требует подтверждённой аппаратной опоры."));
     }
     if (legacy) {
@@ -2065,9 +2101,14 @@ void IntegrationWindow::refresh() {
         ? QStringLiteral("Ethernet · %1").arg(connection.boardIp.toString())
         : connection.serialPort;
     findChild<QLabel *>(QStringLiteral("boardConnectionTitle"))->setText(device);
-    m_mappingStatus->setText(QStringLiteral("Проверьте назначения входов"));
-    m_mappingStatus->setToolTip(m_session.mapping().warnings.join(u'\n'));
-    m_mappingStatus->setVisible(!m_session.mapping().warnings.isEmpty());
+    const auto &currentMapping = m_session.mapping();
+    m_mappingStatus->setText(currentMapping.operatorOverlay
+        ? QStringLiteral("Операторская карта · проверено сигналов: %1 · исходное ПЗ неизменно")
+              .arg(currentMapping.operatorVerifiedBindings.size())
+        : QStringLiteral("Проверьте назначения входов"));
+    m_mappingStatus->setToolTip(currentMapping.warnings.join(u'\n'));
+    m_mappingStatus->setVisible(currentMapping.operatorOverlay ||
+                                !currentMapping.warnings.isEmpty());
     m_clockStatus->setText(QStringLiteral(
         "UTC БЦВМ при загрузке: %1 · синхронизация с платой не подтверждена")
         .arg(m_session.bcvmUtc().isEmpty()

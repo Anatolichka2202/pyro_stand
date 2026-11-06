@@ -1935,8 +1935,14 @@ void IntegrationWindow::refresh() {
     m_summaryLabel->setVisible(hasPlan);
     const bool eligible = m_session.measurementEligible();
     const bool dualLegacy = legacy && !m_session.options().secondLegacySerialPort.isEmpty();
-    const bool firstKp = legacy ? m_session.legacyStreamKpObserved(0)
-                                 : m_session.kpTimeUs().has_value();
+    const auto &kpRef = m_session.mapping().kp;
+
+    const auto kpStamp = m_session.boardFrame().timestampUs(
+        kpRef.index, kpRef.falling);
+
+    const bool firstKp = legacy
+                             ? m_session.legacyStreamKpObserved(0)
+                             : m_session.boardArmed() && kpStamp.has_value();
     const bool secondKp = dualLegacy && m_session.legacyStreamKpObserved(1);
     const bool kpKnown = eligible && firstKp && (!dualLegacy || secondKp);
     const bool uploaded = m_session.uploadState() == QStringLiteral("CONFIRMED");

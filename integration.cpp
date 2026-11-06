@@ -510,6 +510,25 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
         return fail(error, QStringLiteral("Профиль относится к другому каталогу команд"));
     StandMapping parsed;
     parsed.version = root.value(QStringLiteral("version")).toString().trimmed();
+    if (root.contains(QStringLiteral("operator_overlay"))) {
+        if (root.value(QStringLiteral("schema")).toString() !=
+                QStringLiteral("pyro.stand-profile.v2") ||
+            !root.value(QStringLiteral("operator_overlay")).isObject())
+            return fail(error, QStringLiteral("Неверный формат операторской карты"));
+        const QJsonObject overlay = root.value(QStringLiteral("operator_overlay")).toObject();
+        const QString planSha = overlay.value(QStringLiteral("plan_sha256")).toString();
+        if (!QRegularExpression(QStringLiteral("^[0-9a-fA-F]{64}$")).match(planSha).hasMatch() ||
+            !overlay.value(QStringLiteral("verified_bindings")).isArray())
+            return fail(error, QStringLiteral("У операторской карты отсутствует SHA плана или список подтверждений"));
+        parsed.operatorOverlay = true;
+        parsed.operatorPlanSha256 = planSha.toLower();
+        for (const auto &value : overlay.value(QStringLiteral("verified_bindings")).toArray()) {
+            if (!value.isString() || value.toString().isEmpty() ||
+                parsed.operatorVerifiedBindings.contains(value.toString()))
+                return fail(error, QStringLiteral("Некорректное подтверждение входа в операторской карте"));
+            parsed.operatorVerifiedBindings.insert(value.toString());
+        }
+    }
     const auto kp = parseInput(root.value(QStringLiteral("kp")));
     if (root.contains(QStringLiteral("kp_action_key")) &&
         root.value(QStringLiteral("kp_action_key")).toString() != QStringLiteral("LIFT_OFF_CONTACT"))
@@ -607,6 +626,21 @@ bool StandProtocol::parseMapping(const QByteArray &bytes, StandMapping *mapping,
             if (input.index == parsed.kp.index && input.falling == parsed.kp.falling &&
                 (it.key() != parsed.kpActionKey || input.signalId != QStringLiteral("bkhoa.yps_bkd.0.bit.7")))
                 return fail(error, QStringLiteral("Вход КП занят другим сигналом"));
+    if (parsed.operatorOverlay) {
+        QSet<QString> known;
+        for (auto it = parsed.actions.begin(); it != parsed.actions.end(); ++it) {
+            bool allVerified = true;
+            for (const auto &input : it->inputs) {
+                const QString binding = it.key() + QStringLiteral("|") + input.signalId;
+                known.insert(binding);
+                allVerified &= parsed.operatorVerifiedBindings.contains(binding);
+            }
+            it->definitionConfirmed = it->definitionConfirmed && allVerified;
+        }
+        for (const QString &binding : parsed.operatorVerifiedBindings)
+            if (!known.contains(binding))
+                return fail(error, QStringLiteral("Операторская карта подтверждает отсутствующий сигнал"));
+    }
     *mapping = parsed;
     return true;
 }
@@ -638,11 +672,122 @@ QJsonObject StandProtocol::mappingSnapshot(const StandMapping &mapping) {
         actions.append(QJsonObject{{"key", key}, {"inputs", inputs}, {"definition_confirmed", mapped.definitionConfirmed},
                                   {"tolerance_ms", mapped.toleranceMs ? QJsonValue(*mapped.toleranceMs) : QJsonValue()}});
     }
-    return {{"schema", "pyro.stand-profile.v2"}, {"version", mapping.version},
+    QJsonObject snapshot{{"schema", "pyro.stand-profile.v2"}, {"version", mapping.version},
             {"catalog_version", QLatin1String(kCommandCatalogVersion)}, {"kp", inputJson(mapping.kp)},
             {"kp_action_key", mapping.kpActionKey}, {"actions", actions},
             {"action_identity", mapping.occurrenceBased ? "sha256:line" : "command_key"},
             {"wiring_verification", "operator selection; physical acceptance recorded separately"}};
+    if (mapping.operatorOverlay) {
+        QJsonArray verified;
+        QStringList sorted(mapping.operatorVerifiedBindings.cbegin(),
+                           mapping.operatorVerifiedBindings.cend());
+        sorted.sort();
+        for (const QString &entry : sorted) verified.append(entry);
+        snapshot.insert(QStringLiteral("operator_overlay"),
+                        QJsonObject{{"plan_sha256", mapping.operatorPlanSha256},
+                                    {"verified_bindings", verified},
+                                    {"source", "operator_observation_v1"}});
+    }
+    return snapshot;
+}
+
+
+std::optional<QByteArray> StandProtocol::operatorOverrideProfile(
+    const CyclogramPlan &plan, const StandMapping &base,
+    const QString &actionId, const QString &signalId,
+    int index, bool falling, QString *error)
+{
+    if (plan.sourceBytes.isEmpty() || plan.sha256.isEmpty() ||
+        index < 0 || index >= 96 || signalId.isEmpty())
+        return fail(error, QStringLiteral("Нет плана, сигнала или допустимого входа")), std::nullopt;
+
+    auto chosen = std::find_if(plan.actions.cbegin(), plan.actions.cend(),
+        [&](const PlannedAction &action) { return action.actionId == actionId; });
+    if (chosen == plan.actions.cend())
+        return fail(error, QStringLiteral("Действие отсутствует в текущем файле ПЗ")), std::nullopt;
+    const QString targetKey = chosen->key;
+    if (std::count_if(plan.actions.cbegin(), plan.actions.cend(),
+            [&](const PlannedAction &action) { return action.key == targetKey; }) != 1)
+        return fail(error, QStringLiteral("Повторяющееся действие: требуется отдельная карта вхождений")), std::nullopt;
+
+    QJsonObject root = mappingSnapshot(base);
+    QJsonArray actions = root.value(QStringLiteral("actions")).toArray();
+    QSet<QString> present;
+    bool assigned = false;
+    for (int a = 0; a < actions.size(); ++a) {
+        QJsonObject action = actions[a].toObject();
+        QString key = action.value(QStringLiteral("key")).toString();
+        if (base.occurrenceBased) {
+            const auto planned = std::find_if(plan.actions.cbegin(), plan.actions.cend(),
+                [&](const PlannedAction &p) { return p.actionId == key; });
+            if (planned == plan.actions.cend())
+                return fail(error, QStringLiteral("Исходная карта содержит чужое вхождение ПЗ")), std::nullopt;
+            key = planned->key;
+        }
+        if (present.contains(key))
+            return fail(error, QStringLiteral("В карте повторяются действия: нельзя безопасно объединить назначения")), std::nullopt;
+        present.insert(key);
+        action.insert(QStringLiteral("key"), key);
+        QJsonArray inputs = action.value(QStringLiteral("inputs")).toArray();
+        for (int j = 0; j < inputs.size(); ++j) {
+            QJsonObject input = inputs[j].toObject();
+            if (key == targetKey && input.value(QStringLiteral("signal_id")).toString() == signalId) {
+                input.insert(QStringLiteral("yps"), index / 8 + 1);
+                input.insert(QStringLiteral("channel"), index % 8 + 1);
+                input.insert(QStringLiteral("edge"), falling ? QStringLiteral("fall") : QStringLiteral("rise"));
+                inputs[j] = input;
+                assigned = true;
+            }
+        }
+        action.insert(QStringLiteral("inputs"), inputs);
+        actions[a] = action;
+    }
+    if (!assigned)
+        return fail(error, QStringLiteral("Этот сигнал отсутствует в назначениях действия")), std::nullopt;
+    root.insert(QStringLiteral("actions"), actions);
+    root.insert(QStringLiteral("action_identity"), QStringLiteral("command_key"));
+    root.insert(QStringLiteral("version"), QStringLiteral("operator-overlay:") + plan.sha256.left(12));
+
+    if (targetKey == QStringLiteral("LIFT_OFF_CONTACT") &&
+        signalId == QStringLiteral("bkhoa.yps_bkd.0.bit.7")) {
+        QJsonObject kp = root.value(QStringLiteral("kp")).toObject();
+        kp.insert(QStringLiteral("yps"), index / 8 + 1);
+        kp.insert(QStringLiteral("channel"), index % 8 + 1);
+        kp.insert(QStringLiteral("edge"), falling ? QStringLiteral("fall") : QStringLiteral("rise"));
+        root.insert(QStringLiteral("kp"), kp);
+    }
+
+    QSet<QString> verified;
+    for (const QString &entry : base.operatorVerifiedBindings) {
+        const int delimiter = entry.indexOf(u'|');
+        if (delimiter < 0) continue;
+        QString oldKey = entry.left(delimiter);
+        if (base.occurrenceBased) {
+            const auto planned = std::find_if(plan.actions.cbegin(), plan.actions.cend(),
+                [&](const PlannedAction &p) { return p.actionId == oldKey; });
+            if (planned == plan.actions.cend()) continue;
+            oldKey = planned->key;
+        }
+        verified.insert(oldKey + entry.mid(delimiter));
+    }
+    verified.insert(targetKey + QStringLiteral("|") + signalId);
+    QStringList sorted(verified.cbegin(), verified.cend());
+    sorted.sort();
+    QJsonArray verifiedJson;
+    for (const QString &entry : sorted) verifiedJson.append(entry);
+    root.insert(QStringLiteral("operator_overlay"),
+        QJsonObject{{"plan_sha256", plan.sha256},
+                    {"verified_bindings", verifiedJson},
+                    {"source", "operator_observation_v1"},
+                    {"last_change_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    StandMapping check;
+    QString checkError;
+    if (!parseMapping(bytes, &check, &checkError) ||
+        !validateMappingContext(check, plan, false, &checkError))
+        return fail(error, checkError), std::nullopt;
+    return bytes;
 }
 
 QByteArray StandProtocol::resetCommand() {
@@ -894,6 +1039,20 @@ void IntegrationSession::resetCollectionEvidence(bool resetDebugEvidence) {
 }
 
 void IntegrationSession::updateBenchMapping() {
+    // Явный операторский профиль имеет приоритет над ## только при совпадении SHA плана.
+    if (!m_mappingBytes.isEmpty()) {
+        StandMapping restored;
+        QString error;
+        if (StandProtocol::parseMapping(m_mappingBytes, &restored, &error) &&
+            StandProtocol::validateMappingContext(restored, m_plan,
+                m_options.boardTransport == BoardTransport::LegacySerial, &error))
+            m_mapping = restored;
+        else {
+            m_mapping = {};
+            m_mapping.warnings << error;
+        }
+        return;
+    }
     const bool annotated=std::any_of(m_plan.actions.cbegin(),m_plan.actions.cend(),
         [](const PlannedAction &action){return !action.wiring.isEmpty();});
     if(annotated) {
@@ -940,12 +1099,6 @@ void IntegrationSession::updateBenchMapping() {
             if(!mapped.inputs.isEmpty()) m_mapping.actions.insert(action.actionId,mapped);
         }
         m_mapping.warnings << QStringLiteral("Источник назначений: ## исходного ПЗ; электрическая разводка не подтверждена");
-        return;
-    }
-    if(!m_mappingBytes.isEmpty()) {
-        StandMapping restored;QString error;
-        if(StandProtocol::parseMapping(m_mappingBytes,&restored,&error)) m_mapping=restored;
-        else {m_mapping={};m_mapping.warnings << error;}
         return;
     }
     if (!m_options.wiringProfilePath.isEmpty()) return;
@@ -1514,8 +1667,12 @@ bool IntegrationSession::loadLocalPlan(const QString &path) {
 
 bool StandProtocol::validateMappingContext(const StandMapping &mapping, const CyclogramPlan &plan,
                                           bool legacy, QString *error) {
-    if (std::any_of(plan.actions.cbegin(), plan.actions.cend(),
-        [](const PlannedAction &action){return !action.wiring.isEmpty();})) {
+    if (mapping.operatorOverlay &&
+        (plan.sha256.isEmpty() || mapping.operatorPlanSha256 != plan.sha256))
+        return fail(error, QStringLiteral("Операторская карта относится к другому SHA-256 циклограммы"));
+    if (!mapping.operatorOverlay &&
+        std::any_of(plan.actions.cbegin(), plan.actions.cend(),
+            [](const PlannedAction &action){return !action.wiring.isEmpty();})) {
         return fail(error, QStringLiteral("Конфликт: ## в ПЗ и JSON-профиль. Профиль не применён."));
     }
     if (legacy && mapping.kp.index >= 0 && (mapping.kp.index != 7 || mapping.kp.falling))
@@ -1548,6 +1705,7 @@ bool IntegrationSession::loadMapping(const QString &path) {
     for (auto &decoder : m_legacy) decoder.reset();
     m_mapping = mapping;
     m_mappingBytes = bytes;
+    m_options.wiringProfilePath = QFileInfo(file).absoluteFilePath();
     m_localEvidence.append(QJsonObject{{"type", "STAND_PROFILE_CHANGED"},
         {"version", mapping.version}, {"collection_id", m_collectionId}});
     emit message(QStringLiteral("Загружена карта каналов: %1").arg(mapping.version));

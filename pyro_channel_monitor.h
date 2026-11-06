@@ -13,6 +13,7 @@
 
 #include <array>
 #include <functional>
+#include <limits>
 #include <optional>
 
 // Постоянный пассивный монитор всех 96 входов. Не отправляет команд прибору
